@@ -1,14 +1,43 @@
 import pandas as pd
 from app.core.dxf_engine import DXFAnaliz
 import os
+import sys
+from PyQt6.QtWidgets import QApplication
+from app.ui.main_window import MainWindow
+from app.ui.styles import apply_dark_theme
 
 
-def rapor_olustur(dxf_dosya_adi):
+def gui_uygulamasi():
+    """PyQt6 GUI uygulamasını başlat"""
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("InsaatMetrajPro")
+        app.setOrganizationName("InsaatMetrajPro")
+        
+        apply_dark_theme(app)
+        
+        window = MainWindow()
+        window.show()
+        
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"HATA: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def rapor_olustur(dxf_dosya_adi, cizim_birimi="cm"):
     print(f"🔄 '{dxf_dosya_adi}' dosyası analiz ediliyor...")
+    print(f"📏 Çizim birimi: {cizim_birimi}\n")
     
     # 1. Motoru Başlat
     try:
-        proje = DXFAnaliz(dxf_dosya_adi)
+        # Eğer kapılar "90" veya odalar "400" gibi değerlerse "cm" yaz:
+        proje = DXFAnaliz(dxf_dosya_adi, cizim_birimi=cizim_birimi)
+        
+        # Eğer kapılar "900" ise "mm" yaz:
+        # proje = DXFAnaliz(dxf_dosya_adi, cizim_birimi="mm")
     except SystemExit:
         print("İşlem durduruldu.")
         return
@@ -56,6 +85,67 @@ def rapor_olustur(dxf_dosya_adi):
 
 # --- ÇALIŞTIR ---
 if __name__ == "__main__":
-    # Buraya kendi dosya adını yazmayı unutma!
-    dosya = "mimari.dxf"
-    rapor_olustur(dosya)
+    # Kullanıcıya seçim yaptır
+    print("=" * 60)
+    print("🏗️  İNŞAAT METRAJ PRO - Hoş Geldiniz!")
+    print("=" * 60)
+    print("\nNe yapmak istersiniz?")
+    print("  1. GUI Uygulamasını Aç (Metraj Cetveli, CAD İşleyici, vb.)")
+    print("  2. DXF Analiz Scripti Çalıştır (Excel Raporu Oluştur)")
+    print("  3. Çıkış")
+    
+    secim = input("\nSeçiminiz (1/2/3): ").strip()
+    
+    if secim == "1":
+        # GUI uygulamasını başlat
+        print("\n🖥️  GUI uygulaması başlatılıyor...\n")
+        gui_uygulamasi()
+    
+    elif secim == "2":
+        # DXF analiz scriptini çalıştır
+        print("\n📊 DXF Analiz modu başlatılıyor...\n")
+        
+        # DXF dosya yolu - Kendi dosyanızın tam yolunu buraya yazın
+        import glob
+        dxf_files = glob.glob("*.dxf") + glob.glob("../*.dxf") + glob.glob("../../*.dxf")
+        
+        if dxf_files:
+            print("📁 Bulunan DXF dosyaları:")
+            for i, f in enumerate(dxf_files, 1):
+                print(f"   {i}. {f}")
+            print()
+            # İlk bulunan dosyayı kullan
+            dosya = dxf_files[0]
+            print(f"✅ Kullanılan dosya: {dosya}\n")
+        else:
+            # Manuel dosya yolu (kendi dosyanızı buraya yazın)
+            # Desktop'ta bulunan mimari.dxf dosyasını kullan
+            dosya = r"C:\Users\USER\Desktop\mimari.dxf"
+            
+            # Alternatif dosya yolları:
+            # dosya = r"C:\Users\USER\Desktop\Yaşar Ekersular Mimari.dxf"
+            # dosya = "mimari.dxf"  # Aynı klasördeyse
+            
+            # Dosya var mı kontrol et
+            if not os.path.exists(dosya):
+                print(f"❌ HATA: '{dosya}' dosyası bulunamadı!")
+                print("Lütfen main.py dosyasındaki 'dosya' değişkenini kendi DXF dosyanızın yolu ile güncelleyin.")
+                print("Örnek: dosya = r'C:\\Users\\USER\\Desktop\\dosya_adi.dxf'")
+                exit(1)
+        
+        # Çizim birimi seçimi
+        # Eğer kapılar "90" veya odalar "400" gibi değerlerse "cm" yaz:
+        cizim_birimi = "cm"
+        
+        # Eğer kapılar "900" ise "mm" yaz:
+        # cizim_birimi = "mm"
+        
+        rapor_olustur(dosya, cizim_birimi=cizim_birimi)
+    
+    elif secim == "3":
+        print("\n👋 Çıkılıyor...")
+        sys.exit(0)
+    
+    else:
+        print("\n❌ Geçersiz seçim! Lütfen 1, 2 veya 3 girin.")
+        sys.exit(1)

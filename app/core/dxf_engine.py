@@ -67,19 +67,23 @@ class DXFAnaliz:
     
     Alan hesaplama, blok sayımı ve katman listeleme işlemlerini yapar.
     Tolerans ile açık çizgileri otomatik kapatma özelliği içerir.
+    Çizim birimi desteği ile farklı birimlerdeki dosyaları işleyebilir.
     """
     
-    def __init__(self, dosya_yolu: str) -> None:
+    def __init__(self, dosya_yolu: str, cizim_birimi: str = "cm") -> None:
         """
         DXFAnaliz sınıfını başlat.
         
         Args:
             dosya_yolu: DXF dosyasının yolu
+            cizim_birimi: Çizim birimi ('m', 'cm', 'mm')
+                         Varsayılan: 'cm' (mimaride en yaygını)
         """
         if not EZDXF_AVAILABLE:
             raise ImportError("ezdxf kütüphanesi gerekli")
         
         self.dosya_yolu = dosya_yolu
+        self.birim = cizim_birimi
         self.doc = None
         self.msp = None
         self.yukle()
@@ -89,7 +93,7 @@ class DXFAnaliz:
         try:
             self.doc = ezdxf.readfile(self.dosya_yolu)
             self.msp = self.doc.modelspace()
-            logger.info(f"✅ Başarılı: '{self.dosya_yolu}' yüklendi.")
+            logger.info(f"✅ Başarılı: '{self.dosya_yolu}' yüklendi. Birim: {self.birim}")
         except Exception as e:
             error_msg = f"Hata: {e}"
             logger.error(error_msg)
@@ -107,85 +111,76 @@ class DXFAnaliz:
         Belirtilen katmandaki KAPALI poligonların (LWPOLYLINE) alanını hesaplar.
         
         Tolerans parametresi ile açık çizgileri otomatik kapatma özelliği vardır.
-        Çizgiler arasında belirlenen tolerans (varsayılan 20 cm) kadar boşluk varsa
-        bunu otomatik olarak kapatır ve alan hesaplar.
+        Çizgiler arasında belirlenen tolerans kadar boşluk varsa bunu otomatik olarak 
+        kapatır ve alan hesaplar. Sonuç her zaman m² cinsinden döner.
         
         Args:
             katman_adi: Hesaplanacak katman adı
-            tolerans: Çizgiler arasında kapatılacak maksimum boşluk (birim cinsinden)
+            tolerans: Çizgiler arasında kapatılacak maksimum boşluk (metre cinsinden)
                      Varsayılan: 0.20 (20 cm)
         
         Returns:
-            Dict: Hesaplama sonuçları
+            Dict: Hesaplama sonuçları (m² cinsinden)
         """
         toplam_alan = 0.0
         parca_sayisi = 0
         tamir_edilen = 0
         
-        sorgu = f'LWPOLYLINE[layer=="{katman_adi}"]'
+        # Birime göre toleransı ayarla (boşluk kapatma hassasiyeti)
+        # Eğer çizim CM ise ve biz 20cm boşluk kapatacaksak, tolerans 20 olmalı.
+        gercek_tolerans = tolerans
+        if self.birim == "cm":
+            gercek_tolerans = tolerans * 100  # 0.2m -> 20cm
+        elif self.birim == "mm":
+            gercek_tolerans = tolerans * 1000  # 0.2m -> 200mm
         
-        try:
-            for entity in self.msp.query(sorgu):
-                noktalar = list(entity.points("xy"))
+        sorgu = f'LWPOLYLINE[layer=="{katman_adi}"]'
+        entities = self.msp.query(sorgu)
+        
+        for entity in entities:
+            try:
+                # Noktaları okumak için entity.points() context manager kullan
+                try:
+                    with entity.points("xy") as pts:
+                        noktalar = list(pts)
+                except (AttributeError, TypeError):
+                    # Alternatif: vertices kullan
+                    try:
+                        noktalar = [(v[0], v[1]) for v in entity.vertices]
+                    except:
+                        continue
                 
-                # DURUM 1: Zaten Kapalıysa (Sorunsuz)
+                if len(noktalar) < 3:
+                    continue
+                
+                # Kapalı mı veya kapatılabilir mi?
+                kapatildi = False
                 if entity.is_closed:
-                    alan = self._shoelace_formulu(noktalar)
-                    toplam_alan += alan
-                    parca_sayisi += 1
-                
-                # DURUM 2: Açık ama AI ile Tamir Edilebilir mi?
+                    kapatildi = True
                 else:
                     baslangic = noktalar[0]
                     bitis = noktalar[-1]
-                    
-                    # İki uç arasındaki mesafeyi ölç (Hipotenüs)
                     mesafe = math.hypot(bitis[0] - baslangic[0], bitis[1] - baslangic[1])
-                    
-                    # Eğer boşluk belirlediğimiz toleransın altındaysa (Örn: < 20cm)
-                    if mesafe <= tolerans:
-                        # Sanki kapalıymış gibi hesapla
-                        alan = self._shoelace_formulu(noktalar)
-                        toplam_alan += alan
-                        parca_sayisi += 1
+                    if mesafe <= gercek_tolerans:
+                        kapatildi = True
                         tamir_edilen += 1
-                        # (İleride buraya AI logu koyacağız: "Salon duvarını ben birleştirdim")
+                
+                if kapatildi:
+                    ham_alan = self._shoelace_formulu(noktalar)
+                    # HAM ALANI METREKAREYE ÇEVİR
+                    gercek_alan = self._birim_cevir(ham_alan)
+                    toplam_alan += gercek_alan
+                    parca_sayisi += 1
             
-            return {
-                "katman": katman_adi,
-                "toplam_miktar": round(toplam_alan, 2),
-                "parca_sayisi": parca_sayisi,
-                "ai_mudahalesi": f"{tamir_edilen} adet açık çizim yapay zeka ile kapatıldı."
-            }
-        except Exception as e:
-            logger.error(f"Alan hesaplama hatası: {e}")
-            return {"hata": str(e)}
-    
-    def blok_say(self, blok_adi_veya_katman: str, moda_gore: str = "katman") -> Dict[str, Any]:
-        """
-        Nesneleri sayar (Kapı, Pencere, Kolon vb.)
-        
-        Args:
-            blok_adi_veya_katman: Blok adı veya katman adı
-            moda_gore: 'katman' (katmandaki her şeyi sayar) veya 'isim' (blok adına göre sayar)
-            
-        Returns:
-            Dict: Sayım sonuçları
-        """
-        adet = 0
-        
-        if moda_gore == "katman":
-            # O katmandaki INSERT (blok) nesnelerini say
-            adet = len(self.msp.query(f'INSERT[layer=="{blok_adi_veya_katman}"]'))
-        else:
-            # İsmi eşleşen blokları say
-            adet = len(self.msp.query(f'INSERT[name=="{blok_adi_veya_katman}"]'))
+            except Exception:
+                continue
         
         return {
-            "islem": "Adet Sayımı",
-            "hedef": blok_adi_veya_katman,
-            "toplam_miktar": adet,
-            "birim": "adet"
+            "katman": katman_adi,
+            "toplam_miktar": round(toplam_alan, 2),
+            "birim": "m²",
+            "parca_sayisi": parca_sayisi,
+            "not": f"{tamir_edilen} parça AI ile birleştirildi."
         }
     
     def _shoelace_formulu(self, points: List[Tuple[float, float]]) -> float:
@@ -196,7 +191,7 @@ class DXFAnaliz:
             points: (x, y) koordinat çiftleri listesi
             
         Returns:
-            float: Hesaplanan alan
+            float: Hesaplanan alan (çizim birimi cinsinden)
         """
         n = len(points)
         area = 0.0
@@ -205,6 +200,24 @@ class DXFAnaliz:
             area += points[i][0] * points[j][1]
             area -= points[j][0] * points[i][1]
         return abs(area) / 2.0
+    
+    def _birim_cevir(self, alan_degeri: float) -> float:
+        """
+        Çizim biriminden m²'ye dönüşüm yapar.
+        
+        Args:
+            alan_degeri: Çizim birimi cinsinden alan değeri
+            
+        Returns:
+            float: m² cinsinden alan değeri
+        """
+        if self.birim == "m":
+            return alan_degeri  # Zaten m²
+        elif self.birim == "cm":
+            return alan_degeri / 10000.0  # cm² -> m² (100x100)
+        elif self.birim == "mm":
+            return alan_degeri / 1000000.0  # mm² -> m² (1000x1000)
+        return alan_degeri
 
 
 # --- TEST ALANI (Sadece bu dosya çalıştırıldığında devreye girer) ---
