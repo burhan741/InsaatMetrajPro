@@ -888,6 +888,64 @@ class MainWindow(QMainWindow):
             print(f"Malzeme hesaplama hatası: {e}")
             self.metraj_malzeme_table.setRowCount(0)
             self.metraj_fire_info.setText(f"⚠️ Hata: {str(e)}")
+    
+    def on_malzeme_fiyat_changed(self, row: int, column: int) -> None:
+        """Malzeme birim fiyatı değiştiğinde toplamı güncelle"""
+        if column != 3:  # Sadece birim fiyat sütunu (3. sütun)
+            return
+        
+        try:
+            # Birim fiyatı al
+            fiyat_item = self.metraj_malzeme_table.item(row, 3)
+            if not fiyat_item:
+                return
+            
+            # Fiyat metnini temizle (₺ işareti ve boşlukları kaldır)
+            fiyat_text = fiyat_item.text().replace("₺", "").replace(",", ".").strip()
+            birim_fiyat = float(fiyat_text) if fiyat_text else 0.0
+            
+            # Miktarı al (UserRole + 1'den)
+            miktar = fiyat_item.data(Qt.ItemDataRole.UserRole + 1)
+            if miktar is None:
+                # Miktar sütunundan al
+                miktar_item = self.metraj_malzeme_table.item(row, 1)
+                if miktar_item:
+                    miktar_text = miktar_item.text().replace(",", ".").strip()
+                    miktar = float(miktar_text) if miktar_text else 0.0
+                else:
+                    miktar = 0.0
+            
+            # Toplamı hesapla
+            toplam = miktar * birim_fiyat
+            
+            # Toplam sütununu güncelle
+            toplam_item = QTableWidgetItem(f"{toplam:,.2f} ₺")
+            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.metraj_malzeme_table.setItem(row, 4, toplam_item)
+            
+            # Birim fiyatı formatla (₺ işareti olmadan)
+            fiyat_item.setText(f"{birim_fiyat:,.2f}")
+            
+            # Genel toplamı güncelle
+            self.update_malzeme_total()
+            
+        except (ValueError, TypeError) as e:
+            print(f"Fiyat güncelleme hatası: {e}")
+    
+    def update_malzeme_total(self) -> None:
+        """Malzeme tablosundaki toplam maliyeti güncelle"""
+        total = 0.0
+        for row in range(self.metraj_malzeme_table.rowCount()):
+            toplam_item = self.metraj_malzeme_table.item(row, 4)
+            if toplam_item:
+                toplam_text = toplam_item.text().replace("₺", "").replace(",", ".").strip()
+                try:
+                    total += float(toplam_text) if toplam_text else 0.0
+                except ValueError:
+                    pass
+        
+        self.metraj_malzeme_total.setText(f"Toplam: {total:,.2f} ₺")
         
     def add_metraj_item(self) -> None:
         """Metraj kalemi ekle"""
