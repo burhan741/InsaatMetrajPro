@@ -4,6 +4,7 @@ DXF dosyaları için gelişmiş işleme motoru
 """
 
 import sys
+import math
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import logging
@@ -65,6 +66,7 @@ class DXFAnaliz:
     DXF dosyalarını analiz etmek için sınıf.
     
     Alan hesaplama, blok sayımı ve katman listeleme işlemlerini yapar.
+    Tolerans ile açık çizgileri otomatik kapatma özelliği içerir.
     """
     
     def __init__(self, dosya_yolu: str) -> None:
@@ -74,6 +76,9 @@ class DXFAnaliz:
         Args:
             dosya_yolu: DXF dosyasının yolu
         """
+        if not EZDXF_AVAILABLE:
+            raise ImportError("ezdxf kütüphanesi gerekli")
+        
         self.dosya_yolu = dosya_yolu
         self.doc = None
         self.msp = None
@@ -81,21 +86,15 @@ class DXFAnaliz:
     
     def yukle(self) -> None:
         """DXF dosyasını hafızaya yükler."""
-        if not EZDXF_AVAILABLE:
-            raise ImportError("ezdxf kütüphanesi gerekli")
-        
         try:
             self.doc = ezdxf.readfile(self.dosya_yolu)
             self.msp = self.doc.modelspace()
             logger.info(f"✅ Başarılı: '{self.dosya_yolu}' yüklendi.")
-        except IOError:
-            error_msg = f"❌ Hata: '{self.dosya_yolu}' dosyası bulunamadı."
+        except Exception as e:
+            error_msg = f"Hata: {e}"
             logger.error(error_msg)
-            raise FileNotFoundError(error_msg)
-        except ezdxf.DXFStructureError:
-            error_msg = "❌ Hata: Geçersiz veya bozuk DXF dosyası."
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+            print(error_msg)
+            sys.exit(1)
     
     def katmanlari_listele(self) -> List[str]:
         """Dosyadaki tüm katman isimlerini döndürür."""
@@ -103,40 +102,60 @@ class DXFAnaliz:
             return []
         return [layer.dxf.name for layer in self.doc.layers]
     
-    def alan_hesapla(self, katman_adi: str) -> Dict[str, Any]:
+    def alan_hesapla(self, katman_adi: str, tolerans: float = 0.20) -> Dict[str, Any]:
         """
         Belirtilen katmandaki KAPALI poligonların (LWPOLYLINE) alanını hesaplar.
         
-        Örnek: Parke, Seramik, Duvar Boyası alanları.
+        Tolerans parametresi ile açık çizgileri otomatik kapatma özelliği vardır.
+        Çizgiler arasında belirlenen tolerans (varsayılan 20 cm) kadar boşluk varsa
+        bunu otomatik olarak kapatır ve alan hesaplar.
         
         Args:
             katman_adi: Hesaplanacak katman adı
-            
+            tolerans: Çizgiler arasında kapatılacak maksimum boşluk (birim cinsinden)
+                     Varsayılan: 0.20 (20 cm)
+        
         Returns:
             Dict: Hesaplama sonuçları
         """
         toplam_alan = 0.0
         parca_sayisi = 0
+        tamir_edilen = 0
         
-        # İlgili katmandaki polylineları bul
         sorgu = f'LWPOLYLINE[layer=="{katman_adi}"]'
         
         try:
             for entity in self.msp.query(sorgu):
-                # Sadece kapalı şekillerin alanı hesaplanabilir
+                noktalar = list(entity.points("xy"))
+                
+                # DURUM 1: Zaten Kapalıysa (Sorunsuz)
                 if entity.is_closed:
-                    # Noktaları al (sadece x,y koordinatları)
-                    noktalar = list(entity.points("xy"))
                     alan = self._shoelace_formulu(noktalar)
                     toplam_alan += alan
                     parca_sayisi += 1
+                
+                # DURUM 2: Açık ama AI ile Tamir Edilebilir mi?
+                else:
+                    baslangic = noktalar[0]
+                    bitis = noktalar[-1]
+                    
+                    # İki uç arasındaki mesafeyi ölç (Hipotenüs)
+                    mesafe = math.hypot(bitis[0] - baslangic[0], bitis[1] - baslangic[1])
+                    
+                    # Eğer boşluk belirlediğimiz toleransın altındaysa (Örn: < 20cm)
+                    if mesafe <= tolerans:
+                        # Sanki kapalıymış gibi hesapla
+                        alan = self._shoelace_formulu(noktalar)
+                        toplam_alan += alan
+                        parca_sayisi += 1
+                        tamir_edilen += 1
+                        # (İleride buraya AI logu koyacağız: "Salon duvarını ben birleştirdim")
             
             return {
-                "islem": "Alan Hesabı",
                 "katman": katman_adi,
-                "parca_sayisi": parca_sayisi,
                 "toplam_miktar": round(toplam_alan, 2),
-                "birim": "m²"
+                "parca_sayisi": parca_sayisi,
+                "ai_mudahalesi": f"{tamir_edilen} adet açık çizim yapay zeka ile kapatıldı."
             }
         except Exception as e:
             logger.error(f"Alan hesaplama hatası: {e}")

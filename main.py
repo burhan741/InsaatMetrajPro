@@ -1,46 +1,61 @@
-"""
-InsaatMetrajPro - Ana Giriş Noktası
-İnşaat sektörü için profesyonel masaüstü metraj uygulaması
-"""
-
-import sys
-from pathlib import Path
-from PyQt6.QtWidgets import QApplication
-
-from app.ui.main_window import MainWindow
-from app.ui.styles import apply_dark_theme
+import pandas as pd
+from app.core.dxf_engine import DXFAnaliz
+import os
 
 
-def main() -> None:
-    """
-    Uygulamanın ana giriş noktası.
+def rapor_olustur(dxf_dosya_adi):
+    print(f"🔄 '{dxf_dosya_adi}' dosyası analiz ediliyor...")
     
-    PyQt6 uygulamasını başlatır, temayı uygular ve ana pencereyi gösterir.
-    """
+    # 1. Motoru Başlat
     try:
-        # Uygulama oluştur (PyQt6'da High DPI desteği otomatik)
-        app = QApplication(sys.argv)
-        app.setApplicationName("InsaatMetrajPro")
-        app.setOrganizationName("InsaatMetrajPro")
+        proje = DXFAnaliz(dxf_dosya_adi)
+    except SystemExit:
+        print("İşlem durduruldu.")
+        return
+    
+    # 2. Tüm Katmanları Çek
+    katmanlar = proje.katmanlari_listele()
+    print(f"📂 Toplam {len(katmanlar)} katman bulundu. Hesaplama başlıyor...\n")
+    
+    metraj_verileri = []
+    
+    # 3. Her katman için döngüye gir
+    for katman in katmanlar:
+        # Alan hesabı dene
+        sonuc_alan = proje.alan_hesapla(katman)
         
-        # Koyu temayı uygula
-        apply_dark_theme(app)
+        # Eğer o katmanda çizim varsa (Alan > 0) listeye ekle
+        if "toplam_miktar" in sonuc_alan and sonuc_alan["toplam_miktar"] > 0:
+            metraj_verileri.append({
+                "Katman Adı": katman,
+                "İşlem Türü": "Alan (m²)",
+                "Miktar": sonuc_alan["toplam_miktar"],
+                "Parça Sayısı": sonuc_alan["parca_sayisi"]
+            })
+            print(f"   ✅ {katman}: {sonuc_alan['toplam_miktar']} m²")
+    
+        # Blok/Adet sayımı da eklenebilir (Şimdilik sadece alan odaklıyız)
+    
+    # 4. Verileri Excel'e Aktar (Pandas ile)
+    if metraj_verileri:
+        df = pd.DataFrame(metraj_verileri)
         
-        # Ana pencereyi oluştur ve göster
-        print("Ana pencere oluşturuluyor...")
-        window = MainWindow()
-        print("Ana pencere oluşturuldu, gösteriliyor...")
-        window.show()
-        print("Pencere gösterildi, uygulama başlatılıyor...")
+        # Excel dosya adı
+        excel_adi = "metraj_raporu.xlsx"
         
-        # Uygulamayı çalıştır
-        sys.exit(app.exec())
-    except Exception as e:
-        print(f"HATA: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        # Eğer dosya açıksan hata verir, onu engellemek için try-except
+        try:
+            df.to_excel(excel_adi, index=False)
+            print(f"\n🎉 BAŞARILI! Rapor oluşturuldu: {os.path.abspath(excel_adi)}")
+            print("Klasöründeki 'metraj_raporu.xlsx' dosyasını açıp inceleyebilirsin.")
+        except PermissionError:
+            print(f"\n❌ HATA: '{excel_adi}' dosyası şu an açık! Lütfen Excel'i kapatıp tekrar dene.")
+    else:
+        print("\n⚠️ Uyarı: Hesaplanacak kapalı alan bulunamadı (Çizgiler birleşmemiş olabilir).")
 
 
+# --- ÇALIŞTIR ---
 if __name__ == "__main__":
-    main()
+    # Buraya kendi dosya adını yazmayı unutma!
+    dosya = "mimari.dxf"
+    rapor_olustur(dosya)
