@@ -6,6 +6,11 @@ from PyQt6.QtWidgets import QApplication
 from app.ui.main_window import MainWindow
 from app.ui.styles import apply_dark_theme
 
+# --- AYARLAR ---
+DOSYA_ADI = "senin_dosyanin_adi.dxf"  # <-- Dosya adını buraya yaz
+BIRIM = "cm"                           # Projenin birimi
+BOSLUK_TOLERANSI = 20                  # CM olduğu için 20 yazdık (20 cm boşlukları kapatır)
+
 
 def gui_uygulamasi():
     """PyQt6 GUI uygulamasını başlat"""
@@ -27,60 +32,62 @@ def gui_uygulamasi():
         sys.exit(1)
 
 
-def rapor_olustur(dxf_dosya_adi, cizim_birimi="cm"):
-    print(f"🔄 '{dxf_dosya_adi}' dosyası analiz ediliyor...")
-    print(f"📏 Çizim birimi: {cizim_birimi}\n")
+def rapor_olustur(dxf_dosya_adi=None, cizim_birimi=None, bosluk_toleransi=None):
+    """
+    DXF analiz raporu oluşturur.
     
-    # 1. Motoru Başlat
+    Args:
+        dxf_dosya_adi: DXF dosya yolu (None ise AYARLAR'dan alınır)
+        cizim_birimi: Çizim birimi (None ise AYARLAR'dan alınır)
+        bosluk_toleransi: Boşluk toleransı (None ise AYARLAR'dan alınır)
+    """
+    # Parametreler verilmemişse AYARLAR'dan al
+    if dxf_dosya_adi is None:
+        dxf_dosya_adi = DOSYA_ADI
+    if cizim_birimi is None:
+        cizim_birimi = BIRIM
+    if bosluk_toleransi is None:
+        bosluk_toleransi = BOSLUK_TOLERANSI
+    
+    print(f"📏 Proje Birimi: {cizim_birimi.upper()}")
+    print(f"🔧 Tamir Toleransı: {bosluk_toleransi} birim")
+    print("-" * 30)
+    
     try:
-        # Eğer kapılar "90" veya odalar "400" gibi değerlerse "cm" yaz:
+        # Motoru başlat
         proje = DXFAnaliz(dxf_dosya_adi, cizim_birimi=cizim_birimi)
-        
-        # Eğer kapılar "900" ise "mm" yaz:
-        # proje = DXFAnaliz(dxf_dosya_adi, cizim_birimi="mm")
     except SystemExit:
-        print("İşlem durduruldu.")
         return
     
-    # 2. Tüm Katmanları Çek
     katmanlar = proje.katmanlari_listele()
-    print(f"📂 Toplam {len(katmanlar)} katman bulundu. Hesaplama başlıyor...\n")
-    
     metraj_verileri = []
     
-    # 3. Her katman için döngüye gir
     for katman in katmanlar:
-        # Alan hesabı dene
-        sonuc_alan = proje.alan_hesapla(katman)
+        # Toleransı buraya gönderiyoruz
+        sonuc = proje.alan_hesapla(katman, tolerans=bosluk_toleransi)
         
-        # Eğer o katmanda çizim varsa (Alan > 0) listeye ekle
-        if "toplam_miktar" in sonuc_alan and sonuc_alan["toplam_miktar"] > 0:
+        # Sadece 0'dan büyük ve mantıklı alanları al (Örn: 0.5 m2'den küçük tozları alma)
+        if sonuc["toplam_miktar"] > 0.5:
             metraj_verileri.append({
-                "Katman Adı": katman,
-                "İşlem Türü": "Alan (m²)",
-                "Miktar": sonuc_alan["toplam_miktar"],
-                "Parça Sayısı": sonuc_alan["parca_sayisi"]
+                "Katman": katman,
+                "Alan (m²)": sonuc["toplam_miktar"],
+                "Parça": sonuc["parca_sayisi"],
+                "AI Notu": sonuc.get("not", "")
             })
-            print(f"   ✅ {katman}: {sonuc_alan['toplam_miktar']} m²")
+            print(f"✅ {katman}: {sonuc['toplam_miktar']} m² ({sonuc.get('not', '')})")
     
-        # Blok/Adet sayımı da eklenebilir (Şimdilik sadece alan odaklıyız)
-    
-    # 4. Verileri Excel'e Aktar (Pandas ile)
+    # Excel Çıktısı
     if metraj_verileri:
         df = pd.DataFrame(metraj_verileri)
+        excel_adi = "metraj_sonuc.xlsx"
         
-        # Excel dosya adı
-        excel_adi = "metraj_raporu.xlsx"
-        
-        # Eğer dosya açıksan hata verir, onu engellemek için try-except
         try:
             df.to_excel(excel_adi, index=False)
-            print(f"\n🎉 BAŞARILI! Rapor oluşturuldu: {os.path.abspath(excel_adi)}")
-            print("Klasöründeki 'metraj_raporu.xlsx' dosyasını açıp inceleyebilirsin.")
+            print(f"\n💾 Rapor kaydedildi: {excel_adi}")
         except PermissionError:
             print(f"\n❌ HATA: '{excel_adi}' dosyası şu an açık! Lütfen Excel'i kapatıp tekrar dene.")
     else:
-        print("\n⚠️ Uyarı: Hesaplanacak kapalı alan bulunamadı (Çizgiler birleşmemiş olabilir).")
+        print("\n⚠️ Hiçbir kapalı alan bulunamadı. Toleransı artırmayı dene (Örn: 30 veya 50 yap).")
 
 
 # --- ÇALIŞTIR ---
@@ -133,14 +140,22 @@ if __name__ == "__main__":
                 print("Örnek: dosya = r'C:\\Users\\USER\\Desktop\\dosya_adi.dxf'")
                 exit(1)
         
+        # AYARLAR'dan değerleri kullan veya manuel ayarla
         # Çizim birimi seçimi
         # Eğer kapılar "90" veya odalar "400" gibi değerlerse "cm" yaz:
-        cizim_birimi = "cm"
+        cizim_birimi = BIRIM if DOSYA_ADI != "senin_dosyanin_adi.dxf" else "cm"
         
         # Eğer kapılar "900" ise "mm" yaz:
         # cizim_birimi = "mm"
         
-        rapor_olustur(dosya, cizim_birimi=cizim_birimi)
+        # Tolerans ayarı
+        bosluk_toleransi = BOSLUK_TOLERANSI if DOSYA_ADI != "senin_dosyanin_adi.dxf" else 20
+        
+        # Dosya adı AYARLAR'da değiştirilmişse onu kullan
+        if DOSYA_ADI != "senin_dosyanin_adi.dxf" and os.path.exists(DOSYA_ADI):
+            dosya = DOSYA_ADI
+        
+        rapor_olustur(dosya, cizim_birimi=cizim_birimi, bosluk_toleransi=bosluk_toleransi)
     
     elif secim == "3":
         print("\n👋 Çıkılıyor...")

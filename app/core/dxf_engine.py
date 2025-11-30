@@ -213,10 +213,11 @@ class DXFAnaliz:
         """
         if self.birim == "m":
             return alan_degeri  # Zaten m²
+        # Eğer birim CM ise, çıkan devasa sayıyı 10.000'e bölüp m2 yaparız.
         elif self.birim == "cm":
-            return alan_degeri / 10000.0  # cm² -> m² (100x100)
+            return alan_degeri / 10000.0  # cm² -> m² (100x100 = 10000)
         elif self.birim == "mm":
-            return alan_degeri / 1000000.0  # mm² -> m² (1000x1000)
+            return alan_degeri / 1000000.0  # mm² -> m² (1000x1000 = 1000000)
         return alan_degeri
 
 
