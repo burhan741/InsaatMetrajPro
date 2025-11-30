@@ -150,8 +150,8 @@ class MainWindow(QMainWindow):
     def create_metraj_tab(self) -> None:
         """Metraj Cetveli sekmesini oluştur"""
         tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(10, 10, 10, 10)
+        main_layout = QVBoxLayout(tab)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         
         # Buton barı
         btn_layout = QHBoxLayout()
@@ -175,9 +175,20 @@ class MainWindow(QMainWindow):
         self.total_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         btn_layout.addWidget(self.total_label)
         
-        layout.addLayout(btn_layout)
+        main_layout.addLayout(btn_layout)
         
-        # Tablo
+        # Splitter: Üstte metraj tablosu, altta malzeme detayları
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # Üst panel: Metraj Tablosu
+        metraj_widget = QWidget()
+        metraj_layout = QVBoxLayout(metraj_widget)
+        metraj_layout.setContentsMargins(0, 0, 0, 0)
+        
+        metraj_title = QLabel("📊 Metraj Cetveli")
+        metraj_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        metraj_layout.addWidget(metraj_title)
+        
         self.metraj_table = QTableWidget()
         self.metraj_table.setColumnCount(7)
         self.metraj_table.setHorizontalHeaderLabels([
@@ -190,7 +201,57 @@ class MainWindow(QMainWindow):
         self.metraj_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
-        layout.addWidget(self.metraj_table)
+        # Satır seçildiğinde malzeme detaylarını göster
+        self.metraj_table.itemSelectionChanged.connect(self.on_metraj_item_selected)
+        metraj_layout.addWidget(self.metraj_table)
+        
+        splitter.addWidget(metraj_widget)
+        
+        # Alt panel: Malzeme Detayları
+        malzeme_widget = QWidget()
+        malzeme_layout = QVBoxLayout(malzeme_widget)
+        malzeme_layout.setContentsMargins(0, 0, 0, 0)
+        
+        malzeme_title_layout = QHBoxLayout()
+        malzeme_title = QLabel("📦 Seçili İş Kalemi İçin Gereken Malzemeler")
+        malzeme_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        malzeme_title_layout.addWidget(malzeme_title)
+        malzeme_title_layout.addStretch()
+        
+        # Fire oranı bilgisi
+        self.metraj_fire_info = QLabel("")
+        self.metraj_fire_info.setStyleSheet("color: #666; font-size: 9pt;")
+        malzeme_title_layout.addWidget(self.metraj_fire_info)
+        
+        malzeme_layout.addLayout(malzeme_title_layout)
+        
+        self.metraj_malzeme_table = QTableWidget()
+        self.metraj_malzeme_table.setColumnCount(5)
+        self.metraj_malzeme_table.setHorizontalHeaderLabels([
+            "Malzeme Adı", "Miktar", "Birim", "Birim Fiyat", "Toplam"
+        ])
+        self.metraj_malzeme_table.setAlternatingRowColors(True)
+        self.metraj_malzeme_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.metraj_malzeme_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.metraj_malzeme_table.horizontalHeader().setStretchLastSection(True)
+        self.metraj_malzeme_table.setColumnWidth(0, 250)
+        self.metraj_malzeme_table.setColumnWidth(1, 120)
+        self.metraj_malzeme_table.setColumnWidth(2, 80)
+        self.metraj_malzeme_table.setColumnWidth(3, 120)
+        self.metraj_malzeme_table.setMinimumHeight(200)
+        malzeme_layout.addWidget(self.metraj_malzeme_table)
+        
+        # Malzeme toplam etiketi
+        self.metraj_malzeme_total = QLabel("Toplam: 0.00 ₺")
+        self.metraj_malzeme_total.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        malzeme_layout.addWidget(self.metraj_malzeme_total)
+        
+        splitter.addWidget(malzeme_widget)
+        
+        # Splitter oranları (üst %60, alt %40)
+        splitter.setSizes([400, 300])
+        
+        main_layout.addWidget(splitter)
         
         self.tabs.addTab(tab, "📊 Metraj Cetveli")
         
@@ -712,6 +773,115 @@ class MainWindow(QMainWindow):
             
         self.total_label.setText(f"Toplam: {total:.2f} ₺")
         
+        # Seçili satır yoksa malzeme tablosunu temizle
+        if self.metraj_table.currentRow() < 0:
+            self.metraj_malzeme_table.setRowCount(0)
+            self.metraj_malzeme_total.setText("Toplam: 0.00 ₺")
+            self.metraj_fire_info.setText("")
+    
+    def on_metraj_item_selected(self) -> None:
+        """Metraj tablosunda bir satır seçildiğinde malzeme detaylarını göster"""
+        current_row = self.metraj_table.currentRow()
+        
+        if current_row < 0:
+            self.metraj_malzeme_table.setRowCount(0)
+            self.metraj_malzeme_total.setText("Toplam: 0.00 ₺")
+            self.metraj_fire_info.setText("")
+            return
+        
+        # Seçili satırdan poz bilgilerini al
+        poz_no_item = self.metraj_table.item(current_row, 1)
+        miktar_item = self.metraj_table.item(current_row, 3)
+        
+        if not poz_no_item or not miktar_item:
+            self.metraj_malzeme_table.setRowCount(0)
+            return
+        
+        poz_no = poz_no_item.text()
+        miktar_text = miktar_item.text()
+        
+        if not poz_no or not miktar_text:
+            self.metraj_malzeme_table.setRowCount(0)
+            return
+        
+        try:
+            miktar = float(miktar_text)
+            
+            # Poz bazlı fire oranını al
+            poz = self.db.get_poz(poz_no)
+            if not poz:
+                self.metraj_malzeme_table.setRowCount(0)
+                self.metraj_fire_info.setText("⚠️ Poz bulunamadı")
+                return
+            
+            fire_orani = poz.get('fire_orani', 0.05)
+            
+            # Malzemeleri hesapla
+            materials = self.material_calculator.calculate_materials_for_poz_no(
+                poz_no, miktar, fire_orani_override=None  # Poz bazlı fire oranı kullan
+            )
+            
+            if not materials:
+                self.metraj_malzeme_table.setRowCount(0)
+                self.metraj_fire_info.setText(
+                    f"ℹ️ Bu poz için malzeme formülü tanımlanmamış. "
+                    f"Fire oranı: %{fire_orani*100:.2f}"
+                )
+                self.metraj_malzeme_total.setText("Toplam: 0.00 ₺")
+                return
+            
+            # Malzeme tablosunu doldur
+            self.metraj_malzeme_table.setRowCount(len(materials))
+            
+            malzeme_total = 0.0
+            
+            for row, material in enumerate(materials):
+                # Malzeme adı
+                item = QTableWidgetItem(material.get('malzeme_adi', ''))
+                self.metraj_malzeme_table.setItem(row, 0, item)
+                
+                # Miktar (fire dahil)
+                miktar_val = material.get('miktar', 0)
+                item = QTableWidgetItem(f"{miktar_val:,.2f}")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.metraj_malzeme_table.setItem(row, 1, item)
+                
+                # Birim
+                item = QTableWidgetItem(material.get('birim', ''))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.metraj_malzeme_table.setItem(row, 2, item)
+                
+                # Birim fiyat (veritabanından çek)
+                malzeme_id = material.get('malzeme_id')
+                birim_fiyat = 0.0
+                if malzeme_id:
+                    malzeme_info = self.db.get_malzeme(malzeme_id)
+                    if malzeme_info:
+                        birim_fiyat = malzeme_info.get('birim_fiyat', 0.0)
+                
+                item = QTableWidgetItem(f"{birim_fiyat:,.2f} ₺")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.metraj_malzeme_table.setItem(row, 3, item)
+                
+                # Toplam
+                toplam = miktar_val * birim_fiyat
+                malzeme_total += toplam
+                item = QTableWidgetItem(f"{toplam:,.2f} ₺")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.metraj_malzeme_table.setItem(row, 4, item)
+            
+            # Toplam ve fire bilgisi
+            self.metraj_malzeme_total.setText(f"Toplam: {malzeme_total:,.2f} ₺")
+            self.metraj_fire_info.setText(
+                f"ℹ️ Fire oranı: %{fire_orani*100:.2f} (Poz bazlı - Literatür değeri) | "
+                f"İş miktarı: {miktar:,.2f} {poz.get('birim', '')}"
+            )
+            
+        except Exception as e:
+            print(f"Malzeme hesaplama hatası: {e}")
+            self.metraj_malzeme_table.setRowCount(0)
+            self.metraj_fire_info.setText(f"⚠️ Hata: {str(e)}")
+        
     def add_metraj_item(self) -> None:
         """Metraj kalemi ekle"""
         if not self.current_project_id:
@@ -737,6 +907,9 @@ class MainWindow(QMainWindow):
                 
                 if item_id:
                     self.load_metraj_data()
+                    # Yeni kalem eklendikten sonra seçili satırı güncelle
+                    if self.metraj_table.rowCount() > 0:
+                        self.metraj_table.selectRow(self.metraj_table.rowCount() - 1)
                     self.statusBar().showMessage("Kalem başarıyla eklendi")
                 else:
                     QMessageBox.warning(self, "Uyarı", "Kalem eklenirken bir hata oluştu")

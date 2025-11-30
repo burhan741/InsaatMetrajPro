@@ -139,9 +139,17 @@ class DatabaseManager:
                     birim TEXT NOT NULL,
                     kategori TEXT,
                     aciklama TEXT,
+                    birim_fiyat REAL DEFAULT 0,
                     olusturma_tarihi TEXT
                 )
             """)
+            
+            # Mevcut tablolara birim_fiyat sütunu ekle (migration)
+            try:
+                cursor.execute("ALTER TABLE malzemeler ADD COLUMN birim_fiyat REAL DEFAULT 0")
+            except sqlite3.OperationalError:
+                # Sütun zaten varsa hata verme
+                pass
             
             # Malzeme formülleri tablosu (Poz → Malzeme ilişkileri)
             cursor.execute("""
@@ -551,7 +559,7 @@ class DatabaseManager:
             return [dict(row) for row in cursor.fetchall()]
     
     # Malzeme İşlemleri
-    def add_malzeme(self, ad: str, birim: str, kategori: str = "", aciklama: str = "") -> int:
+    def add_malzeme(self, ad: str, birim: str, kategori: str = "", aciklama: str = "", birim_fiyat: float = 0.0) -> int:
         """
         Yeni malzeme ekle.
         
@@ -560,6 +568,7 @@ class DatabaseManager:
             birim: Birim (kg, m³, adet, vb.)
             kategori: Malzeme kategorisi
             aciklama: Açıklama
+            birim_fiyat: Birim fiyat (varsayılan 0)
             
         Returns:
             int: Oluşturulan malzemenin ID'si
@@ -569,12 +578,17 @@ class DatabaseManager:
             cursor = conn.cursor()
             try:
                 cursor.execute("""
-                    INSERT INTO malzemeler (ad, birim, kategori, aciklama, olusturma_tarihi)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (ad, birim, kategori, aciklama, now))
+                    INSERT INTO malzemeler (ad, birim, kategori, aciklama, birim_fiyat, olusturma_tarihi)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (ad, birim, kategori, aciklama, birim_fiyat, now))
                 return cursor.lastrowid
             except sqlite3.IntegrityError:
-                # Malzeme zaten varsa ID'sini döndür
+                # Malzeme zaten varsa güncelle (birim fiyat hariç)
+                cursor.execute("""
+                    UPDATE malzemeler 
+                    SET birim = ?, kategori = ?, aciklama = ?
+                    WHERE ad = ? AND birim_fiyat = 0
+                """, (birim, kategori, aciklama, ad))
                 cursor.execute("SELECT id FROM malzemeler WHERE ad = ?", (ad,))
                 row = cursor.fetchone()
                 return row['id'] if row else 0

@@ -117,7 +117,8 @@ def load_malzemeler_to_database(db: DatabaseManager) -> Dict[str, int]:
                 ad=material['ad'],
                 birim=material['birim'],
                 kategori=material.get('kategori', ''),
-                aciklama=material.get('aciklama', '')
+                aciklama=material.get('aciklama', ''),
+                birim_fiyat=material.get('birim_fiyat', 0.0)
             )
             success_count += 1
         except Exception as e:
