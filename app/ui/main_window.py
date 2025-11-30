@@ -232,13 +232,16 @@ class MainWindow(QMainWindow):
         ])
         self.metraj_malzeme_table.setAlternatingRowColors(True)
         self.metraj_malzeme_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.metraj_malzeme_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # Sadece birim fiyat sütunu düzenlenebilir
+        self.metraj_malzeme_table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.SelectedClicked)
         self.metraj_malzeme_table.horizontalHeader().setStretchLastSection(True)
         self.metraj_malzeme_table.setColumnWidth(0, 250)
         self.metraj_malzeme_table.setColumnWidth(1, 120)
         self.metraj_malzeme_table.setColumnWidth(2, 80)
         self.metraj_malzeme_table.setColumnWidth(3, 120)
         self.metraj_malzeme_table.setMinimumHeight(200)
+        # Birim fiyat değiştiğinde toplamı güncelle
+        self.metraj_malzeme_table.cellChanged.connect(self.on_malzeme_fiyat_changed)
         malzeme_layout.addWidget(self.metraj_malzeme_table)
         
         # Malzeme toplam etiketi
@@ -859,15 +862,19 @@ class MainWindow(QMainWindow):
                     if malzeme_info:
                         birim_fiyat = malzeme_info.get('birim_fiyat', 0.0)
                 
-                item = QTableWidgetItem(f"{birim_fiyat:,.2f} ₺")
+                # Birim fiyat düzenlenebilir olmalı
+                item = QTableWidgetItem(f"{birim_fiyat:,.2f}")
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                item.setData(Qt.ItemDataRole.UserRole, malzeme_id)  # Malzeme ID'sini sakla
+                item.setData(Qt.ItemDataRole.UserRole + 1, miktar_val)  # Miktarı sakla
                 self.metraj_malzeme_table.setItem(row, 3, item)
                 
-                # Toplam
+                # Toplam (hesaplanmış)
                 toplam = miktar_val * birim_fiyat
                 malzeme_total += toplam
                 item = QTableWidgetItem(f"{toplam:,.2f} ₺")
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Toplam düzenlenemez
                 self.metraj_malzeme_table.setItem(row, 4, item)
             
             # Toplam ve fire bilgisi
