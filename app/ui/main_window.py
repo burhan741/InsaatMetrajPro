@@ -145,6 +145,9 @@ class MainWindow(QMainWindow):
         # Sekme 4: Malzeme Listesi
         self.create_malzeme_tab()
         
+        # Sekme 5: CAD Metrajı
+        self.create_cad_metraj_tab()
+        
         parent.addWidget(self.tabs)
         
     def create_metraj_tab(self) -> None:
@@ -434,6 +437,303 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.material_table)
         
         self.tabs.addTab(tab, "📦 Malzeme Listesi")
+    
+    def create_cad_metraj_tab(self) -> None:
+        """CAD Metrajı sekmesini oluştur"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        # Dosya seçme bölümü
+        file_group = QGroupBox("DXF Dosyası")
+        file_layout = QVBoxLayout()
+        file_layout.setSpacing(10)
+        
+        file_btn_layout = QHBoxLayout()
+        self.cad_metraj_file_label = QLabel("Dosya seçilmedi")
+        self.cad_metraj_file_label.setStyleSheet("color: #888; font-size: 10pt;")
+        file_btn_layout.addWidget(self.cad_metraj_file_label)
+        file_btn_layout.addStretch()
+        
+        btn_select_file = QPushButton("📁 Dosya Seç")
+        btn_select_file.clicked.connect(self.select_cad_metraj_file)
+        btn_select_file.setMinimumWidth(120)
+        file_btn_layout.addWidget(btn_select_file)
+        
+        file_layout.addLayout(file_btn_layout)
+        file_group.setLayout(file_layout)
+        layout.addWidget(file_group)
+        
+        # Hesaplama ayarları
+        calc_group = QGroupBox("Hesaplama Ayarları")
+        calc_layout = QFormLayout()
+        calc_layout.setSpacing(12)
+        
+        # Katmanlar ComboBox
+        self.cad_metraj_layer_combo = QComboBox()
+        self.cad_metraj_layer_combo.setEditable(False)
+        self.cad_metraj_layer_combo.setMinimumHeight(30)
+        self.cad_metraj_layer_combo.setEnabled(False)  # Dosya seçilene kadar devre dışı
+        calc_layout.addRow("Katmanlar:", self.cad_metraj_layer_combo)
+        
+        # Hesap Tipi ComboBox
+        self.cad_metraj_method_combo = QComboBox()
+        self.cad_metraj_method_combo.addItems([
+            "Uzunluk (m)",
+            "Alan (m²)",
+            "Adet"
+        ])
+        self.cad_metraj_method_combo.setMinimumHeight(30)
+        calc_layout.addRow("Hesap Tipi:", self.cad_metraj_method_combo)
+        
+        calc_group.setLayout(calc_layout)
+        layout.addWidget(calc_group)
+        
+        # HESAPLA butonu
+        btn_calculate = QPushButton("HESAPLA")
+        btn_calculate.clicked.connect(self.calculate_cad_metraj)
+        print("DEBUG: HESAPLA butonu oluşturuldu ve bağlandı")  # Debug
+        btn_calculate.setMinimumHeight(45)
+        btn_calculate.setStyleSheet("""
+            QPushButton {
+                background-color: #16213e;
+                color: white;
+                font-size: 14pt;
+                font-weight: bold;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #1a1a2e;
+            }
+            QPushButton:disabled {
+                background-color: #333;
+                color: #666;
+            }
+        """)
+        # Buton her zaman aktif olsun (içeride kontrol yapılacak)
+        self.cad_metraj_calculate_btn = btn_calculate  # Referansı sakla
+        layout.addWidget(btn_calculate)
+        
+        # Sonuç etiketi
+        result_group = QGroupBox("Hesaplama Sonucu")
+        result_layout = QVBoxLayout()
+        result_layout.setContentsMargins(20, 20, 20, 20)
+        
+        self.cad_metraj_result_label = QLabel("Sonuç burada görünecek")
+        self.cad_metraj_result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cad_metraj_result_label.setStyleSheet("""
+            QLabel {
+                font-size: 32pt;
+                font-weight: bold;
+                color: #c9184a;
+                padding: 20px;
+                background-color: #1a1a2e;
+                border-radius: 10px;
+            }
+        """)
+        self.cad_metraj_result_label.setMinimumHeight(150)
+        result_layout.addWidget(self.cad_metraj_result_label)
+        
+        result_group.setLayout(result_layout)
+        layout.addWidget(result_group)
+        
+        layout.addStretch()
+        
+        self.tabs.addTab(tab, "📐 CAD Metrajı")
+    
+    def select_cad_metraj_file(self) -> None:
+        """CAD Metrajı için DXF dosyası seç"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "DXF Dosyası Seç", "",
+            "DXF Dosyaları (*.dxf);;Tüm Dosyalar (*.*)"
+        )
+        
+        if file_path:
+            self.cad_metraj_file_path = Path(file_path)
+            self.cad_metraj_file_label.setText(self.cad_metraj_file_path.name)
+            self.cad_metraj_file_label.setStyleSheet("color: #4CAF50; font-size: 10pt; font-weight: bold;")
+            
+            # Katmanları yükle
+            try:
+                layers = self.cad_manager.get_layers(self.cad_metraj_file_path)
+                self.cad_metraj_layer_combo.clear()
+                
+                if layers:
+                    self.cad_metraj_layer_combo.addItems(layers)
+                    self.cad_metraj_layer_combo.setEnabled(True)
+                    self.statusBar().showMessage(f"{len(layers)} katman bulundu")
+                else:
+                    QMessageBox.warning(
+                        self, "Uyarı",
+                        "DXF dosyasında katman bulunamadı."
+                    )
+                    self.cad_metraj_layer_combo.setEnabled(False)
+                    
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Hata",
+                    f"DXF dosyası okunamadı:\n{str(e)}"
+                )
+                self.cad_metraj_layer_combo.setEnabled(False)
+                self.cad_metraj_file_label.setText("Dosya seçilmedi")
+                self.cad_metraj_file_label.setStyleSheet("color: #888; font-size: 10pt;")
+    
+    def calculate_cad_metraj(self) -> None:
+        """CAD Metrajı hesapla"""
+        print("DEBUG: calculate_cad_metraj çağrıldı")  # Debug
+        
+        if not hasattr(self, 'cad_metraj_file_path'):
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir DXF dosyası seçin")
+            return
+        
+        layer_name = self.cad_metraj_layer_combo.currentText()
+        if not layer_name:
+            QMessageBox.warning(self, "Uyarı", "Lütfen bir katman seçin")
+            return
+        
+        method_text = self.cad_metraj_method_combo.currentText()
+        print(f"DEBUG: Method text: {method_text}")  # Debug
+        
+        # Method text'ten method parametresini çıkar
+        if "Uzunluk" in method_text:
+            method = 'uzunluk'
+            unit = "m"
+        elif "Alan" in method_text:
+            method = 'alan'
+            unit = "m²"
+        elif "Adet" in method_text:
+            method = 'adet'
+            unit = "adet"
+        else:
+            QMessageBox.warning(self, "Uyarı", "Geçersiz hesaplama tipi")
+            return
+        
+        print(f"DEBUG: Method: {method}, Layer: {layer_name}, File: {self.cad_metraj_file_path}")  # Debug
+        
+        try:
+            # Hesaplamayı yap
+            result = self.cad_manager.calculate(
+                self.cad_metraj_file_path,
+                layer_name,
+                method
+            )
+            
+            print(f"DEBUG: Hesaplama sonucu: {result}")  # Debug
+            
+            # Sonucu formatla ve göster
+            if method == 'adet':
+                result_text = f"{int(result)} {unit}"
+            else:
+                # Eğer sonuç 0 ise, kullanıcıya bilgi ver
+                if result == 0.0:
+                    result_text = "0.00 {}\n\n⚠️ Bu katmanda\nkapalı şekil bulunamadı"
+                    if method == 'alan':
+                        result_text = result_text.format(unit) + "\n\n(CIRCLE, kapalı POLYLINE\nya da kapalı LWPOLYLINE gerekli)"
+                    else:
+                        result_text = result_text.format(unit)
+                else:
+                    result_text = f"{result:,.2f} {unit}"
+            
+            self.cad_metraj_result_label.setText(result_text)
+            
+            # Sonuç 0 ise uyarı rengi, değilse başarı rengi
+            if result == 0.0:
+                self.cad_metraj_result_label.setStyleSheet("""
+                    QLabel {
+                        font-size: 20pt;
+                        font-weight: bold;
+                        color: #ff9800;
+                        padding: 20px;
+                        background-color: #1a1a2e;
+                        border-radius: 10px;
+                    }
+                """)
+            else:
+                self.cad_metraj_result_label.setStyleSheet("""
+                    QLabel {
+                        font-size: 32pt;
+                        font-weight: bold;
+                        color: #4CAF50;
+                        padding: 20px;
+                        background-color: #1a1a2e;
+                        border-radius: 10px;
+                    }
+                """)
+            
+            # Durum çubuğuna bilgi yaz
+            if result == 0.0:
+                self.statusBar().showMessage(
+                    f"Uyarı: {layer_name} katmanında hesaplanabilir alan bulunamadı. "
+                    f"Kapalı polyline, circle veya ellipse olup olmadığını kontrol edin."
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"Hesaplama tamamlandı: {layer_name} - {result_text}"
+                )
+            
+        except ImportError as e:
+            error_msg = f"ezdxf kütüphanesi yüklü değil:\n{str(e)}\n\nLütfen şu komutu çalıştırın:\npip install ezdxf"
+            QMessageBox.critical(self, "Kütüphane Hatası", error_msg)
+            self.cad_metraj_result_label.setText("Kütüphane\nEksik!")
+            self.cad_metraj_result_label.setStyleSheet("""
+                QLabel {
+                    font-size: 24pt;
+                    font-weight: bold;
+                    color: #c9184a;
+                    padding: 20px;
+                    background-color: #1a1a2e;
+                    border-radius: 10px;
+                }
+            """)
+            print(f"ERROR: {e}")  # Debug
+        except FileNotFoundError as e:
+            error_msg = f"Dosya bulunamadı:\n{str(e)}"
+            QMessageBox.critical(self, "Dosya Hatası", error_msg)
+            self.cad_metraj_result_label.setText("Dosya\nBulunamadı!")
+            self.cad_metraj_result_label.setStyleSheet("""
+                QLabel {
+                    font-size: 24pt;
+                    font-weight: bold;
+                    color: #c9184a;
+                    padding: 20px;
+                    background-color: #1a1a2e;
+                    border-radius: 10px;
+                }
+            """)
+            print(f"ERROR: {e}")  # Debug
+        except ValueError as e:
+            error_msg = f"Hesaplama hatası:\n{str(e)}"
+            QMessageBox.warning(self, "Hesaplama Hatası", error_msg)
+            self.cad_metraj_result_label.setText("Hata!")
+            self.cad_metraj_result_label.setStyleSheet("""
+                QLabel {
+                    font-size: 32pt;
+                    font-weight: bold;
+                    color: #c9184a;
+                    padding: 20px;
+                    background-color: #1a1a2e;
+                    border-radius: 10px;
+                }
+            """)
+            print(f"ERROR: {e}")  # Debug
+        except Exception as e:
+            error_msg = f"Hesaplama sırasında beklenmeyen bir hata oluştu:\n{str(e)}\n\nHata tipi: {type(e).__name__}"
+            QMessageBox.critical(self, "Hata", error_msg)
+            self.cad_metraj_result_label.setText("Hata!")
+            self.cad_metraj_result_label.setStyleSheet("""
+                QLabel {
+                    font-size: 32pt;
+                    font-weight: bold;
+                    color: #c9184a;
+                    padding: 20px;
+                    background-color: #1a1a2e;
+                    border-radius: 10px;
+                }
+            """)
+            print(f"ERROR: {type(e).__name__}: {e}")  # Debug
+            import traceback
+            traceback.print_exc()  # Tam hata detayı
     
     def on_fire_mode_changed(self, index: int) -> None:
         """Fire oranı modu değiştiğinde"""

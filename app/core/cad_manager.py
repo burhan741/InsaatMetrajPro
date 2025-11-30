@@ -113,10 +113,40 @@ class CADManager:
                 # LWPOLYLINE entity
                 elif entity.dxftype() == 'LWPOLYLINE':
                     try:
-                        length = entity.length()
-                        total_length += length
+                        # LWPOLYLINE için noktaları al ve manuel hesapla
+                        points = list(entity.vertices)
+                        if len(points) > 1:
+                            length = 0.0
+                            for i in range(len(points) - 1):
+                                # LWPOLYLINE noktaları (x, y) tuple olarak gelir
+                                x1, y1 = points[i][:2]  # İlk iki değer x, y
+                                x2, y2 = points[i + 1][:2]
+                                # Segment uzunluğu
+                                segment_length = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                                length += segment_length
+                            
+                            # Eğer kapalıysa, son noktadan ilk noktaya olan uzunluğu ekle
+                            if entity.is_closed or (getattr(entity.dxf, 'flags', 0) & 1):
+                                x1, y1 = points[-1][:2]
+                                x2, y2 = points[0][:2]
+                                segment_length = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                                length += segment_length
+                            
+                            total_length += length
                     except Exception as e:
                         logger.warning(f"Polyline uzunluk hesaplama hatası: {e}")
+                        # Alternatif yöntem: flattening kullan
+                        try:
+                            flattened = list(entity.flattening(0.01))
+                            if len(flattened) > 1:
+                                length = 0.0
+                                for i in range(len(flattened) - 1):
+                                    p1 = flattened[i]
+                                    p2 = flattened[i + 1]
+                                    length += ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)**0.5
+                                total_length += length
+                        except Exception as e2:
+                            logger.warning(f"Alternatif polyline uzunluk hesaplama hatası: {e2}")
                         
                 # POLYLINE entity (eski format)
                 elif entity.dxftype() == 'POLYLINE':
@@ -141,15 +171,20 @@ class CADManager:
             
         return total_length
         
-    def get_all_layers(self, file_path: Path) -> List[str]:
+    def get_layers(self, file_path: Path) -> List[str]:
         """
-        DXF dosyasındaki tüm katmanları listele.
+        DXF dosyasındaki katman isimlerini liste olarak döndürür.
         
         Args:
             file_path: DXF dosyasının yolu
             
         Returns:
             List[str]: Katman adları listesi
+            
+        Raises:
+            ImportError: ezdxf yüklü değilse
+            FileNotFoundError: Dosya bulunamazsa
+            ValueError: Dosya bozuksa
         """
         if not EZDXF_AVAILABLE:
             raise ImportError("ezdxf kütüphanesi gerekli")
@@ -170,8 +205,22 @@ class CADManager:
                     
         except Exception as e:
             logger.error(f"Katman listeleme hatası: {e}")
+            raise ValueError(f"Katmanlar listelenirken hata oluştu: {e}")
             
         return sorted(list(layers))
+    
+    def get_all_layers(self, file_path: Path) -> List[str]:
+        """
+        DXF dosyasındaki tüm katmanları listele.
+        (get_layers için alias - geriye dönük uyumluluk)
+        
+        Args:
+            file_path: DXF dosyasının yolu
+            
+        Returns:
+            List[str]: Katman adları listesi
+        """
+        return self.get_layers(file_path)
         
     def analyze_dxf_for_metraj(self, file_path: Path) -> List[Dict[str, Any]]:
         """
@@ -212,9 +261,32 @@ class CADManager:
                             length = ((end.x - start.x)**2 + 
                                      (end.y - start.y)**2)**0.5
                             layer_data[layer_name]['length'] += length
-                        else:
-                            length = entity.length()
-                            layer_data[layer_name]['length'] += length
+                        elif entity.dxftype() == 'LWPOLYLINE':
+                            # LWPOLYLINE için manuel hesaplama
+                            points = list(entity.vertices)
+                            if len(points) > 1:
+                                length = 0.0
+                                for i in range(len(points) - 1):
+                                    x1, y1 = points[i][:2]
+                                    x2, y2 = points[i + 1][:2]
+                                    length += ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                                # Kapalıysa son segmenti ekle
+                                if entity.is_closed or (getattr(entity.dxf, 'flags', 0) & 1):
+                                    x1, y1 = points[-1][:2]
+                                    x2, y2 = points[0][:2]
+                                    length += ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                                layer_data[layer_name]['length'] += length
+                        elif entity.dxftype() == 'POLYLINE':
+                            # POLYLINE için mevcut kod
+                            points = list(entity.vertices)
+                            if len(points) > 1:
+                                length = 0.0
+                                for i in range(len(points) - 1):
+                                    p1 = points[i].dxf.location
+                                    p2 = points[i + 1].dxf.location
+                                    length += ((p2.x - p1.x)**2 + 
+                                              (p2.y - p1.y)**2)**0.5
+                                layer_data[layer_name]['length'] += length
                     except:
                         pass
                         
@@ -272,6 +344,282 @@ class CADManager:
                 
         return metraj_items
         
+    def calculate(self, file_path: Path, layer_name: str, method: str) -> float:
+        """
+        Belirtilen katman ve yönteme göre hesaplama yapar.
+        
+        Args:
+            file_path: DXF dosyasının yolu
+            layer_name: Katman adı
+            method: Hesaplama yöntemi ('uzunluk', 'alan', 'adet')
+            
+        Returns:
+            float: Hesaplanan değer
+                - uzunluk: metre cinsinden (cm'den m'ye dönüştürülmüş)
+                - alan: m² cinsinden (cm²'den m²'ye dönüştürülmüş)
+                - adet: obje sayısı
+            
+        Raises:
+            ImportError: ezdxf yüklü değilse
+            FileNotFoundError: Dosya bulunamazsa
+            ValueError: Geçersiz method veya katman yoksa
+        """
+        if not EZDXF_AVAILABLE:
+            raise ImportError("ezdxf kütüphanesi gerekli")
+        
+        if method not in ['uzunluk', 'alan', 'adet']:
+            raise ValueError(f"Geçersiz method: {method}. 'uzunluk', 'alan' veya 'adet' olmalı.")
+        
+        doc = self.load_dxf(file_path)
+        modelspace = doc.modelspace()
+        
+        result = 0.0
+        layer_found = False
+        
+        try:
+            if method == 'uzunluk':
+                # LINE ve LWPOLYLINE objelerinin toplam uzunluğu
+                for entity in modelspace:
+                    entity_layer = getattr(entity.dxf, 'layer', '0')
+                    
+                    if entity_layer.lower() != layer_name.lower():
+                        continue
+                    
+                    layer_found = True
+                    
+                    # LINE entity
+                    if entity.dxftype() == 'LINE':
+                        start = entity.dxf.start
+                        end = entity.dxf.end
+                        length = ((end.x - start.x)**2 + 
+                                 (end.y - start.y)**2 + 
+                                 (end.z - start.z)**2)**0.5
+                        result += length
+                        
+                    # LWPOLYLINE entity
+                    elif entity.dxftype() == 'LWPOLYLINE':
+                        try:
+                            # LWPOLYLINE için noktaları al ve manuel hesapla
+                            points = list(entity.vertices)
+                            if len(points) > 1:
+                                length = 0.0
+                                for i in range(len(points) - 1):
+                                    # LWPOLYLINE noktaları (x, y) tuple olarak gelir
+                                    x1, y1 = points[i][:2]  # İlk iki değer x, y
+                                    x2, y2 = points[i + 1][:2]
+                                    # Segment uzunluğu
+                                    segment_length = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                                    length += segment_length
+                                
+                                # Eğer kapalıysa, son noktadan ilk noktaya olan uzunluğu ekle
+                                if entity.is_closed or (getattr(entity.dxf, 'flags', 0) & 1):
+                                    x1, y1 = points[-1][:2]
+                                    x2, y2 = points[0][:2]
+                                    segment_length = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+                                    length += segment_length
+                                
+                                result += length
+                        except Exception as e:
+                            logger.warning(f"Polyline uzunluk hesaplama hatası: {e}")
+                            # Alternatif yöntem: flattening kullan
+                            try:
+                                # ezdxf'in flattening metodu ile düzleştirilmiş noktaları al
+                                flattened = list(entity.flattening(0.01))  # 0.01 tolerans
+                                if len(flattened) > 1:
+                                    length = 0.0
+                                    for i in range(len(flattened) - 1):
+                                        p1 = flattened[i]
+                                        p2 = flattened[i + 1]
+                                        length += ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)**0.5
+                                    result += length
+                            except Exception as e2:
+                                logger.warning(f"Alternatif polyline uzunluk hesaplama hatası: {e2}")
+                            
+                    # POLYLINE entity (eski format)
+                    elif entity.dxftype() == 'POLYLINE':
+                        try:
+                            points = list(entity.vertices)
+                            if len(points) > 1:
+                                length = 0.0
+                                for i in range(len(points) - 1):
+                                    p1 = points[i].dxf.location
+                                    p2 = points[i + 1].dxf.location
+                                    length += ((p2.x - p1.x)**2 + 
+                                              (p2.y - p1.y)**2 + 
+                                              (p2.z - p1.z)**2)**0.5
+                                result += length
+                        except Exception as e:
+                            logger.warning(f"Polyline işleme hatası: {e}")
+                
+                # Birim dönüşümü: DXF dosyaları genellikle mm cinsinden olur
+                # mm'den m'ye: /1000
+                # Ama bazıları cm olabilir, o yüzden /100 de deneyelim
+                # Şimdilik mm varsayalım (/1000)
+                result = result / 1000.0  # mm'den m'ye
+                
+                # Eğer sonuç çok küçükse (0.1'den küçük), belki cm cinsindeydi
+                # O zaman /100 ile tekrar dene
+                if result < 0.1 and result > 0:
+                    result_cm = result * 10  # m'den cm'ye geri dön, sonra /100
+                    result = result_cm / 100.0
+                    logger.info(f"Sonuç çok küçük, cm birimi deneniyor: {result} m")
+                
+            elif method == 'alan':
+                # KAPALI (Closed) LWPOLYLINE, CIRCLE, ELLIPSE vb. objelerinin alanı
+                entity_count = 0
+                closed_count = 0
+                
+                for entity in modelspace:
+                    entity_layer = getattr(entity.dxf, 'layer', '0')
+                    
+                    if entity_layer.lower() != layer_name.lower():
+                        continue
+                    
+                    layer_found = True
+                    entity_count += 1
+                    
+                    # CIRCLE - daire alanı
+                    if entity.dxftype() == 'CIRCLE':
+                        try:
+                            radius = entity.dxf.radius
+                            area = 3.141592653589793 * radius * radius  # π * r²
+                            result += abs(area)
+                            closed_count += 1
+                            logger.debug(f"CIRCLE bulundu, yarıçap: {radius}, alan: {area}")
+                        except Exception as e:
+                            logger.warning(f"Circle alan hesaplama hatası: {e}")
+                    
+                    # ELLIPSE - elips alanı
+                    elif entity.dxftype() == 'ELLIPSE':
+                        try:
+                            # Ellips için major ve minor axis gerekli
+                            major_axis = entity.dxf.major_axis
+                            minor_axis = entity.dxf.minor_axis
+                            # Basitleştirilmiş: major ve minor axis uzunluklarını al
+                            a = ((major_axis.x)**2 + (major_axis.y)**2 + (major_axis.z)**2)**0.5
+                            b = ((minor_axis.x)**2 + (minor_axis.y)**2 + (minor_axis.z)**2)**0.5
+                            area = 3.141592653589793 * a * b  # π * a * b
+                            result += abs(area)
+                            closed_count += 1
+                            logger.debug(f"ELLIPSE bulundu, alan: {area}")
+                        except Exception as e:
+                            logger.warning(f"Ellipse alan hesaplama hatası: {e}")
+                    
+                    # LWPOLYLINE - kapalı olanlar
+                    elif entity.dxftype() == 'LWPOLYLINE':
+                        try:
+                            # Kapalı mı kontrol et
+                            is_closed = getattr(entity.dxf, 'flags', 0) & 1  # Bit 0 = closed flag
+                            if is_closed or entity.is_closed:
+                                area = entity.area()
+                                result += abs(area)
+                                closed_count += 1
+                                logger.debug(f"Kapalı LWPOLYLINE bulundu, alan: {area}")
+                            else:
+                                # Kapalı değilse, ilk ve son nokta aynı mı kontrol et
+                                try:
+                                    points = list(entity.vertices)
+                                    if len(points) >= 3:
+                                        first = points[0]
+                                        last = points[-1]
+                                        # İlk ve son nokta yaklaşık olarak aynı mı? (0.001 tolerans)
+                                        if abs(first[0] - last[0]) < 0.001 and abs(first[1] - last[1]) < 0.001:
+                                            try:
+                                                area = entity.area()
+                                                result += abs(area)
+                                                closed_count += 1
+                                                logger.debug(f"Kapalı olmayan ama alan hesaplanabilir LWPOLYLINE, alan: {area}")
+                                            except:
+                                                pass
+                                except:
+                                    pass
+                        except Exception as e:
+                            logger.warning(f"Polyline alan hesaplama hatası: {e}")
+                            
+                    # POLYLINE - kapalı olanlar
+                    elif entity.dxftype() == 'POLYLINE':
+                        try:
+                            is_closed = getattr(entity.dxf, 'flags', 0) & 1
+                            if is_closed or entity.is_closed:
+                                # Polyline alanını hesapla (Shoelace formülü)
+                                points = list(entity.vertices)
+                                if len(points) >= 3:
+                                    area = 0.0
+                                    for i in range(len(points)):
+                                        p1 = points[i].dxf.location
+                                        p2 = points[(i + 1) % len(points)].dxf.location
+                                        area += p1.x * p2.y - p2.x * p1.y
+                                    result += abs(area) / 2.0
+                                    closed_count += 1
+                                    logger.debug(f"Kapalı POLYLINE bulundu, alan: {abs(area) / 2.0}")
+                        except Exception as e:
+                            logger.warning(f"Polyline alan hesaplama hatası: {e}")
+                    
+                    # SPLINE - kapalı spline'lar (eğer kapalıysa)
+                    elif entity.dxftype() == 'SPLINE':
+                        try:
+                            if entity.closed:
+                                # Spline için alan hesaplama karmaşık, şimdilik atla
+                                # veya yaklaşık hesaplama yapılabilir
+                                logger.debug("Kapalı SPLINE bulundu ama alan hesaplanmadı (karmaşık)")
+                        except:
+                            pass
+                
+                # Debug bilgisi
+                if entity_count > 0:
+                    logger.info(f"Katman '{layer_name}': {entity_count} obje bulundu, {closed_count} tanesi kapalı/alana sahip")
+                
+                # Birim dönüşümü: DXF dosyaları genellikle mm cinsinden olur
+                # Ama bazıları cm veya m olabilir. Güvenli tarafta kalıp mm varsayalım
+                # mm²'den m²'ye: /1000000
+                # Ama kullanıcı cm varsaymış olabilir, o yüzden /10000 de deneyelim
+                # Şimdilik mm varsayalım (/1000000)
+                result = result / 1000000.0  # mm²'den m²'ye
+                
+                # Eğer sonuç çok küçükse (0.01'den küçük), belki cm cinsindeydi
+                # O zaman /10000 ile tekrar dene
+                if result < 0.01 and result > 0:
+                    result_cm = result * 100  # m²'den cm²'ye geri dön, sonra /10000
+                    result = result_cm / 10000.0
+                    logger.info(f"Sonuç çok küçük, cm birimi deneniyor: {result} m²")
+                
+            elif method == 'adet':
+                # INSERT, CIRCLE vb. objeleri say
+                for entity in modelspace:
+                    entity_layer = getattr(entity.dxf, 'layer', '0')
+                    
+                    if entity_layer.lower() != layer_name.lower():
+                        continue
+                    
+                    layer_found = True
+                    
+                    # INSERT (blok referansları)
+                    if entity.dxftype() == 'INSERT':
+                        result += 1
+                    # CIRCLE
+                    elif entity.dxftype() == 'CIRCLE':
+                        result += 1
+                    # ARC
+                    elif entity.dxftype() == 'ARC':
+                        result += 1
+                    # TEXT, MTEXT
+                    elif entity.dxftype() in ['TEXT', 'MTEXT']:
+                        result += 1
+                    # Diğer obje tipleri
+                    elif entity.dxftype() not in ['LINE', 'LWPOLYLINE', 'POLYLINE']:
+                        result += 1
+                
+        except Exception as e:
+            logger.error(f"Hesaplama hatası: {e}")
+            raise RuntimeError(f"Hesaplama sırasında hata oluştu: {e}")
+        
+        # Katman bulunamadıysa uyarı ver
+        if not layer_found:
+            logger.warning(f"Katman '{layer_name}' dosyada bulunamadı veya boş")
+            # Hata fırlatmak yerine 0 döndür (kullanıcı arayüzünde uyarı gösterilebilir)
+        
+        return result
+    
     def _categorize_layer(self, layer_name: str) -> str:
         """
         Katman adına göre kategori belirle.
@@ -300,4 +648,5 @@ class CADManager:
             return 'Toprak İşleri'
         else:
             return 'Genel'
+
 

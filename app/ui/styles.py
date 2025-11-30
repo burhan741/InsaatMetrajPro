@@ -304,3 +304,4 @@ def apply_dark_theme(app) -> None:
     
     app.setStyleSheet(dark_theme)
 
+

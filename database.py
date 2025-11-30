@@ -285,3 +285,4 @@ class DatabaseManager:
         
         return result['price'] if result else None
 
+

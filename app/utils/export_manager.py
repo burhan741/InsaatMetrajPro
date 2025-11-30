@@ -205,3 +205,4 @@ class ExportManager:
             print(f"Tedarikçi format export hatası: {e}")
             return False
 
+
