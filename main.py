@@ -140,58 +140,58 @@ if __name__ == "__main__":
             gui_uygulamasi()
         
         elif secim == "2":
-        # DXF analiz scriptini çalıştır
-        print("\n📊 DXF Analiz modu başlatılıyor...\n")
+            # DXF analiz scriptini çalıştır
+            print("\n📊 DXF Analiz modu başlatılıyor...\n")
+            
+            # DXF dosya yolu - Kendi dosyanızın tam yolunu buraya yazın
+            import glob
+            dxf_files = glob.glob("*.dxf") + glob.glob("../*.dxf") + glob.glob("../../*.dxf")
+            
+            if dxf_files:
+                print("📁 Bulunan DXF dosyaları:")
+                for i, f in enumerate(dxf_files, 1):
+                    print(f"   {i}. {f}")
+                print()
+                # İlk bulunan dosyayı kullan
+                dosya = dxf_files[0]
+                print(f"✅ Kullanılan dosya: {dosya}\n")
+            else:
+                # Manuel dosya yolu (kendi dosyanızı buraya yazın)
+                # Desktop'ta bulunan mimari.dxf dosyasını kullan
+                dosya = r"C:\Users\USER\Desktop\mimari.dxf"
+                
+                # Alternatif dosya yolları:
+                # dosya = r"C:\Users\USER\Desktop\Yaşar Ekersular Mimari.dxf"
+                # dosya = "mimari.dxf"  # Aynı klasördeyse
+                
+                # Dosya var mı kontrol et
+                if not os.path.exists(dosya):
+                    print(f"❌ HATA: '{dosya}' dosyası bulunamadı!")
+                    print("Lütfen main.py dosyasındaki 'dosya' değişkenini kendi DXF dosyanızın yolu ile güncelleyin.")
+                    print("Örnek: dosya = r'C:\\Users\\USER\\Desktop\\dosya_adi.dxf'")
+                    exit(1)
+            
+            # AYARLAR'dan değerleri kullan veya manuel ayarla
+            # Çizim birimi seçimi
+            # Eğer kapılar "90" veya odalar "400" gibi değerlerse "cm" yaz:
+            cizim_birimi = BIRIM if DOSYA_ADI != "senin_dosyanin_adi.dxf" else "cm"
+            
+            # Eğer kapılar "900" ise "mm" yaz:
+            # cizim_birimi = "mm"
+            
+            # Tolerans ayarı
+            bosluk_toleransi = BOSLUK_TOLERANSI if DOSYA_ADI != "senin_dosyanin_adi.dxf" else 20
+            
+            # Dosya adı AYARLAR'da değiştirilmişse onu kullan
+            if DOSYA_ADI != "senin_dosyanin_adi.dxf" and os.path.exists(DOSYA_ADI):
+                dosya = DOSYA_ADI
+            
+            rapor_olustur(dosya, cizim_birimi=cizim_birimi, bosluk_toleransi=bosluk_toleransi)
         
-        # DXF dosya yolu - Kendi dosyanızın tam yolunu buraya yazın
-        import glob
-        dxf_files = glob.glob("*.dxf") + glob.glob("../*.dxf") + glob.glob("../../*.dxf")
+        elif secim == "3":
+            print("\n👋 Çıkılıyor...")
+            sys.exit(0)
         
-        if dxf_files:
-            print("📁 Bulunan DXF dosyaları:")
-            for i, f in enumerate(dxf_files, 1):
-                print(f"   {i}. {f}")
-            print()
-            # İlk bulunan dosyayı kullan
-            dosya = dxf_files[0]
-            print(f"✅ Kullanılan dosya: {dosya}\n")
         else:
-            # Manuel dosya yolu (kendi dosyanızı buraya yazın)
-            # Desktop'ta bulunan mimari.dxf dosyasını kullan
-            dosya = r"C:\Users\USER\Desktop\mimari.dxf"
-            
-            # Alternatif dosya yolları:
-            # dosya = r"C:\Users\USER\Desktop\Yaşar Ekersular Mimari.dxf"
-            # dosya = "mimari.dxf"  # Aynı klasördeyse
-            
-            # Dosya var mı kontrol et
-            if not os.path.exists(dosya):
-                print(f"❌ HATA: '{dosya}' dosyası bulunamadı!")
-                print("Lütfen main.py dosyasındaki 'dosya' değişkenini kendi DXF dosyanızın yolu ile güncelleyin.")
-                print("Örnek: dosya = r'C:\\Users\\USER\\Desktop\\dosya_adi.dxf'")
-                exit(1)
-        
-        # AYARLAR'dan değerleri kullan veya manuel ayarla
-        # Çizim birimi seçimi
-        # Eğer kapılar "90" veya odalar "400" gibi değerlerse "cm" yaz:
-        cizim_birimi = BIRIM if DOSYA_ADI != "senin_dosyanin_adi.dxf" else "cm"
-        
-        # Eğer kapılar "900" ise "mm" yaz:
-        # cizim_birimi = "mm"
-        
-        # Tolerans ayarı
-        bosluk_toleransi = BOSLUK_TOLERANSI if DOSYA_ADI != "senin_dosyanin_adi.dxf" else 20
-        
-        # Dosya adı AYARLAR'da değiştirilmişse onu kullan
-        if DOSYA_ADI != "senin_dosyanin_adi.dxf" and os.path.exists(DOSYA_ADI):
-            dosya = DOSYA_ADI
-        
-        rapor_olustur(dosya, cizim_birimi=cizim_birimi, bosluk_toleransi=bosluk_toleransi)
-    
-    elif secim == "3":
-        print("\n👋 Çıkılıyor...")
-        sys.exit(0)
-    
-    else:
-        print("\n❌ Geçersiz seçim! Lütfen 1, 2 veya 3 girin.")
-        sys.exit(1)
+            print("\n❌ Geçersiz seçim! Lütfen 1, 2 veya 3 girin.")
+            sys.exit(1)
