@@ -12,11 +12,10 @@ from PyQt6.QtWidgets import (
     QHeaderView, QSplitter, QGroupBox, QFormLayout, QDoubleSpinBox,
     QComboBox, QTextEdit, QDialog, QMenu
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
 from PyQt6.QtGui import QIcon, QFont
 
 from app.core.database import DatabaseManager
-from app.core.cad_manager import CADManager
 from app.core.calculator import Calculator
 from app.core.material_calculator import MaterialCalculator
 from app.utils.data_loader import (
@@ -24,7 +23,56 @@ from app.utils.data_loader import (
     initialize_material_data, check_malzemeler_loaded, check_formuller_loaded
 )
 from app.utils.export_manager import ExportManager
-from app.ui.dialogs import MetrajItemDialog
+from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
+
+
+class DataLoaderThread(QThread):
+    """Arka planda veri yükleme thread'i"""
+    data_loaded = pyqtSignal(dict)
+    poz_question_needed = pyqtSignal()
+    
+    def __init__(self, db: DatabaseManager) -> None:
+        super().__init__()
+        self.db = db
+    
+    def run(self) -> None:
+        """Thread çalıştığında"""
+        result = {
+            'malzemeler_loaded': False,
+            'formuller_loaded': False,
+            'malzeme_count': 0,
+            'formul_count': 0
+        }
+        
+        # Pozları kontrol et
+        if not check_pozlar_loaded(self.db):
+            # Poz yükleme sorusu için sinyal gönder
+            self.poz_question_needed.emit()
+        else:
+            # Malzeme ve formülleri kontrol et ve yükle
+            if not check_malzemeler_loaded(self.db) or not check_formuller_loaded(self.db):
+                try:
+                    material_result = initialize_material_data(self.db, force_reload=False)
+                    result['malzemeler_loaded'] = material_result['malzemeler']['success'] > 0
+                    result['formuller_loaded'] = material_result['formuller']['success'] > 0
+                    result['malzeme_count'] = material_result['malzemeler']['success']
+                    result['formul_count'] = material_result['formuller']['success']
+                except Exception as e:
+                    print(f"Malzeme yükleme hatası: {e}")
+            else:
+                # Zaten yüklü, sayıları al
+                try:
+                    with self.db.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT COUNT(*) as count FROM malzemeler")
+                        result['malzeme_count'] = cursor.fetchone()['count']
+                        cursor.execute("SELECT COUNT(*) as count FROM malzeme_formulleri")
+                        result['formul_count'] = cursor.fetchone()['count']
+                except Exception as e:
+                    print(f"Sayım hatası: {e}")
+        
+        # Sonucu gönder
+        self.data_loaded.emit(result)
 
 
 class MainWindow(QMainWindow):
@@ -34,12 +82,13 @@ class MainWindow(QMainWindow):
         """Ana pencereyi başlat"""
         super().__init__()
         
-        # Core modüller
+        # Core modüller (hafif olanlar hemen yükle)
         self.db = DatabaseManager()
-        self.cad_manager = CADManager()
         self.calculator = Calculator()
-        self.material_calculator = MaterialCalculator(self.db)
         self.export_manager = ExportManager()
+        
+        # Ağır modüller lazy loading ile (sadece gerektiğinde yüklenecek)
+        self._material_calculator: Optional[MaterialCalculator] = None
         
         # UI durumu
         self.current_project_id: Optional[int] = None
@@ -49,8 +98,15 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_projects()
         
-        # İlk açılışta pozları kontrol et ve yükle
-        self.check_and_load_pozlar()
+        # İlk açılışta pozları kontrol et ve yükle (async - arka planda)
+        self.check_and_load_pozlar_async()
+    
+    @property
+    def material_calculator(self) -> MaterialCalculator:
+        """MaterialCalculator'ı lazy loading ile yükle"""
+        if self._material_calculator is None:
+            self._material_calculator = MaterialCalculator(self.db)
+        return self._material_calculator
         
     def init_ui(self) -> None:
         """Arayüzü başlat"""
@@ -136,17 +192,11 @@ class MainWindow(QMainWindow):
         # Sekme 1: Metraj Cetveli
         self.create_metraj_tab()
         
-        # Sekme 2: CAD Görüntüleyici/İşleyici
-        self.create_cad_tab()
-        
-        # Sekme 3: Taşeron Analizi
+        # Sekme 2: Taşeron Analizi
         self.create_taseron_tab()
         
-        # Sekme 4: Malzeme Listesi
+        # Sekme 3: Malzeme Listesi
         self.create_malzeme_tab()
-        
-        # Sekme 5: CAD Metrajı
-        self.create_cad_metraj_tab()
         
         parent.addWidget(self.tabs)
         
@@ -261,61 +311,6 @@ class MainWindow(QMainWindow):
         
         self.tabs.addTab(tab, "📊 Metraj Cetveli")
         
-    def create_cad_tab(self) -> None:
-        """CAD Görüntüleyici sekmesini oluştur"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Dosya seçme bölümü
-        file_group = QGroupBox("CAD Dosyası")
-        file_layout = QVBoxLayout()
-        
-        file_btn_layout = QHBoxLayout()
-        self.cad_file_label = QLabel("Dosya seçilmedi")
-        file_btn_layout.addWidget(self.cad_file_label)
-        
-        btn_select = QPushButton("Dosya Seç")
-        btn_select.clicked.connect(self.select_cad_file)
-        file_btn_layout.addWidget(btn_select)
-        
-        file_layout.addLayout(file_btn_layout)
-        
-        # Katman seçimi
-        layer_layout = QFormLayout()
-        self.layer_combo = QComboBox()
-        self.layer_combo.setEditable(True)
-        layer_layout.addRow("Katman:", self.layer_combo)
-        
-        btn_calculate = QPushButton("Uzunluk Hesapla")
-        btn_calculate.clicked.connect(self.calculate_layer_length)
-        layer_layout.addRow("", btn_calculate)
-        
-        file_layout.addLayout(layer_layout)
-        file_group.setLayout(file_layout)
-        layout.addWidget(file_group)
-        
-        # Analiz butonu
-        btn_analyze = QPushButton("DXF Dosyasını Analiz Et")
-        btn_analyze.clicked.connect(self.analyze_cad_file)
-        layout.addWidget(btn_analyze)
-        
-        # Sonuç alanı
-        result_group = QGroupBox("Hesaplama Sonuçları")
-        result_layout = QVBoxLayout()
-        
-        self.cad_result_text = QTextEdit()
-        self.cad_result_text.setReadOnly(True)
-        self.cad_result_text.setMinimumHeight(300)
-        result_layout.addWidget(self.cad_result_text)
-        
-        result_group.setLayout(result_layout)
-        layout.addWidget(result_group)
-        
-        layout.addStretch()
-        
-        self.tabs.addTab(tab, "📐 CAD İşleyici")
-        
     def create_taseron_tab(self) -> None:
         """Taşeron Analizi sekmesini oluştur"""
         tab = QWidget()
@@ -329,28 +324,67 @@ class MainWindow(QMainWindow):
         btn_add.clicked.connect(self.add_taseron_offer)
         btn_layout.addWidget(btn_add)
         
+        btn_edit = QPushButton("Düzenle")
+        btn_edit.clicked.connect(self.edit_taseron_offer)
+        btn_layout.addWidget(btn_edit)
+        
+        btn_delete = QPushButton("Sil")
+        btn_delete.clicked.connect(self.delete_taseron_offer)
+        btn_delete.setStyleSheet("background-color: #c9184a;")
+        btn_layout.addWidget(btn_delete)
+        
+        btn_layout.addStretch()
+        
         btn_compare = QPushButton("Karşılaştır")
         btn_compare.clicked.connect(self.compare_offers)
         btn_layout.addWidget(btn_compare)
         
-        btn_layout.addStretch()
+        # Export butonları
+        btn_export_excel = QPushButton("Excel'e Aktar")
+        btn_export_excel.clicked.connect(self.export_taseron_excel)
+        btn_layout.addWidget(btn_export_excel)
+        
+        btn_export_pdf = QPushButton("PDF'e Aktar")
+        btn_export_pdf.clicked.connect(self.export_taseron_pdf)
+        btn_layout.addWidget(btn_export_pdf)
+        
         layout.addLayout(btn_layout)
         
         # Tablo
         self.taseron_table = QTableWidget()
-        self.taseron_table.setColumnCount(6)
+        self.taseron_table.setColumnCount(7)
         self.taseron_table.setHorizontalHeaderLabels([
-            "Firma", "Kalem", "Miktar", "Birim", "Fiyat", "Toplam"
+            "ID", "Firma", "Kalem", "Miktar", "Birim", "Fiyat", "Toplam"
         ])
         self.taseron_table.setAlternatingRowColors(True)
         self.taseron_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.taseron_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.taseron_table.horizontalHeader().setStretchLastSection(True)
+        self.taseron_table.setColumnHidden(0, True)  # ID sütununu gizle
         layout.addWidget(self.taseron_table)
         
-        # Karşılaştırma sonuçları
-        self.comparison_label = QLabel("")
-        self.comparison_label.setFont(QFont("Arial", 10))
-        layout.addWidget(self.comparison_label)
+        # Karşılaştırma sonuçları (tablo olarak)
+        comparison_group = QGroupBox("Teklif Karşılaştırması")
+        comparison_layout = QVBoxLayout()
+        
+        self.comparison_table = QTableWidget()
+        self.comparison_table.setColumnCount(4)
+        self.comparison_table.setHorizontalHeaderLabels([
+            "Firma", "Toplam Tutar", "Durum", "Fark (Ortalamadan)"
+        ])
+        self.comparison_table.setAlternatingRowColors(True)
+        self.comparison_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.comparison_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.comparison_table.horizontalHeader().setStretchLastSection(True)
+        self.comparison_table.setMaximumHeight(200)
+        comparison_layout.addWidget(self.comparison_table)
+        
+        self.comparison_summary_label = QLabel("")
+        self.comparison_summary_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        comparison_layout.addWidget(self.comparison_summary_label)
+        
+        comparison_group.setLayout(comparison_layout)
+        layout.addWidget(comparison_group)
         
         self.tabs.addTab(tab, "💼 Taşeron Analizi")
     
@@ -437,303 +471,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.material_table)
         
         self.tabs.addTab(tab, "📦 Malzeme Listesi")
-    
-    def create_cad_metraj_tab(self) -> None:
-        """CAD Metrajı sekmesini oluştur"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
-        
-        # Dosya seçme bölümü
-        file_group = QGroupBox("DXF Dosyası")
-        file_layout = QVBoxLayout()
-        file_layout.setSpacing(10)
-        
-        file_btn_layout = QHBoxLayout()
-        self.cad_metraj_file_label = QLabel("Dosya seçilmedi")
-        self.cad_metraj_file_label.setStyleSheet("color: #888; font-size: 10pt;")
-        file_btn_layout.addWidget(self.cad_metraj_file_label)
-        file_btn_layout.addStretch()
-        
-        btn_select_file = QPushButton("📁 Dosya Seç")
-        btn_select_file.clicked.connect(self.select_cad_metraj_file)
-        btn_select_file.setMinimumWidth(120)
-        file_btn_layout.addWidget(btn_select_file)
-        
-        file_layout.addLayout(file_btn_layout)
-        file_group.setLayout(file_layout)
-        layout.addWidget(file_group)
-        
-        # Hesaplama ayarları
-        calc_group = QGroupBox("Hesaplama Ayarları")
-        calc_layout = QFormLayout()
-        calc_layout.setSpacing(12)
-        
-        # Katmanlar ComboBox
-        self.cad_metraj_layer_combo = QComboBox()
-        self.cad_metraj_layer_combo.setEditable(False)
-        self.cad_metraj_layer_combo.setMinimumHeight(30)
-        self.cad_metraj_layer_combo.setEnabled(False)  # Dosya seçilene kadar devre dışı
-        calc_layout.addRow("Katmanlar:", self.cad_metraj_layer_combo)
-        
-        # Hesap Tipi ComboBox
-        self.cad_metraj_method_combo = QComboBox()
-        self.cad_metraj_method_combo.addItems([
-            "Uzunluk (m)",
-            "Alan (m²)",
-            "Adet"
-        ])
-        self.cad_metraj_method_combo.setMinimumHeight(30)
-        calc_layout.addRow("Hesap Tipi:", self.cad_metraj_method_combo)
-        
-        calc_group.setLayout(calc_layout)
-        layout.addWidget(calc_group)
-        
-        # HESAPLA butonu
-        btn_calculate = QPushButton("HESAPLA")
-        btn_calculate.clicked.connect(self.calculate_cad_metraj)
-        print("DEBUG: HESAPLA butonu oluşturuldu ve bağlandı")  # Debug
-        btn_calculate.setMinimumHeight(45)
-        btn_calculate.setStyleSheet("""
-            QPushButton {
-                background-color: #16213e;
-                color: white;
-                font-size: 14pt;
-                font-weight: bold;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #1a1a2e;
-            }
-            QPushButton:disabled {
-                background-color: #333;
-                color: #666;
-            }
-        """)
-        # Buton her zaman aktif olsun (içeride kontrol yapılacak)
-        self.cad_metraj_calculate_btn = btn_calculate  # Referansı sakla
-        layout.addWidget(btn_calculate)
-        
-        # Sonuç etiketi
-        result_group = QGroupBox("Hesaplama Sonucu")
-        result_layout = QVBoxLayout()
-        result_layout.setContentsMargins(20, 20, 20, 20)
-        
-        self.cad_metraj_result_label = QLabel("Sonuç burada görünecek")
-        self.cad_metraj_result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cad_metraj_result_label.setStyleSheet("""
-            QLabel {
-                font-size: 32pt;
-                font-weight: bold;
-                color: #c9184a;
-                padding: 20px;
-                background-color: #1a1a2e;
-                border-radius: 10px;
-            }
-        """)
-        self.cad_metraj_result_label.setMinimumHeight(150)
-        result_layout.addWidget(self.cad_metraj_result_label)
-        
-        result_group.setLayout(result_layout)
-        layout.addWidget(result_group)
-        
-        layout.addStretch()
-        
-        self.tabs.addTab(tab, "📐 CAD Metrajı")
-    
-    def select_cad_metraj_file(self) -> None:
-        """CAD Metrajı için DXF dosyası seç"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "DXF Dosyası Seç", "",
-            "DXF Dosyaları (*.dxf);;Tüm Dosyalar (*.*)"
-        )
-        
-        if file_path:
-            self.cad_metraj_file_path = Path(file_path)
-            self.cad_metraj_file_label.setText(self.cad_metraj_file_path.name)
-            self.cad_metraj_file_label.setStyleSheet("color: #4CAF50; font-size: 10pt; font-weight: bold;")
-            
-            # Katmanları yükle
-            try:
-                layers = self.cad_manager.get_layers(self.cad_metraj_file_path)
-                self.cad_metraj_layer_combo.clear()
-                
-                if layers:
-                    self.cad_metraj_layer_combo.addItems(layers)
-                    self.cad_metraj_layer_combo.setEnabled(True)
-                    self.statusBar().showMessage(f"{len(layers)} katman bulundu")
-                else:
-                    QMessageBox.warning(
-                        self, "Uyarı",
-                        "DXF dosyasında katman bulunamadı."
-                    )
-                    self.cad_metraj_layer_combo.setEnabled(False)
-                    
-            except Exception as e:
-                QMessageBox.critical(
-                    self, "Hata",
-                    f"DXF dosyası okunamadı:\n{str(e)}"
-                )
-                self.cad_metraj_layer_combo.setEnabled(False)
-                self.cad_metraj_file_label.setText("Dosya seçilmedi")
-                self.cad_metraj_file_label.setStyleSheet("color: #888; font-size: 10pt;")
-    
-    def calculate_cad_metraj(self) -> None:
-        """CAD Metrajı hesapla"""
-        print("DEBUG: calculate_cad_metraj çağrıldı")  # Debug
-        
-        if not hasattr(self, 'cad_metraj_file_path'):
-            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir DXF dosyası seçin")
-            return
-        
-        layer_name = self.cad_metraj_layer_combo.currentText()
-        if not layer_name:
-            QMessageBox.warning(self, "Uyarı", "Lütfen bir katman seçin")
-            return
-        
-        method_text = self.cad_metraj_method_combo.currentText()
-        print(f"DEBUG: Method text: {method_text}")  # Debug
-        
-        # Method text'ten method parametresini çıkar
-        if "Uzunluk" in method_text:
-            method = 'uzunluk'
-            unit = "m"
-        elif "Alan" in method_text:
-            method = 'alan'
-            unit = "m²"
-        elif "Adet" in method_text:
-            method = 'adet'
-            unit = "adet"
-        else:
-            QMessageBox.warning(self, "Uyarı", "Geçersiz hesaplama tipi")
-            return
-        
-        print(f"DEBUG: Method: {method}, Layer: {layer_name}, File: {self.cad_metraj_file_path}")  # Debug
-        
-        try:
-            # Hesaplamayı yap
-            result = self.cad_manager.calculate(
-                self.cad_metraj_file_path,
-                layer_name,
-                method
-            )
-            
-            print(f"DEBUG: Hesaplama sonucu: {result}")  # Debug
-            
-            # Sonucu formatla ve göster
-            if method == 'adet':
-                result_text = f"{int(result)} {unit}"
-            else:
-                # Eğer sonuç 0 ise, kullanıcıya bilgi ver
-                if result == 0.0:
-                    result_text = "0.00 {}\n\n⚠️ Bu katmanda\nkapalı şekil bulunamadı"
-                    if method == 'alan':
-                        result_text = result_text.format(unit) + "\n\n(CIRCLE, kapalı POLYLINE\nya da kapalı LWPOLYLINE gerekli)"
-                    else:
-                        result_text = result_text.format(unit)
-                else:
-                    result_text = f"{result:,.2f} {unit}"
-            
-            self.cad_metraj_result_label.setText(result_text)
-            
-            # Sonuç 0 ise uyarı rengi, değilse başarı rengi
-            if result == 0.0:
-                self.cad_metraj_result_label.setStyleSheet("""
-                    QLabel {
-                        font-size: 20pt;
-                        font-weight: bold;
-                        color: #ff9800;
-                        padding: 20px;
-                        background-color: #1a1a2e;
-                        border-radius: 10px;
-                    }
-                """)
-            else:
-                self.cad_metraj_result_label.setStyleSheet("""
-                    QLabel {
-                        font-size: 32pt;
-                        font-weight: bold;
-                        color: #4CAF50;
-                        padding: 20px;
-                        background-color: #1a1a2e;
-                        border-radius: 10px;
-                    }
-                """)
-            
-            # Durum çubuğuna bilgi yaz
-            if result == 0.0:
-                self.statusBar().showMessage(
-                    f"Uyarı: {layer_name} katmanında hesaplanabilir alan bulunamadı. "
-                    f"Kapalı polyline, circle veya ellipse olup olmadığını kontrol edin."
-                )
-            else:
-                self.statusBar().showMessage(
-                    f"Hesaplama tamamlandı: {layer_name} - {result_text}"
-                )
-            
-        except ImportError as e:
-            error_msg = f"ezdxf kütüphanesi yüklü değil:\n{str(e)}\n\nLütfen şu komutu çalıştırın:\npip install ezdxf"
-            QMessageBox.critical(self, "Kütüphane Hatası", error_msg)
-            self.cad_metraj_result_label.setText("Kütüphane\nEksik!")
-            self.cad_metraj_result_label.setStyleSheet("""
-                QLabel {
-                    font-size: 24pt;
-                    font-weight: bold;
-                    color: #c9184a;
-                    padding: 20px;
-                    background-color: #1a1a2e;
-                    border-radius: 10px;
-                }
-            """)
-            print(f"ERROR: {e}")  # Debug
-        except FileNotFoundError as e:
-            error_msg = f"Dosya bulunamadı:\n{str(e)}"
-            QMessageBox.critical(self, "Dosya Hatası", error_msg)
-            self.cad_metraj_result_label.setText("Dosya\nBulunamadı!")
-            self.cad_metraj_result_label.setStyleSheet("""
-                QLabel {
-                    font-size: 24pt;
-                    font-weight: bold;
-                    color: #c9184a;
-                    padding: 20px;
-                    background-color: #1a1a2e;
-                    border-radius: 10px;
-                }
-            """)
-            print(f"ERROR: {e}")  # Debug
-        except ValueError as e:
-            error_msg = f"Hesaplama hatası:\n{str(e)}"
-            QMessageBox.warning(self, "Hesaplama Hatası", error_msg)
-            self.cad_metraj_result_label.setText("Hata!")
-            self.cad_metraj_result_label.setStyleSheet("""
-                QLabel {
-                    font-size: 32pt;
-                    font-weight: bold;
-                    color: #c9184a;
-                    padding: 20px;
-                    background-color: #1a1a2e;
-                    border-radius: 10px;
-                }
-            """)
-            print(f"ERROR: {e}")  # Debug
-        except Exception as e:
-            error_msg = f"Hesaplama sırasında beklenmeyen bir hata oluştu:\n{str(e)}\n\nHata tipi: {type(e).__name__}"
-            QMessageBox.critical(self, "Hata", error_msg)
-            self.cad_metraj_result_label.setText("Hata!")
-            self.cad_metraj_result_label.setStyleSheet("""
-                QLabel {
-                    font-size: 32pt;
-                    font-weight: bold;
-                    color: #c9184a;
-                    padding: 20px;
-                    background-color: #1a1a2e;
-                    border-radius: 10px;
-                }
-            """)
-            print(f"ERROR: {type(e).__name__}: {e}")  # Debug
-            import traceback
-            traceback.print_exc()  # Tam hata detayı
     
     def on_fire_mode_changed(self, index: int) -> None:
         """Fire oranı modu değiştiğinde"""
@@ -1340,96 +1077,6 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Uyarı", "Lütfen silmek için bir satır seçin")
             
-    # CAD İşlemleri
-    def select_cad_file(self) -> None:
-        """CAD dosyası seç"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "CAD Dosyası Seç", "",
-            "DXF Dosyaları (*.dxf);;Tüm Dosyalar (*.*)"
-        )
-        if file_path:
-            self.cad_file_path = Path(file_path)
-            self.cad_file_label.setText(self.cad_file_path.name)
-            
-            # Katmanları yükle
-            try:
-                layers = self.cad_manager.get_all_layers(self.cad_file_path)
-                self.layer_combo.clear()
-                self.layer_combo.addItems(layers)
-            except Exception as e:
-                QMessageBox.warning(self, "Uyarı", f"Katmanlar yüklenemedi: {e}")
-                
-    def calculate_layer_length(self) -> None:
-        """Katman uzunluğunu hesapla"""
-        if not hasattr(self, 'cad_file_path'):
-            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir CAD dosyası seçin")
-            return
-            
-        layer_name = self.layer_combo.currentText()
-        if not layer_name:
-            QMessageBox.warning(self, "Uyarı", "Lütfen bir katman seçin")
-            return
-            
-        try:
-            length = self.cad_manager.calculate_layer_length(
-                self.cad_file_path, layer_name
-            )
-            length_m = length / 1000.0  # mm'den m'ye
-            
-            result = f"Katman: {layer_name}\n"
-            result += f"Toplam Uzunluk: {length:.2f} mm\n"
-            result += f"Toplam Uzunluk: {length_m:.2f} m\n"
-            
-            self.cad_result_text.setText(result)
-            self.statusBar().showMessage(f"Uzunluk hesaplandı: {length_m:.2f} m")
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Hesaplama hatası: {e}")
-            
-    def analyze_cad_file(self) -> None:
-        """CAD dosyasını analiz et"""
-        if not hasattr(self, 'cad_file_path'):
-            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir CAD dosyası seçin")
-            return
-            
-        try:
-            items = self.cad_manager.analyze_dxf_for_metraj(self.cad_file_path)
-            
-            result = "CAD Analiz Sonuçları:\n\n"
-            result += f"Toplam {len(items)} kalem bulundu:\n\n"
-            
-            for item in items:
-                result += f"- {item['tanim']}: {item['miktar']:.2f} {item['birim']} "
-                result += f"({item['kategori']})\n"
-                
-            self.cad_result_text.setText(result)
-            
-            # Projeye ekleme seçeneği
-            if self.current_project_id and items:
-                reply = QMessageBox.question(
-                    self, "Soru",
-                    f"{len(items)} kalem bulundu. Projeye eklemek ister misiniz?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.Yes:
-                    self.add_cad_items_to_project(items)
-                    
-        except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Analiz hatası: {e}")
-            
-    def add_cad_items_to_project(self, items: List[Dict[str, Any]]) -> None:
-        """CAD kalemlerini projeye ekle"""
-        for item in items:
-            self.db.add_metraj_kalem(
-                self.current_project_id,
-                item['tanim'],
-                item['miktar'],
-                item['birim'],
-                category=item.get('kategori', '')
-            )
-        self.load_metraj_data()
-        self.statusBar().showMessage(f"{len(items)} kalem projeye eklendi")
-        
     # Taşeron İşlemleri
     def load_taseron_data(self) -> None:
         """Taşeron verilerini yükle"""
@@ -1440,12 +1087,30 @@ class MainWindow(QMainWindow):
         self.taseron_table.setRowCount(len(offers))
         
         for row, offer in enumerate(offers):
-            self.taseron_table.setItem(row, 0, QTableWidgetItem(offer['firma_adi']))
-            self.taseron_table.setItem(row, 1, QTableWidgetItem(offer.get('tanim', '')))
-            self.taseron_table.setItem(row, 2, QTableWidgetItem(str(offer.get('miktar', 0))))
-            self.taseron_table.setItem(row, 3, QTableWidgetItem(offer.get('birim', '')))
-            self.taseron_table.setItem(row, 4, QTableWidgetItem(f"{offer['fiyat']:.2f}"))
-            self.taseron_table.setItem(row, 5, QTableWidgetItem(f"{offer.get('toplam', 0):.2f}"))
+            # ID (gizli)
+            self.taseron_table.setItem(row, 0, QTableWidgetItem(str(offer['id'])))
+            # Firma
+            self.taseron_table.setItem(row, 1, QTableWidgetItem(offer['firma_adi']))
+            # Kalem/Tanım
+            tanim = offer.get('tanim', '')
+            if not tanim:
+                tanim = f"Poz: {offer.get('poz_no', 'N/A')}"
+            self.taseron_table.setItem(row, 2, QTableWidgetItem(tanim))
+            # Miktar
+            miktar = offer.get('miktar', 0)
+            miktar_item = QTableWidgetItem(f"{miktar:.2f}" if miktar > 0 else "-")
+            miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.taseron_table.setItem(row, 3, miktar_item)
+            # Birim
+            self.taseron_table.setItem(row, 4, QTableWidgetItem(offer.get('birim', '')))
+            # Fiyat
+            fiyat_item = QTableWidgetItem(f"{offer['fiyat']:.2f} ₺")
+            fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.taseron_table.setItem(row, 5, fiyat_item)
+            # Toplam
+            toplam_item = QTableWidgetItem(f"{offer.get('toplam', 0):,.2f} ₺")
+            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.taseron_table.setItem(row, 6, toplam_item)
             
     def add_taseron_offer(self) -> None:
         """Taşeron teklifi ekle"""
@@ -1453,11 +1118,100 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
             return
             
-        # TODO: Dialog penceresi eklenecek
-        QMessageBox.information(
-            self, "Bilgi", "Teklif ekleme dialogu yakında eklenecek"
+        # Dialog penceresini aç
+        dialog = TaseronOfferDialog(self.db, self, proje_id=self.current_project_id)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            
+            # Veritabanına ekle
+            try:
+                offer_id = self.db.add_taseron_teklif(
+                    proje_id=self.current_project_id,
+                    firma_adi=data['firma_adi'],
+                    kalem_id=data['kalem_id'],
+                    fiyat=data['fiyat'],
+                    poz_no=data['poz_no'] if data['poz_no'] else '',
+                    tanim=data['tanim'],
+                    miktar=data['miktar'],
+                    birim=data['birim']
+                )
+                
+                if offer_id:
+                    # Durum ve notları güncelle
+                    self.db.update_taseron_teklif(offer_id, durum=data['durum'], notlar=data['notlar'])
+                    
+                    self.load_taseron_data()
+                    self.statusBar().showMessage("Teklif başarıyla eklendi")
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Teklif eklenirken bir hata oluştu")
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Teklif eklenirken hata oluştu:\n{str(e)}")
+        
+    def edit_taseron_offer(self) -> None:
+        """Taşeron teklifi düzenle"""
+        current_row = self.taseron_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen düzenlemek için bir satır seçin")
+            return
+            
+        # Seçili teklifin ID'sini al
+        offer_id = int(self.taseron_table.item(current_row, 0).text())
+        
+        # Teklif verilerini getir
+        try:
+            offers = self.db.get_taseron_teklifleri(self.current_project_id)
+            offer_data = next((offer for offer in offers if offer['id'] == offer_id), None)
+            
+            if not offer_data:
+                QMessageBox.warning(self, "Uyarı", "Teklif bulunamadı")
+                return
+                
+            # Dialog penceresini aç
+            dialog = TaseronOfferDialog(self.db, self, offer_data, proje_id=self.current_project_id)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                data = dialog.get_data()
+                
+                # Veritabanını güncelle
+                if self.db.update_taseron_teklif(
+                    offer_id=offer_id,
+                    firma_adi=data['firma_adi'],
+                    kalem_id=data['kalem_id'],
+                    fiyat=data['fiyat'],
+                    poz_no=data['poz_no'] if data['poz_no'] else '',
+                    tanim=data['tanim'],
+                    miktar=data['miktar'],
+                    birim=data['birim'],
+                    durum=data['durum'],
+                    notlar=data['notlar']
+                ):
+                    self.load_taseron_data()
+                    self.statusBar().showMessage("Teklif başarıyla güncellendi")
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Teklif güncellenirken bir hata oluştu")
+                    
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Teklif düzenlenirken hata oluştu:\n{str(e)}")
+            
+    def delete_taseron_offer(self) -> None:
+        """Taşeron teklifi sil"""
+        current_row = self.taseron_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek için bir satır seçin")
+            return
+            
+        reply = QMessageBox.question(
+            self, "Onay", "Bu teklifi silmek istediğinize emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
+        if reply == QMessageBox.StandardButton.Yes:
+            offer_id = int(self.taseron_table.item(current_row, 0).text())
+            if self.db.delete_taseron_teklif(offer_id):
+                self.load_taseron_data()
+                self.statusBar().showMessage("Teklif silindi")
+            else:
+                QMessageBox.warning(self, "Uyarı", "Teklif silinirken bir hata oluştu")
+    
     def compare_offers(self) -> None:
         """Teklifleri karşılaştır"""
         if not self.current_project_id:
@@ -1467,27 +1221,159 @@ class MainWindow(QMainWindow):
         offers = self.db.get_taseron_teklifleri(self.current_project_id)
         if not offers:
             QMessageBox.information(self, "Bilgi", "Karşılaştırılacak teklif yok")
+            self.comparison_table.setRowCount(0)
+            self.comparison_summary_label.setText("")
             return
             
         comparison = self.calculator.compare_taseron_offers(offers)
         
-        result = "Teklif Karşılaştırması:\n\n"
-        result += f"Firma Sayısı: {comparison['firma_sayisi']}\n"
+        # Firma bazında toplamları hesapla
+        firma_totals = {}
+        for offer in offers:
+            firma = offer['firma_adi']
+            toplam = offer.get('toplam', 0)
+            durum = offer.get('durum', 'beklemede')
+            
+            if firma not in firma_totals:
+                firma_totals[firma] = {
+                    'toplam': 0.0,
+                    'durum': durum,
+                    'teklif_sayisi': 0
+                }
+            
+            firma_totals[firma]['toplam'] += toplam
+            firma_totals[firma]['teklif_sayisi'] += 1
         
+        # Karşılaştırma tablosunu doldur
+        self.comparison_table.setRowCount(len(firma_totals))
+        
+        ortalama = comparison.get('ortalama', 0.0)
+        row = 0
+        for firma, data in sorted(firma_totals.items(), key=lambda x: x[1]['toplam']):
+            # Firma
+            self.comparison_table.setItem(row, 0, QTableWidgetItem(firma))
+            
+            # Toplam Tutar
+            toplam_item = QTableWidgetItem(f"{data['toplam']:,.2f} ₺")
+            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.comparison_table.setItem(row, 1, toplam_item)
+            
+            # Durum
+            durum_item = QTableWidgetItem(data['durum'].title())
+            durum_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.comparison_table.setItem(row, 2, durum_item)
+            
+            # Fark (Ortalamadan)
+            fark = data['toplam'] - ortalama
+            fark_text = f"{fark:+,.2f} ₺"
+            fark_item = QTableWidgetItem(fark_text)
+            fark_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            
+            # Fark pozitifse yeşil, negatifse kırmızı
+            if fark < 0:
+                fark_item.setForeground(Qt.GlobalColor.darkGreen)
+            elif fark > 0:
+                fark_item.setForeground(Qt.GlobalColor.red)
+            
+            self.comparison_table.setItem(row, 3, fark_item)
+            
+            row += 1
+        
+        # Özet bilgi
+        summary = f"📊 Toplam {len(firma_totals)} firma, {len(offers)} teklif | "
         if comparison['en_dusuk']:
-            result += f"En Düşük: {comparison['en_dusuk']['firma']} - "
-            result += f"{comparison['en_dusuk']['tutar']:.2f} ₺\n"
-            
-        if comparison['en_yuksek']:
-            result += f"En Yüksek: {comparison['en_yuksek']['firma']} - "
-            result += f"{comparison['en_yuksek']['tutar']:.2f} ₺\n"
-            
-        result += f"Ortalama: {comparison['ortalama']:.2f} ₺"
+            summary += f"En Düşük: {comparison['en_dusuk']['firma']} ({comparison['en_dusuk']['tutar']:,.2f} ₺) | "
+        summary += f"Ortalama: {ortalama:,.2f} ₺"
         
-        self.comparison_label.setText(result)
+        self.comparison_summary_label.setText(summary)
+    
+    def export_taseron_excel(self) -> None:
+        """Taşeron tekliflerini Excel'e export et"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+            
+        offers = self.db.get_taseron_teklifleri(self.current_project_id)
+        if not offers:
+            QMessageBox.warning(self, "Uyarı", "Export edilecek teklif bulunamadı")
+            return
         
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Excel'e Kaydet", "", "Excel Dosyaları (*.xlsx)"
+        )
+        
+        if file_path:
+            proje = self.db.get_project(self.current_project_id) if self.current_project_id else None
+            proje_adi = proje.get('ad', '') if proje else ''
+            
+            if self.export_manager.export_taseron_offers_to_excel(offers, Path(file_path), proje_adi):
+                QMessageBox.information(self, "Başarılı", f"Taşeron teklifleri Excel'e aktarıldı:\n{file_path}")
+                self.statusBar().showMessage(f"Excel export tamamlandı: {file_path}")
+            else:
+                QMessageBox.critical(self, "Hata", "Excel export sırasında bir hata oluştu.")
+    
+    def export_taseron_pdf(self) -> None:
+        """Taşeron tekliflerini PDF'e export et"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+            
+        offers = self.db.get_taseron_teklifleri(self.current_project_id)
+        if not offers:
+            QMessageBox.warning(self, "Uyarı", "Export edilecek teklif bulunamadı")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "PDF'e Kaydet", "", "PDF Dosyaları (*.pdf)"
+        )
+        
+        if file_path:
+            proje = self.db.get_project(self.current_project_id) if self.current_project_id else None
+            proje_adi = proje.get('ad', '') if proje else ''
+            
+            if self.export_manager.export_taseron_offers_to_pdf(offers, Path(file_path), proje_adi):
+                QMessageBox.information(self, "Başarılı", f"Taşeron teklifleri PDF'e aktarıldı:\n{file_path}")
+                self.statusBar().showMessage(f"PDF export tamamlandı: {file_path}")
+            else:
+                QMessageBox.critical(self, "Hata", "PDF export sırasında bir hata oluştu.")
+        
+    def check_and_load_pozlar_async(self) -> None:
+        """Uygulama açıldığında pozları kontrol et ve gerekirse yükle (async)"""
+        # Arka planda yükleme için thread oluştur
+        self.data_loader_thread = DataLoaderThread(self.db)
+        self.data_loader_thread.data_loaded.connect(self.on_data_loaded)
+        self.data_loader_thread.poz_question_needed.connect(self.show_poz_question)
+        self.data_loader_thread.start()
+        
+        # Durum çubuğunda bilgi göster
+        self.statusBar().showMessage("Veriler kontrol ediliyor...")
+    
+    @pyqtSlot(dict)
+    def on_data_loaded(self, result: Dict[str, Any]) -> None:
+        """Veri yükleme tamamlandığında çağrılır"""
+        if result.get('malzemeler_loaded', False) or result.get('formuller_loaded', False):
+            self.statusBar().showMessage(
+                f"Veriler hazır: {result.get('malzeme_count', 0)} malzeme, "
+                f"{result.get('formul_count', 0)} formül"
+            )
+        else:
+            self.statusBar().showMessage("Hazır")
+    
+    @pyqtSlot()
+    def show_poz_question(self) -> None:
+        """Poz yükleme sorusu göster"""
+        reply = QMessageBox.question(
+            self, "Veri Yükleme",
+            "Pozlar henüz yüklenmemiş. Şimdi yüklemek ister misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            # Pozları yükle (yine async olabilir ama şimdilik sync)
+            self.load_pozlar(silent=False)
+    
     def check_and_load_pozlar(self) -> None:
-        """Uygulama açıldığında pozları kontrol et ve gerekirse yükle"""
+        """Uygulama açıldığında pozları kontrol et ve gerekirse yükle (sync versiyon - eski)"""
         if not check_pozlar_loaded(self.db):
             reply = QMessageBox.question(
                 self, "Veri Yükleme",

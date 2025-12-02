@@ -55,6 +55,15 @@ class DatabaseManager:
     def _init_database(self) -> None:
         """Veritabanı tablolarını oluştur."""
         with self.get_connection() as conn:
+            # WAL mode aktif et (daha hızlı okuma/yazma)
+            conn.execute("PRAGMA journal_mode=WAL")
+            # Synchronous mode'u optimize et (güvenlik vs hız dengesi)
+            conn.execute("PRAGMA synchronous=NORMAL")
+            # Cache size artır (daha hızlı sorgular)
+            conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+            # Foreign key kontrolünü aktif et
+            conn.execute("PRAGMA foreign_keys=ON")
+            
             cursor = conn.cursor()
             
             # Projeler tablosu
@@ -557,6 +566,57 @@ class DatabaseManager:
                 ORDER BY firma_adi, tanim
             """, (proje_id,))
             return [dict(row) for row in cursor.fetchall()]
+    
+    def update_taseron_teklif(self, offer_id: int, **kwargs) -> bool:
+        """
+        Taşeron teklifini güncelle.
+        
+        Args:
+            offer_id: Teklif ID'si
+            **kwargs: Güncellenecek alanlar
+            
+        Returns:
+            bool: Başarı durumu
+        """
+        if not kwargs:
+            return False
+            
+        # Toplam hesapla
+        if 'miktar' in kwargs and 'fiyat' in kwargs:
+            kwargs['toplam'] = kwargs['miktar'] * kwargs['fiyat']
+        elif 'miktar' in kwargs or 'fiyat' in kwargs:
+            # Mevcut değerleri al
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT miktar, fiyat FROM taseron_teklifleri WHERE id = ?", (offer_id,))
+                row = cursor.fetchone()
+                if row:
+                    miktar = kwargs.get('miktar', row['miktar'])
+                    fiyat = kwargs.get('fiyat', row['fiyat'])
+                    kwargs['toplam'] = miktar * fiyat if miktar and fiyat else 0
+                    
+        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        values = list(kwargs.values()) + [offer_id]
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE taseron_teklifleri SET {fields} WHERE id = ?", values)
+            return cursor.rowcount > 0
+            
+    def delete_taseron_teklif(self, offer_id: int) -> bool:
+        """
+        Taşeron teklifini sil.
+        
+        Args:
+            offer_id: Teklif ID'si
+            
+        Returns:
+            bool: Başarı durumu
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM taseron_teklifleri WHERE id = ?", (offer_id,))
+            return cursor.rowcount > 0
     
     # Malzeme İşlemleri
     def add_malzeme(self, ad: str, birim: str, kategori: str = "", aciklama: str = "", birim_fiyat: float = 0.0) -> int:

@@ -481,3 +481,6 @@
    - Yeni teknolojiler (akıllı ev sistemleri, vb.)
 
 
+
+
+

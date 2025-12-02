@@ -4,3 +4,6 @@ Yardımcı fonksiyonlar
 """
 
 
+
+
+

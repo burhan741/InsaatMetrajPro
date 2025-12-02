@@ -2,7 +2,9 @@ import pandas as pd
 from app.core.dxf_engine import DXFAnaliz
 import os
 import sys
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QSplashScreen
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap, QFont
 from app.ui.main_window import MainWindow
 from app.ui.styles import apply_dark_theme
 
@@ -19,9 +21,29 @@ def gui_uygulamasi():
         app.setApplicationName("InsaatMetrajPro")
         app.setOrganizationName("InsaatMetrajPro")
         
+        # Splash screen oluştur
+        splash = QSplashScreen()
+        splash.setStyleSheet("""
+            QSplashScreen {
+                background-color: #1a1a2e;
+                color: white;
+            }
+        """)
+        splash.showMessage(
+            "InsaatMetrajPro Yükleniyor...",
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+            Qt.GlobalColor.white
+        )
+        splash.show()
+        app.processEvents()  # UI'ı güncelle
+        
         apply_dark_theme(app)
         
+        # Ana pencereyi oluştur (optimizasyonlar sayesinde hızlı)
         window = MainWindow()
+        
+        # Splash screen'i kapat
+        splash.finish(window)
         window.show()
         
         sys.exit(app.exec())

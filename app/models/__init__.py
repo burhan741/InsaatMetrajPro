@@ -4,3 +4,6 @@ Veritabanı model sınıfları
 """
 
 
+
+
+

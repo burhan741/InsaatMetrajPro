@@ -60,3 +60,6 @@ def validate_file_path(file_path: Path, extensions: list) -> bool:
     return file_path.suffix.lower() in [ext.lower() for ext in extensions]
 
 
+
+
+
