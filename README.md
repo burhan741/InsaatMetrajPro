@@ -118,6 +118,22 @@ yeni_proje/
 
 Bu proje eğitim ve ticari kullanım için geliştirilmiştir.
 
+## 🧪 Test Kullanıcıları İçin
+
+Bu uygulama test aşamasındadır. Test etmek ve geri bildirim vermek isterseniz:
+
+1. **PAKET_HAZIRLA.bat** dosyasını çalıştırarak test paketini hazırlayın
+2. **TEST_KULLANICILARI_ICIN.md** dosyasını okuyun
+3. **GERI_BILDIRIM_FORMU.txt** dosyasını doldurarak geri bildirim gönderin
+
+### Test Paketi Hazırlama
+
+```bash
+PAKET_HAZIRLA.bat
+```
+
+Bu script, test kullanıcılarına gönderilecek hazır paketi oluşturur.
+
 ## Destek
 
 Sorularınız için issue açabilir veya iletişime geçebilirsiniz.
