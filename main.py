@@ -114,23 +114,32 @@ def rapor_olustur(dxf_dosya_adi=None, cizim_birimi=None, bosluk_toleransi=None):
 
 # --- ÇALIŞTIR ---
 if __name__ == "__main__":
-    # Kullanıcıya seçim yaptır
-    print("=" * 60)
-    print("🏗️  İNŞAAT METRAJ PRO - Hoş Geldiniz!")
-    print("=" * 60)
-    print("\nNe yapmak istersiniz?")
-    print("  1. GUI Uygulamasını Aç (Metraj Cetveli, CAD İşleyici, vb.)")
-    print("  2. DXF Analiz Scripti Çalıştır (Excel Raporu Oluştur)")
-    print("  3. Çıkış")
+    # EXE olup olmadığını kontrol et (PyInstaller ile oluşturulmuş mu?)
+    # EXE'de sys.frozen True olur ve konsol yok, direkt GUI açılmalı
+    is_exe = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS')
     
-    secim = input("\nSeçiminiz (1/2/3): ").strip()
-    
-    if secim == "1":
-        # GUI uygulamasını başlat
-        print("\n🖥️  GUI uygulaması başlatılıyor...\n")
+    if is_exe:
+        # EXE modunda: Direkt GUI'yi aç (konsol yok, input() çalışmaz)
         gui_uygulamasi()
-    
-    elif secim == "2":
+    else:
+        # Normal Python modunda: Menü göster
+        # Kullanıcıya seçim yaptır
+        print("=" * 60)
+        print("🏗️  İNŞAAT METRAJ PRO - Hoş Geldiniz!")
+        print("=" * 60)
+        print("\nNe yapmak istersiniz?")
+        print("  1. GUI Uygulamasını Aç (Metraj Cetveli, CAD İşleyici, vb.)")
+        print("  2. DXF Analiz Scripti Çalıştır (Excel Raporu Oluştur)")
+        print("  3. Çıkış")
+        
+        secim = input("\nSeçiminiz (1/2/3): ").strip()
+        
+        if secim == "1":
+            # GUI uygulamasını başlat
+            print("\n🖥️  GUI uygulaması başlatılıyor...\n")
+            gui_uygulamasi()
+        
+        elif secim == "2":
         # DXF analiz scriptini çalıştır
         print("\n📊 DXF Analiz modu başlatılıyor...\n")
         
