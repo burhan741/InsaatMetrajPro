@@ -192,10 +192,13 @@ class MainWindow(QMainWindow):
         # Sekme 1: Metraj Cetveli
         self.create_metraj_tab()
         
-        # Sekme 2: Taşeron Analizi
+        # Sekme 2: Proje Özeti
+        self.create_proje_ozet_tab()
+        
+        # Sekme 3: Taşeron Analizi
         self.create_taseron_tab()
         
-        # Sekme 3: Malzeme Listesi
+        # Sekme 4: Malzeme Listesi
         self.create_malzeme_tab()
         
         parent.addWidget(self.tabs)
@@ -310,6 +313,185 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter)
         
         self.tabs.addTab(tab, "📊 Metraj Cetveli")
+    
+    def create_proje_ozet_tab(self) -> None:
+        """Proje Özeti/Rapor sekmesini oluştur"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(15)
+        
+        # Üst panel: Özet kartları
+        cards_layout = QHBoxLayout()
+        cards_layout.setSpacing(10)
+        
+        # Kart 1: Toplam Kalem
+        self.ozet_kalem_card = QGroupBox("Toplam Kalem")
+        kalem_layout = QVBoxLayout()
+        self.ozet_kalem_label = QLabel("0")
+        self.ozet_kalem_label.setFont(QFont("Arial", 24, QFont.Weight.Bold))
+        self.ozet_kalem_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ozet_kalem_label.setStyleSheet("color: #c9184a;")
+        kalem_layout.addWidget(self.ozet_kalem_label)
+        self.ozet_kalem_card.setLayout(kalem_layout)
+        self.ozet_kalem_card.setMinimumHeight(100)
+        cards_layout.addWidget(self.ozet_kalem_card)
+        
+        # Kart 2: Toplam Maliyet
+        self.ozet_maliyet_card = QGroupBox("Toplam Maliyet (KDV Hariç)")
+        maliyet_layout = QVBoxLayout()
+        self.ozet_maliyet_label = QLabel("0.00 ₺")
+        self.ozet_maliyet_label.setFont(QFont("Arial", 20, QFont.Weight.Bold))
+        self.ozet_maliyet_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ozet_maliyet_label.setStyleSheet("color: #4CAF50;")
+        maliyet_layout.addWidget(self.ozet_maliyet_label)
+        self.ozet_maliyet_card.setLayout(maliyet_layout)
+        self.ozet_maliyet_card.setMinimumHeight(100)
+        cards_layout.addWidget(self.ozet_maliyet_card)
+        
+        # Kart 3: KDV Dahil
+        self.ozet_kdv_card = QGroupBox("KDV Dahil Toplam")
+        kdv_layout = QVBoxLayout()
+        self.ozet_kdv_label = QLabel("0.00 ₺")
+        self.ozet_kdv_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        self.ozet_kdv_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ozet_kdv_label.setStyleSheet("color: #16213e;")
+        kdv_layout.addWidget(self.ozet_kdv_label)
+        # KDV oranı seçimi
+        kdv_rate_layout = QHBoxLayout()
+        kdv_rate_layout.addWidget(QLabel("KDV Oranı:"))
+        self.ozet_kdv_rate = QComboBox()
+        self.ozet_kdv_rate.addItems(["%1", "%10", "%20"])
+        self.ozet_kdv_rate.setCurrentText("%20")
+        self.ozet_kdv_rate.currentTextChanged.connect(self.update_proje_ozet)
+        kdv_rate_layout.addWidget(self.ozet_kdv_rate)
+        kdv_rate_layout.addStretch()
+        kdv_layout.addLayout(kdv_rate_layout)
+        self.ozet_kdv_card.setLayout(kdv_layout)
+        self.ozet_kdv_card.setMinimumHeight(100)
+        cards_layout.addWidget(self.ozet_kdv_card)
+        
+        # Kart 4: Taşeron Teklif Sayısı
+        self.ozet_taseron_card = QGroupBox("Taşeron Teklifleri")
+        taseron_layout = QVBoxLayout()
+        self.ozet_taseron_label = QLabel("0")
+        self.ozet_taseron_label.setFont(QFont("Arial", 24, QFont.Weight.Bold))
+        self.ozet_taseron_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ozet_taseron_label.setStyleSheet("color: #ff9800;")
+        taseron_layout.addWidget(self.ozet_taseron_label)
+        self.ozet_taseron_card.setLayout(taseron_layout)
+        self.ozet_taseron_card.setMinimumHeight(100)
+        cards_layout.addWidget(self.ozet_taseron_card)
+        
+        layout.addLayout(cards_layout)
+        
+        # Orta panel: Splitter (Kategori dağılımı ve En pahalı kalemler)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Sol: Kategori Dağılımı
+        kategori_widget = QWidget()
+        kategori_layout = QVBoxLayout(kategori_widget)
+        kategori_layout.setContentsMargins(0, 0, 0, 0)
+        
+        kategori_title = QLabel("📋 Kategori Bazında Dağılım")
+        kategori_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        kategori_layout.addWidget(kategori_title)
+        
+        self.ozet_kategori_table = QTableWidget()
+        self.ozet_kategori_table.setColumnCount(3)
+        self.ozet_kategori_table.setHorizontalHeaderLabels([
+            "Kategori", "Kalem Sayısı", "Toplam Maliyet"
+        ])
+        self.ozet_kategori_table.setAlternatingRowColors(True)
+        self.ozet_kategori_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.ozet_kategori_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.ozet_kategori_table.horizontalHeader().setStretchLastSection(True)
+        self.ozet_kategori_table.setColumnWidth(0, 200)
+        self.ozet_kategori_table.setColumnWidth(1, 120)
+        kategori_layout.addWidget(self.ozet_kategori_table)
+        
+        splitter.addWidget(kategori_widget)
+        
+        # Sağ: En Pahalı Kalemler
+        pahali_widget = QWidget()
+        pahali_layout = QVBoxLayout(pahali_widget)
+        pahali_layout.setContentsMargins(0, 0, 0, 0)
+        
+        pahali_title = QLabel("💰 En Pahalı 5 Kalem")
+        pahali_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        pahali_layout.addWidget(pahali_title)
+        
+        self.ozet_pahali_table = QTableWidget()
+        self.ozet_pahali_table.setColumnCount(3)
+        self.ozet_pahali_table.setHorizontalHeaderLabels([
+            "Kalem", "Miktar", "Toplam"
+        ])
+        self.ozet_pahali_table.setAlternatingRowColors(True)
+        self.ozet_pahali_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.ozet_pahali_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.ozet_pahali_table.horizontalHeader().setStretchLastSection(True)
+        self.ozet_pahali_table.setColumnWidth(0, 250)
+        self.ozet_pahali_table.setColumnWidth(1, 100)
+        pahali_layout.addWidget(self.ozet_pahali_table)
+        
+        splitter.addWidget(pahali_widget)
+        
+        splitter.setSizes([400, 400])
+        layout.addWidget(splitter)
+        
+        # Alt panel: Malzeme ve Taşeron Özeti
+        alt_splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Malzeme Özeti
+        malzeme_ozet_widget = QWidget()
+        malzeme_ozet_layout = QVBoxLayout(malzeme_ozet_widget)
+        malzeme_ozet_layout.setContentsMargins(0, 0, 0, 0)
+        
+        malzeme_ozet_title = QLabel("📦 Malzeme Özeti")
+        malzeme_ozet_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        malzeme_ozet_layout.addWidget(malzeme_ozet_title)
+        
+        self.ozet_malzeme_label = QLabel("Malzeme listesi hesaplanmadı.\n'Malzeme Listesi' sekmesinden hesaplayınız.")
+        self.ozet_malzeme_label.setWordWrap(True)
+        self.ozet_malzeme_label.setStyleSheet("color: #666; padding: 10px;")
+        malzeme_ozet_layout.addWidget(self.ozet_malzeme_label)
+        
+        alt_splitter.addWidget(malzeme_ozet_widget)
+        
+        # Taşeron Özeti
+        taseron_ozet_widget = QWidget()
+        taseron_ozet_layout = QVBoxLayout(taseron_ozet_widget)
+        taseron_ozet_layout.setContentsMargins(0, 0, 0, 0)
+        
+        taseron_ozet_title = QLabel("💼 Taşeron Özeti")
+        taseron_ozet_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        taseron_ozet_layout.addWidget(taseron_ozet_title)
+        
+        self.ozet_taseron_detay_label = QLabel("Taşeron teklif bilgisi yok.")
+        self.ozet_taseron_detay_label.setWordWrap(True)
+        self.ozet_taseron_detay_label.setStyleSheet("color: #666; padding: 10px;")
+        taseron_ozet_layout.addWidget(self.ozet_taseron_detay_label)
+        
+        alt_splitter.addWidget(taseron_ozet_widget)
+        
+        alt_splitter.setSizes([400, 400])
+        layout.addWidget(alt_splitter)
+        
+        # Export butonları
+        export_layout = QHBoxLayout()
+        export_layout.addStretch()
+        
+        btn_export_pdf = QPushButton("PDF Rapor Oluştur")
+        btn_export_pdf.clicked.connect(self.export_proje_ozet_pdf)
+        export_layout.addWidget(btn_export_pdf)
+        
+        btn_export_excel = QPushButton("Excel Rapor Oluştur")
+        btn_export_excel.clicked.connect(self.export_proje_ozet_excel)
+        export_layout.addWidget(btn_export_excel)
+        
+        layout.addLayout(export_layout)
+        
+        self.tabs.addTab(tab, "📈 Proje Özeti")
         
     def create_taseron_tab(self) -> None:
         """Taşeron Analizi sekmesini oluştur"""
@@ -548,6 +730,7 @@ class MainWindow(QMainWindow):
             
             # Hesaplanan malzemeleri sakla (export için)
             self.current_materials = materials
+            self.update_proje_ozet()  # Özeti güncelle (malzeme bilgisi için)
             
             # Özet bilgi
             toplam_cesit = len(materials)
@@ -692,6 +875,7 @@ class MainWindow(QMainWindow):
             # Verileri yükle
             self.load_metraj_data()
             self.load_taseron_data()
+            self.update_proje_ozet()
             self.statusBar().showMessage(f"Proje seçildi: {item.text(0)}")
         else:
             self.statusBar().showMessage("Geçersiz proje seçimi")
@@ -1054,6 +1238,7 @@ class MainWindow(QMainWindow):
                     notlar=data['notlar'] if data.get('notlar') else ''
                 ):
                     self.load_metraj_data()
+                    self.update_proje_ozet()  # Özeti güncelle
                     self.statusBar().showMessage("Kalem başarıyla güncellendi")
                 else:
                     QMessageBox.warning(self, "Uyarı", "Kalem güncellenirken bir hata oluştu")
@@ -1073,6 +1258,7 @@ class MainWindow(QMainWindow):
                 item_id = int(self.metraj_table.item(current_row, 0).text())
                 if self.db.delete_item(item_id):
                     self.load_metraj_data()
+                    self.update_proje_ozet()  # Özeti güncelle
                     self.statusBar().showMessage("Kalem silindi")
         else:
             QMessageBox.warning(self, "Uyarı", "Lütfen silmek için bir satır seçin")
@@ -1141,6 +1327,7 @@ class MainWindow(QMainWindow):
                     self.db.update_taseron_teklif(offer_id, durum=data['durum'], notlar=data['notlar'])
                     
                     self.load_taseron_data()
+                    self.update_proje_ozet()  # Özeti güncelle
                     self.statusBar().showMessage("Teklif başarıyla eklendi")
                 else:
                     QMessageBox.warning(self, "Uyarı", "Teklif eklenirken bir hata oluştu")
@@ -1185,6 +1372,7 @@ class MainWindow(QMainWindow):
                     notlar=data['notlar']
                 ):
                     self.load_taseron_data()
+                    self.update_proje_ozet()  # Özeti güncelle
                     self.statusBar().showMessage("Teklif başarıyla güncellendi")
                 else:
                     QMessageBox.warning(self, "Uyarı", "Teklif güncellenirken bir hata oluştu")
@@ -1208,6 +1396,7 @@ class MainWindow(QMainWindow):
             offer_id = int(self.taseron_table.item(current_row, 0).text())
             if self.db.delete_taseron_teklif(offer_id):
                 self.load_taseron_data()
+                self.update_proje_ozet()  # Özeti güncelle
                 self.statusBar().showMessage("Teklif silindi")
             else:
                 QMessageBox.warning(self, "Uyarı", "Teklif silinirken bir hata oluştu")
@@ -1471,6 +1660,336 @@ class MainWindow(QMainWindow):
                 f"Poz durumu kontrol edilirken hata oluştu:\n{str(e)}"
             )
             
+    def update_proje_ozet(self) -> None:
+        """Proje özeti sekmesini güncelle"""
+        if not self.current_project_id:
+            # Proje seçili değilse temizle
+            self.ozet_kalem_label.setText("0")
+            self.ozet_maliyet_label.setText("0.00 ₺")
+            self.ozet_kdv_label.setText("0.00 ₺")
+            self.ozet_taseron_label.setText("0")
+            self.ozet_kategori_table.setRowCount(0)
+            self.ozet_pahali_table.setRowCount(0)
+            self.ozet_malzeme_label.setText("Malzeme listesi hesaplanmadı.\n'Malzeme Listesi' sekmesinden hesaplayınız.")
+            self.ozet_taseron_detay_label.setText("Taşeron teklif bilgisi yok.")
+            return
+        
+        try:
+            # Proje bilgilerini al
+            proje = self.db.get_project(self.current_project_id)
+            metraj_items = self.db.get_project_metraj(self.current_project_id)
+            taseron_offers = self.db.get_taseron_teklifleri(self.current_project_id)
+            
+            # Toplam kalem sayısı
+            toplam_kalem = len(metraj_items)
+            self.ozet_kalem_label.setText(str(toplam_kalem))
+            
+            # Toplam maliyet
+            toplam_maliyet = sum(item.get('toplam', 0) for item in metraj_items)
+            self.ozet_maliyet_label.setText(f"{toplam_maliyet:,.2f} ₺")
+            
+            # KDV hesaplama
+            kdv_rate_text = self.ozet_kdv_rate.currentText().replace("%", "")
+            kdv_rate = float(kdv_rate_text)
+            kdv_hesap = self.calculator.calculate_with_kdv(toplam_maliyet, kdv_rate)
+            self.ozet_kdv_label.setText(f"{kdv_hesap['kdv_dahil']:,.2f} ₺")
+            
+            # Taşeron teklif sayısı
+            toplam_taseron = len(taseron_offers)
+            self.ozet_taseron_label.setText(str(toplam_taseron))
+            
+            # Kategori bazında dağılım
+            kategori_dict = {}
+            for item in metraj_items:
+                kategori = item.get('kategori', 'Kategori Yok')
+                if kategori not in kategori_dict:
+                    kategori_dict[kategori] = {'sayi': 0, 'toplam': 0.0}
+                kategori_dict[kategori]['sayi'] += 1
+                kategori_dict[kategori]['toplam'] += item.get('toplam', 0)
+            
+            self.ozet_kategori_table.setRowCount(len(kategori_dict))
+            for row, (kategori, data) in enumerate(sorted(kategori_dict.items(), key=lambda x: x[1]['toplam'], reverse=True)):
+                self.ozet_kategori_table.setItem(row, 0, QTableWidgetItem(kategori))
+                self.ozet_kategori_table.setItem(row, 1, QTableWidgetItem(str(data['sayi'])))
+                toplam_item = QTableWidgetItem(f"{data['toplam']:,.2f} ₺")
+                toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.ozet_kategori_table.setItem(row, 2, toplam_item)
+            
+            # En pahalı 5 kalem
+            sorted_items = sorted(metraj_items, key=lambda x: x.get('toplam', 0), reverse=True)[:5]
+            self.ozet_pahali_table.setRowCount(len(sorted_items))
+            for row, item in enumerate(sorted_items):
+                tanim = item.get('tanim', '')[:40] + ('...' if len(item.get('tanim', '')) > 40 else '')
+                self.ozet_pahali_table.setItem(row, 0, QTableWidgetItem(tanim))
+                miktar_text = f"{item.get('miktar', 0):,.2f} {item.get('birim', '')}"
+                miktar_item = QTableWidgetItem(miktar_text)
+                miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.ozet_pahali_table.setItem(row, 1, miktar_item)
+                toplam_item = QTableWidgetItem(f"{item.get('toplam', 0):,.2f} ₺")
+                toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.ozet_pahali_table.setItem(row, 2, toplam_item)
+            
+            # Malzeme özeti
+            if self.current_materials:
+                toplam_malzeme_cesit = len(self.current_materials)
+                toplam_malzeme_miktar = sum(m.get('miktar', 0) for m in self.current_materials)
+                self.ozet_malzeme_label.setText(
+                    f"📦 Toplam {toplam_malzeme_cesit} farklı malzeme türü\n"
+                    f"📊 Toplam malzeme miktarı: {toplam_malzeme_miktar:,.2f}"
+                )
+            else:
+                self.ozet_malzeme_label.setText(
+                    "Malzeme listesi hesaplanmadı.\n"
+                    "'Malzeme Listesi' sekmesinden 'Malzemeleri Hesapla' butonuna tıklayınız."
+                )
+            
+            # Taşeron özeti
+            if taseron_offers:
+                firma_dict = {}
+                for offer in taseron_offers:
+                    firma = offer.get('firma_adi', '')
+                    toplam = offer.get('toplam', 0)
+                    if firma not in firma_dict:
+                        firma_dict[firma] = 0.0
+                    firma_dict[firma] += toplam
+                
+                if firma_dict:
+                    en_dusuk = min(firma_dict.items(), key=lambda x: x[1])
+                    en_yuksek = max(firma_dict.items(), key=lambda x: x[1])
+                    ortalama = sum(firma_dict.values()) / len(firma_dict)
+                    
+                    self.ozet_taseron_detay_label.setText(
+                        f"📊 Toplam {len(firma_dict)} firma\n"
+                        f"💰 En Düşük: {en_dusuk[0]} ({en_dusuk[1]:,.2f} ₺)\n"
+                        f"💰 En Yüksek: {en_yuksek[0]} ({en_yuksek[1]:,.2f} ₺)\n"
+                        f"📈 Ortalama: {ortalama:,.2f} ₺"
+                    )
+                else:
+                    self.ozet_taseron_detay_label.setText("Taşeron teklif bilgisi yok.")
+            else:
+                self.ozet_taseron_detay_label.setText("Taşeron teklif bilgisi yok.")
+                
+        except Exception as e:
+            print(f"Proje özeti güncelleme hatası: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def export_proje_ozet_pdf(self) -> None:
+        """Proje özetini PDF olarak export et"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "PDF Rapor Oluştur", "", "PDF Dosyaları (*.pdf)"
+        )
+        
+        if file_path:
+            try:
+                proje = self.db.get_project(self.current_project_id)
+                metraj_items = self.db.get_project_metraj(self.current_project_id)
+                taseron_offers = self.db.get_taseron_teklifleri(self.current_project_id)
+                
+                # KDV hesaplama
+                kdv_rate_text = self.ozet_kdv_rate.currentText().replace("%", "")
+                kdv_rate = float(kdv_rate_text)
+                toplam_maliyet = sum(item.get('toplam', 0) for item in metraj_items)
+                kdv_hesap = self.calculator.calculate_with_kdv(toplam_maliyet, kdv_rate)
+                
+                # PDF oluştur
+                from reportlab.lib.pagesizes import A4
+                from reportlab.lib import colors
+                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                from reportlab.lib.units import cm
+                from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                from datetime import datetime
+                
+                doc = SimpleDocTemplate(str(file_path), pagesize=A4)
+                story = []
+                styles = getSampleStyleSheet()
+                
+                # Başlık
+                title_style = ParagraphStyle(
+                    'CustomTitle',
+                    parent=styles['Heading1'],
+                    fontSize=18,
+                    textColor=colors.HexColor('#1a1a2e'),
+                    spaceAfter=30,
+                    alignment=1
+                )
+                story.append(Paragraph(f"Proje Özet Raporu - {proje.get('ad', '')}", title_style))
+                story.append(Spacer(1, 0.5*cm))
+                
+                # Özet bilgiler
+                info_data = [
+                    ['Proje Adı', proje.get('ad', '')],
+                    ['Oluşturulma Tarihi', proje.get('olusturma_tarihi', '')[:10] if proje.get('olusturma_tarihi') else ''],
+                    ['Toplam Kalem Sayısı', str(len(metraj_items))],
+                    ['Toplam Maliyet (KDV Hariç)', f"{toplam_maliyet:,.2f} ₺"],
+                    ['KDV (%' + kdv_rate_text + ')', f"{kdv_hesap['kdv']:,.2f} ₺"],
+                    ['Toplam Maliyet (KDV Dahil)', f"{kdv_hesap['kdv_dahil']:,.2f} ₺"],
+                    ['Taşeron Teklif Sayısı', str(len(taseron_offers))],
+                ]
+                
+                info_table = Table(info_data, colWidths=[6*cm, 6*cm])
+                info_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#16213e')),
+                    ('TEXTCOLOR', (0, 0), (0, -1), colors.whitesmoke),
+                    ('BACKGROUND', (1, 0), (1, -1), colors.white),
+                    ('TEXTCOLOR', (1, 0), (1, -1), colors.black),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                ]))
+                story.append(info_table)
+                story.append(Spacer(1, 0.5*cm))
+                
+                # Kategori dağılımı
+                kategori_dict = {}
+                for item in metraj_items:
+                    kategori = item.get('kategori', 'Kategori Yok')
+                    if kategori not in kategori_dict:
+                        kategori_dict[kategori] = {'sayi': 0, 'toplam': 0.0}
+                    kategori_dict[kategori]['sayi'] += 1
+                    kategori_dict[kategori]['toplam'] += item.get('toplam', 0)
+                
+                if kategori_dict:
+                    story.append(Paragraph("Kategori Bazında Dağılım", styles['Heading2']))
+                    kategori_data = [['Kategori', 'Kalem Sayısı', 'Toplam Maliyet']]
+                    for kategori, data in sorted(kategori_dict.items(), key=lambda x: x[1]['toplam'], reverse=True):
+                        kategori_data.append([
+                            kategori,
+                            str(data['sayi']),
+                            f"{data['toplam']:,.2f} ₺"
+                        ])
+                    
+                    kategori_table = Table(kategori_data, colWidths=[6*cm, 3*cm, 3*cm])
+                    kategori_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#16213e')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 10),
+                        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f5f5f5')]),
+                    ]))
+                    story.append(kategori_table)
+                
+                # PDF oluştur
+                doc.build(story)
+                QMessageBox.information(self, "Başarılı", f"Proje özet raporu PDF'e aktarıldı:\n{file_path}")
+                self.statusBar().showMessage(f"PDF rapor oluşturuldu: {file_path}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"PDF oluşturulurken hata oluştu:\n{str(e)}")
+                print(f"PDF export hatası: {e}")
+    
+    def export_proje_ozet_excel(self) -> None:
+        """Proje özetini Excel olarak export et"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Excel Rapor Oluştur", "", "Excel Dosyaları (*.xlsx)"
+        )
+        
+        if file_path:
+            try:
+                import pandas as pd
+                from openpyxl import load_workbook
+                from openpyxl.styles import Font, Alignment, PatternFill
+                
+                proje = self.db.get_project(self.current_project_id)
+                metraj_items = self.db.get_project_metraj(self.current_project_id)
+                taseron_offers = self.db.get_taseron_teklifleri(self.current_project_id)
+                
+                # KDV hesaplama
+                kdv_rate_text = self.ozet_kdv_rate.currentText().replace("%", "")
+                kdv_rate = float(kdv_rate_text)
+                toplam_maliyet = sum(item.get('toplam', 0) for item in metraj_items)
+                kdv_hesap = self.calculator.calculate_with_kdv(toplam_maliyet, kdv_rate)
+                
+                # Excel writer
+                with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                    # Özet bilgiler
+                    ozet_data = {
+                        'Bilgi': [
+                            'Proje Adı',
+                            'Oluşturulma Tarihi',
+                            'Toplam Kalem Sayısı',
+                            'Toplam Maliyet (KDV Hariç)',
+                            f'KDV (%{kdv_rate_text})',
+                            'Toplam Maliyet (KDV Dahil)',
+                            'Taşeron Teklif Sayısı'
+                        ],
+                        'Değer': [
+                            proje.get('ad', ''),
+                            proje.get('olusturma_tarihi', '')[:10] if proje.get('olusturma_tarihi') else '',
+                            str(len(metraj_items)),
+                            f"{toplam_maliyet:,.2f} ₺",
+                            f"{kdv_hesap['kdv']:,.2f} ₺",
+                            f"{kdv_hesap['kdv_dahil']:,.2f} ₺",
+                            str(len(taseron_offers))
+                        ]
+                    }
+                    df_ozet = pd.DataFrame(ozet_data)
+                    df_ozet.to_excel(writer, sheet_name='Proje Özeti', index=False)
+                    
+                    # Kategori dağılımı
+                    kategori_dict = {}
+                    for item in metraj_items:
+                        kategori = item.get('kategori', 'Kategori Yok')
+                        if kategori not in kategori_dict:
+                            kategori_dict[kategori] = {'sayi': 0, 'toplam': 0.0}
+                        kategori_dict[kategori]['sayi'] += 1
+                        kategori_dict[kategori]['toplam'] += item.get('toplam', 0)
+                    
+                    if kategori_dict:
+                        kategori_data = {
+                            'Kategori': [],
+                            'Kalem Sayısı': [],
+                            'Toplam Maliyet': []
+                        }
+                        for kategori, data in sorted(kategori_dict.items(), key=lambda x: x[1]['toplam'], reverse=True):
+                            kategori_data['Kategori'].append(kategori)
+                            kategori_data['Kalem Sayısı'].append(data['sayi'])
+                            kategori_data['Toplam Maliyet'].append(f"{data['toplam']:,.2f} ₺")
+                        
+                        df_kategori = pd.DataFrame(kategori_data)
+                        df_kategori.to_excel(writer, sheet_name='Kategori Dağılımı', index=False)
+                    
+                    # En pahalı kalemler
+                    sorted_items = sorted(metraj_items, key=lambda x: x.get('toplam', 0), reverse=True)[:10]
+                    pahali_data = {
+                        'Kalem': [item.get('tanim', '') for item in sorted_items],
+                        'Miktar': [f"{item.get('miktar', 0):,.2f} {item.get('birim', '')}" for item in sorted_items],
+                        'Toplam': [f"{item.get('toplam', 0):,.2f} ₺" for item in sorted_items]
+                    }
+                    df_pahali = pd.DataFrame(pahali_data)
+                    df_pahali.to_excel(writer, sheet_name='En Pahalı Kalemler', index=False)
+                
+                # Stil ayarları
+                wb = load_workbook(file_path)
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    # Başlık satırını kalın yap
+                    header_fill = PatternFill(start_color='16213e', end_color='16213e', fill_type='solid')
+                    for cell in ws[1]:
+                        cell.font = Font(bold=True, color='FFFFFF')
+                        cell.fill = header_fill
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                wb.save(file_path)
+                
+                QMessageBox.information(self, "Başarılı", f"Proje özet raporu Excel'e aktarıldı:\n{file_path}")
+                self.statusBar().showMessage(f"Excel rapor oluşturuldu: {file_path}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Excel oluşturulurken hata oluştu:\n{str(e)}")
+                print(f"Excel export hatası: {e}")
+    
     def show_about(self) -> None:
         """Hakkında dialogu"""
         QMessageBox.about(
