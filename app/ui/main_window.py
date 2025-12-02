@@ -1833,9 +1833,9 @@ class MainWindow(QMainWindow):
                     ['Proje Adı', proje.get('ad', '')],
                     ['Oluşturulma Tarihi', proje.get('olusturma_tarihi', '')[:10] if proje.get('olusturma_tarihi') else ''],
                     ['Toplam Kalem Sayısı', str(len(metraj_items))],
-                    ['Toplam Maliyet (KDV Hariç)', f"{toplam_maliyet:,.2f} ₺"],
-                    ['KDV (%' + kdv_rate_text + ')', f"{kdv_hesap['kdv']:,.2f} ₺"],
-                    ['Toplam Maliyet (KDV Dahil)', f"{kdv_hesap['kdv_dahil']:,.2f} ₺"],
+                    ['Toplam Maliyet (KDV Hariç)', f"{toplam_maliyet:,.2f} TL"],
+                    ['KDV (%' + kdv_rate_text + ')', f"{kdv_hesap['kdv']:,.2f} TL"],
+                    ['Toplam Maliyet (KDV Dahil)', f"{kdv_hesap['kdv_dahil']:,.2f} TL"],
                     ['Taşeron Teklif Sayısı', str(len(taseron_offers))],
                 ]
                 
@@ -1870,7 +1870,7 @@ class MainWindow(QMainWindow):
                         kategori_data.append([
                             kategori,
                             str(data['sayi']),
-                            f"{data['toplam']:,.2f} ₺"
+                            f"{data['toplam']:,.2f} TL"
                         ])
                     
                     kategori_table = Table(kategori_data, colWidths=[6*cm, 3*cm, 3*cm])
@@ -1937,9 +1937,9 @@ class MainWindow(QMainWindow):
                             proje.get('ad', ''),
                             proje.get('olusturma_tarihi', '')[:10] if proje.get('olusturma_tarihi') else '',
                             str(len(metraj_items)),
-                            f"{toplam_maliyet:,.2f} ₺",
-                            f"{kdv_hesap['kdv']:,.2f} ₺",
-                            f"{kdv_hesap['kdv_dahil']:,.2f} ₺",
+                            f"{toplam_maliyet:,.2f} TL",
+                            f"{kdv_hesap['kdv']:,.2f} TL",
+                            f"{kdv_hesap['kdv_dahil']:,.2f} TL",
                             str(len(taseron_offers))
                         ]
                     }
@@ -1964,7 +1964,7 @@ class MainWindow(QMainWindow):
                         for kategori, data in sorted(kategori_dict.items(), key=lambda x: x[1]['toplam'], reverse=True):
                             kategori_data['Kategori'].append(kategori)
                             kategori_data['Kalem Sayısı'].append(data['sayi'])
-                            kategori_data['Toplam Maliyet'].append(f"{data['toplam']:,.2f} ₺")
+                            kategori_data['Toplam Maliyet'].append(f"{data['toplam']:,.2f} TL")
                         
                         df_kategori = pd.DataFrame(kategori_data)
                         df_kategori.to_excel(writer, sheet_name='Kategori Dağılımı', index=False)
@@ -1974,7 +1974,7 @@ class MainWindow(QMainWindow):
                     pahali_data = {
                         'Kalem': [item.get('tanim', '') for item in sorted_items],
                         'Miktar': [f"{item.get('miktar', 0):,.2f} {item.get('birim', '')}" for item in sorted_items],
-                        'Toplam': [f"{item.get('toplam', 0):,.2f} ₺" for item in sorted_items]
+                        'Toplam': [f"{item.get('toplam', 0):,.2f} TL" for item in sorted_items]
                     }
                     df_pahali = pd.DataFrame(pahali_data)
                     df_pahali.to_excel(writer, sheet_name='En Pahalı Kalemler', index=False)
