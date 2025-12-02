@@ -188,6 +188,8 @@ class MainWindow(QMainWindow):
     def create_tabs(self, parent: QSplitter) -> None:
         """Sekmeli yapıyı oluştur"""
         self.tabs = QTabWidget()
+        # Sekme değiştiğinde özeti güncelle
+        self.tabs.currentChanged.connect(self.on_tab_changed)
         
         # Sekme 1: Metraj Cetveli
         self.create_metraj_tab()
