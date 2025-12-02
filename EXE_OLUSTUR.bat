@@ -7,12 +7,12 @@ echo InsaatMetrajPro - EXE Olusturma
 echo ========================================
 echo.
 
-REM PyInstaller kontrolu
-pip show pyinstaller >nul 2>&1
+REM PyInstaller kontrolu (Python modulu olarak - PATH sorunu cozumu)
+python -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
     echo PyInstaller bulunamadi. Yukleniyor...
     echo.
-    pip install pyinstaller
+    python -m pip install pyinstaller
     if errorlevel 1 (
         echo HATA: PyInstaller yuklenemedi!
         pause
@@ -27,9 +27,9 @@ echo EXE dosyasi olusturuluyor...
 echo Bu islem 2-5 dakika surebilir...
 echo.
 
-REM PyInstaller ile EXE olustur
+REM PyInstaller ile EXE olustur (Python modulu olarak - PATH sorunu cozumu)
 REM Windows'ta add-data format: "source;destination" (noktali virgul)
-pyinstaller --name="InsaatMetrajPro" ^
+python -m PyInstaller --name="InsaatMetrajPro" ^
     --onefile ^
     --windowed ^
     --icon=NONE ^
