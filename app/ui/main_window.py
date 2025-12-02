@@ -1661,6 +1661,12 @@ class MainWindow(QMainWindow):
                 self, "Hata",
                 f"Poz durumu kontrol edilirken hata oluştu:\n{str(e)}"
             )
+    
+    def on_tab_changed(self, index: int) -> None:
+        """Sekme değiştiğinde çağrılır"""
+        # Proje Özeti sekmesine geçildiğinde güncelle
+        if index == 1:  # Proje Özeti sekmesi (2. sekme, 0-indexed)
+            self.update_proje_ozet()
             
     def update_proje_ozet(self) -> None:
         """Proje özeti sekmesini güncelle"""
