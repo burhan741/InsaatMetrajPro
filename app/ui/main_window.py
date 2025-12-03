@@ -153,6 +153,23 @@ class MainWindow(QMainWindow):
         title.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         sidebar_layout.addWidget(title)
         
+        # Hızlı Arama
+        search_group = QGroupBox("🔍 Hızlı Arama")
+        search_layout = QVBoxLayout()
+        
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Proje, kalem, poz ara...")
+        self.search_input.textChanged.connect(self.on_search_text_changed)
+        search_layout.addWidget(self.search_input)
+        
+        self.search_type_combo = QComboBox()
+        self.search_type_combo.addItems(["Tümü", "Projeler", "Kalemler", "Pozlar"])
+        self.search_type_combo.currentTextChanged.connect(self.on_search_text_changed)
+        search_layout.addWidget(self.search_type_combo)
+        
+        search_group.setLayout(search_layout)
+        sidebar_layout.addWidget(search_group)
+        
         # Proje ağacı
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderLabel("Projelerim")
@@ -865,6 +882,12 @@ class MainWindow(QMainWindow):
         load_pozlar_action = data_menu.addAction("Pozları Yükle")
         load_pozlar_action.triggered.connect(self.load_pozlar)
         data_menu.addSeparator()
+        
+        # Excel Import
+        excel_import_action = data_menu.addAction("Excel'den Kalem İçe Aktar")
+        excel_import_action.triggered.connect(self.import_from_excel)
+        
+        data_menu.addSeparator()
         check_pozlar_action = data_menu.addAction("Poz Durumunu Kontrol Et")
         check_pozlar_action.triggered.connect(self.check_pozlar_status)
         
@@ -898,6 +921,7 @@ class MainWindow(QMainWindow):
             self.load_metraj_data()
             self.load_taseron_data()
             self.update_proje_ozet()
+            self.load_project_notes()
             self.statusBar().showMessage(f"Proje seçildi: {item.text(0)}")
         else:
             self.statusBar().showMessage("Geçersiz proje seçimi")
@@ -2107,6 +2131,132 @@ class MainWindow(QMainWindow):
                         self, "Hata",
                         "Geri yükleme sırasında bir hata oluştu."
                     )
+    
+    def load_project_notes(self) -> None:
+        """Proje notlarını yükle"""
+        if not self.current_project_id:
+            self.project_notes_text.clear()
+            self.project_notes_text.setEnabled(False)
+            return
+        
+        project = self.db.get_project(self.current_project_id)
+        if project:
+            notes = project.get('notlar', '') or ''
+            self.project_notes_text.setPlainText(notes)
+            self.project_notes_text.setEnabled(True)
+        else:
+            self.project_notes_text.clear()
+            self.project_notes_text.setEnabled(False)
+    
+    def save_project_notes(self) -> None:
+        """Proje notlarını kaydet"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        notes = self.project_notes_text.toPlainText()
+        if self.db.update_project(self.current_project_id, notlar=notes):
+            QMessageBox.information(self, "Başarılı", "Notlar kaydedildi")
+            self.statusBar().showMessage("Proje notları kaydedildi")
+        else:
+            QMessageBox.critical(self, "Hata", "Notlar kaydedilirken bir hata oluştu")
+    
+    def import_from_excel(self) -> None:
+        """Excel dosyasından kalem içe aktar"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        # Excel dosyası seç
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Excel Dosyası Seç", "", "Excel Dosyaları (*.xlsx *.xls)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            import pandas as pd
+            
+            # Excel dosyasını oku
+            df = pd.read_excel(file_path)
+            
+            # Gerekli sütunları kontrol et
+            required_columns = ['poz_no', 'tanim', 'miktar', 'birim']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            
+            if missing_columns:
+                QMessageBox.warning(
+                    self, "Hata",
+                    f"Excel dosyasında gerekli sütunlar eksik:\n{', '.join(missing_columns)}\n\n"
+                    f"Gerekli sütunlar: {', '.join(required_columns)}"
+                )
+                return
+            
+            # Kalemleri ekle
+            success_count = 0
+            error_count = 0
+            errors = []
+            
+            for index, row in df.iterrows():
+                try:
+                    poz_no = str(row.get('poz_no', '')).strip()
+                    tanim = str(row.get('tanim', '')).strip()
+                    kategori = str(row.get('kategori', '')).strip() if 'kategori' in df.columns else ''
+                    miktar = float(row.get('miktar', 0))
+                    birim = str(row.get('birim', '')).strip()
+                    birim_fiyat = float(row.get('birim_fiyat', 0)) if 'birim_fiyat' in df.columns else 0
+                    
+                    if not poz_no or not tanim:
+                        error_count += 1
+                        errors.append(f"Satır {index + 2}: Poz no veya tanım boş")
+                        continue
+                    
+                    # Toplam hesapla
+                    toplam = miktar * birim_fiyat if birim_fiyat > 0 else 0
+                    
+                    # Kalemi ekle
+                    self.db.add_item(
+                        proje_id=self.current_project_id,
+                        poz_no=poz_no,
+                        tanim=tanim,
+                        kategori=kategori,
+                        miktar=miktar,
+                        birim=birim,
+                        birim_fiyat=birim_fiyat,
+                        toplam=toplam
+                    )
+                    success_count += 1
+                    
+                except Exception as e:
+                    error_count += 1
+                    errors.append(f"Satır {index + 2}: {str(e)}")
+                    continue
+            
+            # Sonuç mesajı
+            message = f"İçe aktarma tamamlandı!\n\nBaşarılı: {success_count}\nHatalı: {error_count}"
+            
+            if errors and error_count <= 10:
+                message += f"\n\nHatalar:\n" + "\n".join(errors[:10])
+            elif errors:
+                message += f"\n\n(İlk 10 hata gösteriliyor, toplam {error_count} hata var)"
+            
+            if success_count > 0:
+                QMessageBox.information(self, "Başarılı", message)
+                # Verileri yenile
+                self.load_metraj_data()
+                self.update_proje_ozet()
+                self.statusBar().showMessage(f"{success_count} kalem içe aktarıldı")
+            else:
+                QMessageBox.warning(self, "Uyarı", message)
+                
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Hata",
+                f"Excel dosyası okunurken hata oluştu:\n{str(e)}"
+            )
+            import traceback
+            traceback.print_exc()
     
     def show_about(self) -> None:
         """Hakkında dialogu"""

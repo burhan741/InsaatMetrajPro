@@ -76,9 +76,17 @@ class DatabaseManager:
                     olusturma_tarihi TEXT NOT NULL,
                     guncelleme_tarihi TEXT,
                     durum TEXT DEFAULT 'aktif',
-                    toplam_maliyet REAL DEFAULT 0
+                    toplam_maliyet REAL DEFAULT 0,
+                    notlar TEXT
                 )
             """)
+            
+            # Proje notları sütunu ekle (migration)
+            try:
+                cursor.execute("ALTER TABLE projects ADD COLUMN notlar TEXT")
+            except sqlite3.OperationalError:
+                # Sütun zaten varsa hata verme
+                pass
             
             # Pozlar tablosu (Çevre ve Şehircilik Bakanlığı verileri için)
             cursor.execute("""
