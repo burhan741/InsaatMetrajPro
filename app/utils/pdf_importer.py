@@ -6,7 +6,13 @@ PDF dosyalarından poz numaraları ve birim fiyatları çıkarır
 import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
-import pdfplumber
+
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+    pdfplumber = None
 
 
 class PDFBirimFiyatImporter:
@@ -31,6 +37,12 @@ class PDFBirimFiyatImporter:
         Returns:
             List[Dict]: Poz ve fiyat bilgileri listesi
         """
+        if not PDFPLUMBER_AVAILABLE:
+            raise ImportError(
+                "pdfplumber kütüphanesi yüklü değil. "
+                "Yüklemek için: pip install pdfplumber"
+            )
+        
         extracted_data = []
         
         try:
