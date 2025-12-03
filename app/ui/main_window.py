@@ -5,6 +5,7 @@ PyQt6 ile modern kullanıcı arayüzü
 
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
@@ -832,6 +833,25 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction("Proje Aç")
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_project)
+        
+        file_menu.addSeparator()
+        
+        # Yedekleme menüsü
+        backup_menu = file_menu.addMenu("Yedekleme")
+        
+        # Proje yedekle
+        backup_project_action = backup_menu.addAction("Projeyi Yedekle")
+        backup_project_action.triggered.connect(self.backup_current_project)
+        
+        # Tüm projeleri yedekle
+        backup_all_action = backup_menu.addAction("Tüm Projeleri Yedekle")
+        backup_all_action.triggered.connect(self.backup_all_projects)
+        
+        backup_menu.addSeparator()
+        
+        # Geri yükle
+        restore_action = backup_menu.addAction("Yedekten Geri Yükle")
+        restore_action.triggered.connect(self.restore_project)
         
         file_menu.addSeparator()
         
@@ -1997,6 +2017,96 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Hata", f"Excel oluşturulurken hata oluştu:\n{str(e)}")
                 print(f"Excel export hatası: {e}")
+    
+    def backup_current_project(self) -> None:
+        """Seçili projeyi yedekle"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        # Proje adını al
+        project = self.db.get_project(self.current_project_id)
+        if not project:
+            QMessageBox.warning(self, "Uyarı", "Proje bulunamadı")
+            return
+        
+        # Yedek dosyası seç
+        default_name = f"{project['ad']}_yedek_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Projeyi Yedekle", default_name, "JSON Dosyaları (*.json)"
+        )
+        
+        if file_path:
+            if self.db.backup_project(self.current_project_id, Path(file_path)):
+                QMessageBox.information(
+                    self, "Başarılı",
+                    f"Proje başarıyla yedeklendi:\n{file_path}"
+                )
+                self.statusBar().showMessage(f"Proje yedeklendi: {file_path}")
+            else:
+                QMessageBox.critical(
+                    self, "Hata",
+                    "Yedekleme sırasında bir hata oluştu."
+                )
+    
+    def backup_all_projects(self) -> None:
+        """Tüm projeleri yedekle"""
+        # Yedek dosyası seç
+        default_name = f"tum_projeler_yedek_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Tüm Projeleri Yedekle", default_name, "JSON Dosyaları (*.json)"
+        )
+        
+        if file_path:
+            if self.db.backup_all_projects(Path(file_path)):
+                QMessageBox.information(
+                    self, "Başarılı",
+                    f"Tüm projeler başarıyla yedeklendi:\n{file_path}"
+                )
+                self.statusBar().showMessage(f"Tüm projeler yedeklendi: {file_path}")
+            else:
+                QMessageBox.critical(
+                    self, "Hata",
+                    "Yedekleme sırasında bir hata oluştu."
+                )
+    
+    def restore_project(self) -> None:
+        """Yedekten proje geri yükle"""
+        # Yedek dosyası seç
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Yedekten Geri Yükle", "", "JSON Dosyaları (*.json)"
+        )
+        
+        if file_path:
+            # Proje adı sor
+            from PyQt6.QtWidgets import QInputDialog
+            project_name, ok = QInputDialog.getText(
+                self, "Proje Adı",
+                "Yeni proje adı (boş bırakırsanız yedekteki ad kullanılır):"
+            )
+            
+            if ok:
+                new_name = project_name.strip() if project_name.strip() else None
+                project_id = self.db.restore_project(Path(file_path), new_name)
+                
+                if project_id:
+                    QMessageBox.information(
+                        self, "Başarılı",
+                        f"Proje başarıyla geri yüklendi!"
+                    )
+                    # Proje listesini yenile
+                    self.load_projects()
+                    # Yeni projeyi seç
+                    self.current_project_id = project_id
+                    self.load_metraj_data()
+                    self.load_taseron_data()
+                    self.update_proje_ozet()
+                    self.statusBar().showMessage("Proje geri yüklendi")
+                else:
+                    QMessageBox.critical(
+                        self, "Hata",
+                        "Geri yükleme sırasında bir hata oluştu."
+                    )
     
     def show_about(self) -> None:
         """Hakkında dialogu"""

@@ -4,6 +4,7 @@ SQLite veritabanı bağlantısı ve işlemleri için core modül
 """
 
 import sqlite3
+import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -801,4 +802,168 @@ class DatabaseManager:
                 """, (kaynak_birim, hedef_birim))
             row = cursor.fetchone()
             return row['donusum_katsayisi'] if row else None
+    
+    # Yedekleme ve Geri Yükleme İşlemleri
+    def backup_project(self, project_id: int, backup_path: Path) -> bool:
+        """
+        Projeyi yedekle (JSON formatında).
+        
+        Args:
+            project_id: Yedeklenecek proje ID'si
+            backup_path: Yedek dosyasının kaydedileceği yol
+            
+        Returns:
+            bool: Başarılı ise True
+        """
+        try:
+            # Proje bilgilerini al
+            project = self.get_project(project_id)
+            if not project:
+                return False
+            
+            # Metraj kalemlerini al
+            metraj_items = self.get_project_metraj(project_id)
+            
+            # Taşeron tekliflerini al
+            taseron_offers = self.get_taseron_teklifleri(project_id)
+            
+            # Yedek verisi oluştur
+            backup_data = {
+                'version': '1.0',
+                'backup_date': datetime.now().isoformat(),
+                'project': dict(project),
+                'metraj_items': [dict(item) for item in metraj_items],
+                'taseron_offers': [dict(offer) for offer in taseron_offers],
+                'taseron_teklifleri': [dict(offer) for offer in taseron_offers]  # Uyumluluk için
+            }
+            
+            # JSON dosyasına kaydet
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(backup_path, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Yedekleme hatası: {e}")
+            return False
+    
+    def restore_project(self, backup_path: Path, new_project_name: Optional[str] = None) -> Optional[int]:
+        """
+        Yedekten proje geri yükle.
+        
+        Args:
+            backup_path: Yedek dosyasının yolu
+            new_project_name: Yeni proje adı (None ise eski ad kullanılır)
+            
+        Returns:
+            Optional[int]: Geri yüklenen projenin ID'si, hata durumunda None
+        """
+        try:
+            # Yedek dosyasını oku
+            with open(backup_path, 'r', encoding='utf-8') as f:
+                backup_data = json.load(f)
+            
+            # Proje bilgilerini al
+            project_data = backup_data.get('project', {})
+            metraj_items = backup_data.get('metraj_items', [])
+            # Uyumluluk için hem 'taseron_offers' hem 'taseron_teklifleri' kontrol et
+            taseron_offers = backup_data.get('taseron_offers', backup_data.get('taseron_teklifleri', []))
+            
+            # Yeni proje oluştur
+            project_name = new_project_name or project_data.get('ad', 'Geri Yüklenen Proje')
+            project_id = self.create_project(
+                ad=project_name,
+                aciklama=project_data.get('aciklama', '')
+            )
+            
+            # Metraj kalemlerini geri yükle
+            for item in metraj_items:
+                try:
+                    self.add_item(
+                        proje_id=project_id,
+                        poz_no=item.get('poz_no', ''),
+                        tanim=item.get('tanim', ''),
+                        kategori=item.get('kategori', ''),
+                        miktar=item.get('miktar', 0),
+                        birim=item.get('birim', ''),
+                        birim_fiyat=item.get('birim_fiyat', 0),
+                        toplam=item.get('toplam', 0)
+                    )
+                except Exception as e:
+                    print(f"Metraj kalemi geri yükleme hatası: {e}")
+                    continue
+            
+            # Taşeron tekliflerini geri yükle
+            for offer in taseron_offers:
+                try:
+                    # Önce kalem ID'sini bul (poz_no'ya göre)
+                    kalem_id = None
+                    if offer.get('poz_no'):
+                        metraj = self.get_project_metraj(project_id)
+                        for item in metraj:
+                            if item.get('poz_no') == offer.get('poz_no'):
+                                kalem_id = item.get('id')
+                                break
+                    
+                    self.add_taseron_teklif(
+                        proje_id=project_id,
+                        firma_adi=offer.get('firma_adi', ''),
+                        kalem_id=kalem_id,
+                        fiyat=offer.get('fiyat', 0),
+                        poz_no=offer.get('poz_no', ''),
+                        tanim=offer.get('tanim', ''),
+                        miktar=offer.get('miktar', 0),
+                        birim=offer.get('birim', '')
+                    )
+                except Exception as e:
+                    print(f"Taşeron teklifi geri yükleme hatası: {e}")
+                    continue
+            
+            return project_id
+            
+        except Exception as e:
+            print(f"Geri yükleme hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def backup_all_projects(self, backup_path: Path) -> bool:
+        """
+        Tüm projeleri yedekle.
+        
+        Args:
+            backup_path: Yedek dosyasının kaydedileceği yol
+            
+        Returns:
+            bool: Başarılı ise True
+        """
+        try:
+            projects = self.get_all_projects()
+            backup_data = {
+                'version': '1.0',
+                'backup_date': datetime.now().isoformat(),
+                'backup_type': 'all_projects',
+                'projects': []
+            }
+            
+            for project in projects:
+                project_id = project['id']
+                project_backup = {
+                    'project': dict(project),
+                    'metraj_items': [dict(item) for item in self.get_project_metraj(project_id)],
+                    'taseron_offers': [dict(offer) for offer in self.get_taseron_teklifleri(project_id)]
+                }
+                backup_data['projects'].append(project_backup)
+            
+            # JSON dosyasına kaydet
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(backup_path, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Tüm projeleri yedekleme hatası: {e}")
+            return False
 
