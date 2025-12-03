@@ -1025,6 +1025,146 @@ class MainWindow(QMainWindow):
         
         self.tabs.addTab(tab, "💰 Birim Fiyatlar")
     
+    def load_birim_fiyatlar(self) -> None:
+        """Birim fiyatları yükle"""
+        aktif_only = self.fiyat_filter_combo.currentText() == "Sadece Aktif"
+        fiyatlar = self.db.get_all_birim_fiyatlar(aktif_only=aktif_only)
+        
+        self.birim_fiyat_table.setRowCount(len(fiyatlar))
+        
+        for row, fiyat in enumerate(fiyatlar):
+            self.birim_fiyat_table.setItem(row, 0, QTableWidgetItem(fiyat.get('poz_no', '')))
+            self.birim_fiyat_table.setItem(row, 1, QTableWidgetItem(fiyat.get('poz_tanim', '')))
+            self.birim_fiyat_table.setItem(row, 2, QTableWidgetItem(f"{fiyat.get('birim_fiyat', 0):,.2f} ₺"))
+            tarih = fiyat.get('tarih', '')[:10] if fiyat.get('tarih') else ''
+            self.birim_fiyat_table.setItem(row, 3, QTableWidgetItem(tarih))
+            self.birim_fiyat_table.setItem(row, 4, QTableWidgetItem(fiyat.get('kaynak', '')))
+            aktif_text = "Evet" if fiyat.get('aktif', 0) == 1 else "Hayır"
+            self.birim_fiyat_table.setItem(row, 5, QTableWidgetItem(aktif_text))
+            
+            # ID'yi sakla
+            item = self.birim_fiyat_table.item(row, 0)
+            if item:
+                item.setData(Qt.ItemDataRole.UserRole, fiyat.get('poz_no', ''))
+    
+    def view_fiyat_gecmisi(self, item: QTableWidgetItem) -> None:
+        """Fiyat geçmişini ve karşılaştırmayı göster"""
+        row = item.row()
+        poz_no_item = self.birim_fiyat_table.item(row, 0)
+        if not poz_no_item:
+            return
+        
+        poz_no = poz_no_item.data(Qt.ItemDataRole.UserRole)
+        if not poz_no:
+            poz_no = poz_no_item.text()
+        
+        # Fiyat geçmişini yükle
+        gecmis = self.db.get_birim_fiyat_gecmisi(poz_no=poz_no)
+        self.fiyat_gecmisi_table.setRowCount(len(gecmis))
+        
+        for row_idx, fiyat in enumerate(gecmis):
+            tarih = fiyat.get('tarih', '')[:10] if fiyat.get('tarih') else ''
+            self.fiyat_gecmisi_table.setItem(row_idx, 0, QTableWidgetItem(tarih))
+            self.fiyat_gecmisi_table.setItem(row_idx, 1, QTableWidgetItem(f"{fiyat.get('birim_fiyat', 0):,.2f} ₺"))
+            self.fiyat_gecmisi_table.setItem(row_idx, 2, QTableWidgetItem(fiyat.get('kaynak', '')))
+            self.fiyat_gecmisi_table.setItem(row_idx, 3, QTableWidgetItem(fiyat.get('aciklama', '')))
+            aktif_text = "Evet" if fiyat.get('aktif', 0) == 1 else "Hayır"
+            self.fiyat_gecmisi_table.setItem(row_idx, 4, QTableWidgetItem(aktif_text))
+        
+        # Karşılaştırma yap
+        karsilastirma = self.db.compare_birim_fiyatlar(poz_no)
+        
+        if karsilastirma['fiyat_sayisi'] > 0:
+            text = f"📊 Poz: {poz_no}\n\n"
+            text += f"💰 Toplam Fiyat Kaydı: {karsilastirma['fiyat_sayisi']}\n"
+            text += f"📉 En Düşük: {karsilastirma['en_dusuk']:,.2f} ₺\n"
+            text += f"📈 En Yüksek: {karsilastirma['en_yuksek']:,.2f} ₺\n"
+            text += f"📊 Ortalama: {karsilastirma['ortalama']:,.2f} ₺\n"
+            text += f"📏 Fark: {karsilastirma['en_yuksek'] - karsilastirma['en_dusuk']:,.2f} ₺\n\n"
+            
+            if karsilastirma['kaynaklar']:
+                text += "📋 Kaynaklar:\n"
+                for kaynak, fiyatlar in karsilastirma['kaynaklar'].items():
+                    ortalama_kaynak = sum(fiyatlar) / len(fiyatlar)
+                    text += f"  • {kaynak}: {ortalama_kaynak:,.2f} ₺ ({len(fiyatlar)} kayıt)\n"
+        else:
+            text = f"Poz {poz_no} için henüz fiyat kaydı yok."
+        
+        self.fiyat_karsilastirma_label.setText(text)
+    
+    def add_birim_fiyat(self) -> None:
+        """Birim fiyat ekle dialogu"""
+        from PyQt6.QtWidgets import QDialog, QFormLayout, QDateEdit
+        from PyQt6.QtCore import QDate
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Birim Fiyat Ekle")
+        dialog.setMinimumWidth(400)
+        
+        layout = QFormLayout(dialog)
+        
+        poz_no_input = QLineEdit()
+        poz_no_input.setPlaceholderText("Örn: 03.001")
+        layout.addRow("Poz No:", poz_no_input)
+        
+        birim_fiyat_spin = QDoubleSpinBox()
+        birim_fiyat_spin.setMaximum(999999999)
+        birim_fiyat_spin.setDecimals(2)
+        birim_fiyat_spin.setPrefix("₺ ")
+        layout.addRow("Birim Fiyat:", birim_fiyat_spin)
+        
+        tarih_input = QDateEdit()
+        tarih_input.setDate(QDate.currentDate())
+        tarih_input.setCalendarPopup(True)
+        layout.addRow("Tarih:", tarih_input)
+        
+        kaynak_input = QLineEdit()
+        kaynak_input.setPlaceholderText("Örn: Tedarikçi A, Resmi Fiyat")
+        layout.addRow("Kaynak:", kaynak_input)
+        
+        aciklama_input = QTextEdit()
+        aciklama_input.setMaximumHeight(80)
+        layout.addRow("Açıklama:", aciklama_input)
+        
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("Kaydet")
+        btn_ok.clicked.connect(dialog.accept)
+        btn_cancel = QPushButton("İptal")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addRow(btn_layout)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            poz_no = poz_no_input.text().strip()
+            birim_fiyat = birim_fiyat_spin.value()
+            tarih = tarih_input.date().toString("yyyy-MM-dd")
+            kaynak = kaynak_input.text().strip()
+            aciklama = aciklama_input.toPlainText().strip()
+            
+            if not poz_no:
+                QMessageBox.warning(self, "Uyarı", "Poz numarası gereklidir")
+                return
+            
+            if birim_fiyat <= 0:
+                QMessageBox.warning(self, "Uyarı", "Birim fiyat 0'dan büyük olmalıdır")
+                return
+            
+            fiyat_id = self.db.add_birim_fiyat(
+                poz_no=poz_no,
+                birim_fiyat=birim_fiyat,
+                tarih=tarih,
+                kaynak=kaynak,
+                aciklama=aciklama
+            )
+            
+            if fiyat_id:
+                QMessageBox.information(self, "Başarılı", "Birim fiyat eklendi")
+                self.load_birim_fiyatlar()
+                self.statusBar().showMessage(f"Birim fiyat eklendi: {poz_no}")
+            else:
+                QMessageBox.critical(self, "Hata", "Birim fiyat eklenirken bir hata oluştu")
+    
     def create_ihale_tab(self) -> None:
         """İhale Dosyası Hazırlama sekmesini oluştur"""
         tab = QWidget()
