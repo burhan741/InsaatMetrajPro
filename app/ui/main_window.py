@@ -24,6 +24,7 @@ from app.utils.data_loader import (
     initialize_material_data, check_malzemeler_loaded, check_formuller_loaded
 )
 from app.utils.export_manager import ExportManager
+from app.utils.pdf_importer import PDFBirimFiyatImporter
 from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
 
 
@@ -1072,6 +1073,10 @@ class MainWindow(QMainWindow):
         # Excel Import
         excel_import_action = data_menu.addAction("Excel'den Kalem İçe Aktar")
         excel_import_action.triggered.connect(self.import_from_excel)
+        
+        # PDF Import
+        pdf_import_action = data_menu.addAction("PDF'den Birim Fiyat İçe Aktar")
+        pdf_import_action.triggered.connect(self.import_from_pdf)
         
         data_menu.addSeparator()
         check_pozlar_action = data_menu.addAction("Poz Durumunu Kontrol Et")
