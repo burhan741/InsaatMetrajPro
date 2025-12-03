@@ -238,6 +238,9 @@ class MainWindow(QMainWindow):
         # Sekme 4: Malzeme Listesi
         self.create_malzeme_tab()
         
+        # Sekme 5: Şablonlar
+        self.create_sablonlar_tab()
+        
         parent.addWidget(self.tabs)
         
     def create_metraj_tab(self) -> None:
@@ -851,6 +854,72 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.critical(self, "Hata", "Export sırasında bir hata oluştu.")
         
+    def create_sablonlar_tab(self) -> None:
+        """Şablonlar sekmesini oluştur"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Buton barı
+        btn_layout = QHBoxLayout()
+        
+        btn_create_from_project = QPushButton("Mevcut Projeden Şablon Oluştur")
+        btn_create_from_project.clicked.connect(self.create_template_from_project)
+        btn_layout.addWidget(btn_create_from_project)
+        
+        btn_create_project = QPushButton("Şablondan Proje Oluştur")
+        btn_create_project.clicked.connect(self.create_project_from_template)
+        btn_layout.addWidget(btn_create_project)
+        
+        btn_refresh = QPushButton("Yenile")
+        btn_refresh.clicked.connect(self.load_templates)
+        btn_layout.addWidget(btn_refresh)
+        
+        btn_layout.addStretch()
+        
+        btn_delete = QPushButton("Şablon Sil")
+        btn_delete.clicked.connect(self.delete_template)
+        btn_delete.setStyleSheet("background-color: #c9184a;")
+        btn_layout.addWidget(btn_delete)
+        
+        layout.addLayout(btn_layout)
+        
+        # Şablon listesi
+        self.template_table = QTableWidget()
+        self.template_table.setColumnCount(4)
+        self.template_table.setHorizontalHeaderLabels([
+            "Şablon Adı", "Açıklama", "Oluşturulma Tarihi", "Kalem Sayısı"
+        ])
+        self.template_table.setAlternatingRowColors(True)
+        self.template_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.template_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.template_table.horizontalHeader().setStretchLastSection(True)
+        self.template_table.setColumnWidth(0, 250)
+        self.template_table.setColumnWidth(1, 300)
+        self.template_table.setColumnWidth(2, 150)
+        self.template_table.itemDoubleClicked.connect(self.view_template_items)
+        layout.addWidget(self.template_table)
+        
+        # Şablon kalemleri (seçili şablon için)
+        items_group = QGroupBox("Şablon Kalemleri")
+        items_layout = QVBoxLayout()
+        
+        self.template_items_table = QTableWidget()
+        self.template_items_table.setColumnCount(7)
+        self.template_items_table.setHorizontalHeaderLabels([
+            "Poz No", "Tanım", "Kategori", "Miktar", "Birim", "Birim Fiyat", "Toplam"
+        ])
+        self.template_items_table.setAlternatingRowColors(True)
+        self.template_items_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.template_items_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.template_items_table.horizontalHeader().setStretchLastSection(True)
+        items_layout.addWidget(self.template_items_table)
+        
+        items_group.setLayout(items_layout)
+        layout.addWidget(items_group)
+        
+        self.tabs.addTab(tab, "📋 Şablonlar")
+    
     def create_menu_bar(self) -> None:
         """Menü çubuğunu oluştur"""
         menubar = self.menuBar()
@@ -2327,6 +2396,197 @@ class MainWindow(QMainWindow):
             # Poz araması için bir dialog veya sonuç gösterimi eklenebilir
             # Şimdilik sadece proje ve kalem araması yapıyoruz
             pass
+    
+    def load_templates(self) -> None:
+        """Şablonları yükle"""
+        templates = self.db.get_all_templates()
+        self.template_table.setRowCount(len(templates))
+        
+        for row, template in enumerate(templates):
+            self.template_table.setItem(row, 0, QTableWidgetItem(template.get('ad', '')))
+            self.template_table.setItem(row, 1, QTableWidgetItem(template.get('aciklama', '')))
+            tarih = template.get('olusturma_tarihi', '')[:10] if template.get('olusturma_tarihi') else ''
+            self.template_table.setItem(row, 2, QTableWidgetItem(tarih))
+            
+            # Kalem sayısını al
+            items = self.db.get_template_items(template['id'])
+            self.template_table.setItem(row, 3, QTableWidgetItem(str(len(items))))
+            
+            # ID'yi sakla
+            item = self.template_table.item(row, 0)
+            if item:
+                item.setData(Qt.ItemDataRole.UserRole, template['id'])
+    
+    def view_template_items(self, item: QTableWidgetItem) -> None:
+        """Şablon kalemlerini göster"""
+        row = item.row()
+        template_item = self.template_table.item(row, 0)
+        if not template_item:
+            return
+        
+        template_id = template_item.data(Qt.ItemDataRole.UserRole)
+        if not template_id:
+            return
+        
+        items = self.db.get_template_items(template_id)
+        self.template_items_table.setRowCount(len(items))
+        
+        for row_idx, item_data in enumerate(items):
+            self.template_items_table.setItem(row_idx, 0, QTableWidgetItem(item_data.get('poz_no', '')))
+            self.template_items_table.setItem(row_idx, 1, QTableWidgetItem(item_data.get('tanim', '')))
+            self.template_items_table.setItem(row_idx, 2, QTableWidgetItem(item_data.get('kategori', '')))
+            self.template_items_table.setItem(row_idx, 3, QTableWidgetItem(f"{item_data.get('miktar', 0):,.2f}"))
+            self.template_items_table.setItem(row_idx, 4, QTableWidgetItem(item_data.get('birim', '')))
+            self.template_items_table.setItem(row_idx, 5, QTableWidgetItem(f"{item_data.get('birim_fiyat', 0):,.2f}"))
+            self.template_items_table.setItem(row_idx, 6, QTableWidgetItem(f"{item_data.get('toplam', 0):,.2f}"))
+    
+    def create_template_from_project(self) -> None:
+        """Mevcut projeden şablon oluştur"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        project = self.db.get_project(self.current_project_id)
+        if not project:
+            QMessageBox.warning(self, "Uyarı", "Proje bulunamadı")
+            return
+        
+        # Şablon adı ve açıklaması sor
+        from PyQt6.QtWidgets import QInputDialog
+        
+        template_name, ok1 = QInputDialog.getText(
+            self, "Şablon Oluştur",
+            f"Şablon adı:\n(Proje: {project['ad']})"
+        )
+        
+        if not ok1 or not template_name.strip():
+            return
+        
+        template_description, ok2 = QInputDialog.getText(
+            self, "Şablon Açıklaması",
+            "Şablon açıklaması (isteğe bağlı):"
+        )
+        
+        if not ok2:
+            return
+        
+        # Şablon oluştur
+        template_id = self.db.create_template_from_project(
+            self.current_project_id,
+            template_name.strip(),
+            template_description.strip()
+        )
+        
+        if template_id:
+            QMessageBox.information(
+                self, "Başarılı",
+                f"Şablon başarıyla oluşturuldu!\n\n"
+                f"Şablon adı: {template_name}\n"
+                f"Kalem sayısı: {len(self.db.get_project_metraj(self.current_project_id))}"
+            )
+            self.load_templates()
+            self.statusBar().showMessage(f"Şablon oluşturuldu: {template_name}")
+        else:
+            QMessageBox.critical(self, "Hata", "Şablon oluşturulurken bir hata oluştu")
+    
+    def create_project_from_template(self) -> None:
+        """Şablondan proje oluştur"""
+        current_row = self.template_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen bir şablon seçin")
+            return
+        
+        template_item = self.template_table.item(current_row, 0)
+        if not template_item:
+            return
+        
+        template_id = template_item.data(Qt.ItemDataRole.UserRole)
+        if not template_id:
+            return
+        
+        template = self.db.get_template(template_id)
+        if not template:
+            QMessageBox.warning(self, "Uyarı", "Şablon bulunamadı")
+            return
+        
+        # Proje adı ve açıklaması sor
+        from PyQt6.QtWidgets import QInputDialog
+        
+        project_name, ok1 = QInputDialog.getText(
+            self, "Proje Oluştur",
+            f"Yeni proje adı:\n(Şablon: {template['ad']})"
+        )
+        
+        if not ok1 or not project_name.strip():
+            return
+        
+        project_description, ok2 = QInputDialog.getText(
+            self, "Proje Açıklaması",
+            "Proje açıklaması (isteğe bağlı):"
+        )
+        
+        if not ok2:
+            return
+        
+        # Proje oluştur
+        project_id = self.db.create_project_from_template(
+            template_id,
+            project_name.strip(),
+            project_description.strip()
+        )
+        
+        if project_id:
+            QMessageBox.information(
+                self, "Başarılı",
+                f"Proje başarıyla oluşturuldu!\n\n"
+                f"Proje adı: {project_name}\n"
+                f"Kalem sayısı: {len(self.db.get_template_items(template_id))}"
+            )
+            # Proje listesini yenile
+            self.load_projects()
+            # Yeni projeyi seç
+            self.current_project_id = project_id
+            self.load_metraj_data()
+            self.load_taseron_data()
+            self.update_proje_ozet()
+            self.load_project_notes()
+            self.statusBar().showMessage(f"Proje oluşturuldu: {project_name}")
+        else:
+            QMessageBox.critical(self, "Hata", "Proje oluşturulurken bir hata oluştu")
+    
+    def delete_template(self) -> None:
+        """Şablonu sil"""
+        current_row = self.template_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek istediğiniz şablonu seçin")
+            return
+        
+        template_item = self.template_table.item(current_row, 0)
+        if not template_item:
+            return
+        
+        template_id = template_item.data(Qt.ItemDataRole.UserRole)
+        template_name = template_item.text()
+        
+        if not template_id:
+            return
+        
+        # Onay al
+        reply = QMessageBox.question(
+            self, "Şablon Sil",
+            f"'{template_name}' şablonunu silmek istediğinize emin misiniz?\n\n"
+            "Bu işlem geri alınamaz!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            if self.db.delete_template(template_id):
+                QMessageBox.information(self, "Başarılı", "Şablon silindi")
+                self.load_templates()
+                self.template_items_table.setRowCount(0)
+                self.statusBar().showMessage("Şablon silindi")
+            else:
+                QMessageBox.critical(self, "Hata", "Şablon silinirken bir hata oluştu")
     
     def show_about(self) -> None:
         """Hakkında dialogu"""

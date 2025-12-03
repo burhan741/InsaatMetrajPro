@@ -88,6 +88,33 @@ class DatabaseManager:
                 # Sütun zaten varsa hata verme
                 pass
             
+            # Şablonlar tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sablonlar (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ad TEXT NOT NULL,
+                    aciklama TEXT,
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT
+                )
+            """)
+            
+            # Şablon kalemleri tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sablon_kalemleri (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sablon_id INTEGER NOT NULL,
+                    poz_no TEXT,
+                    tanim TEXT NOT NULL,
+                    kategori TEXT,
+                    miktar REAL DEFAULT 0,
+                    birim TEXT,
+                    birim_fiyat REAL DEFAULT 0,
+                    toplam REAL DEFAULT 0,
+                    FOREIGN KEY (sablon_id) REFERENCES sablonlar(id) ON DELETE CASCADE
+                )
+            """)
+            
             # Pozlar tablosu (Çevre ve Şehircilik Bakanlığı verileri için)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pozlar (
@@ -974,4 +1001,224 @@ class DatabaseManager:
         except Exception as e:
             print(f"Tüm projeleri yedekleme hatası: {e}")
             return False
+    
+    # Şablon İşlemleri
+    def create_template(self, ad: str, aciklama: str = "") -> int:
+        """
+        Yeni şablon oluştur.
+        
+        Args:
+            ad: Şablon adı
+            aciklama: Şablon açıklaması
+            
+        Returns:
+            int: Oluşturulan şablonun ID'si
+        """
+        now = datetime.now().isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO sablonlar (ad, aciklama, olusturma_tarihi, guncelleme_tarihi)
+                VALUES (?, ?, ?, ?)
+            """, (ad, aciklama, now, now))
+            return cursor.lastrowid
+    
+    def get_all_templates(self) -> List[Dict[str, Any]]:
+        """
+        Tüm şablonları getir.
+        
+        Returns:
+            List[Dict]: Şablon listesi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM sablonlar
+                ORDER BY olusturma_tarihi DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_template(self, template_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Şablon bilgilerini getir.
+        
+        Args:
+            template_id: Şablon ID'si
+            
+        Returns:
+            Optional[Dict]: Şablon bilgileri
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM sablonlar WHERE id = ?", (template_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def get_template_items(self, template_id: int) -> List[Dict[str, Any]]:
+        """
+        Şablon kalemlerini getir.
+        
+        Args:
+            template_id: Şablon ID'si
+            
+        Returns:
+            List[Dict]: Şablon kalemleri listesi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM sablon_kalemleri
+                WHERE sablon_id = ?
+                ORDER BY id
+            """, (template_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def add_template_item(self, sablon_id: int, poz_no: str = "", tanim: str = "",
+                         kategori: str = "", miktar: float = 0, birim: str = "",
+                         birim_fiyat: float = 0, toplam: float = 0) -> int:
+        """
+        Şablona kalem ekle.
+        
+        Args:
+            sablon_id: Şablon ID'si
+            poz_no: Poz numarası
+            tanim: Kalem tanımı
+            kategori: Kategori
+            miktar: Miktar
+            birim: Birim
+            birim_fiyat: Birim fiyat
+            toplam: Toplam
+            
+        Returns:
+            int: Eklenen kalemin ID'si
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO sablon_kalemleri 
+                (sablon_id, poz_no, tanim, kategori, miktar, birim, birim_fiyat, toplam)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (sablon_id, poz_no, tanim, kategori, miktar, birim, birim_fiyat, toplam))
+            return cursor.lastrowid
+    
+    def create_project_from_template(self, template_id: int, project_name: str, 
+                                    project_description: str = "") -> Optional[int]:
+        """
+        Şablondan proje oluştur.
+        
+        Args:
+            template_id: Şablon ID'si
+            project_name: Yeni proje adı
+            project_description: Yeni proje açıklaması
+            
+        Returns:
+            Optional[int]: Oluşturulan projenin ID'si
+        """
+        try:
+            # Yeni proje oluştur
+            project_id = self.create_project(project_name, project_description)
+            
+            # Şablon kalemlerini al
+            template_items = self.get_template_items(template_id)
+            
+            # Kalemleri projeye ekle
+            for item in template_items:
+                self.add_item(
+                    proje_id=project_id,
+                    poz_no=item.get('poz_no', ''),
+                    tanim=item.get('tanim', ''),
+                    kategori=item.get('kategori', ''),
+                    miktar=item.get('miktar', 0),
+                    birim=item.get('birim', ''),
+                    birim_fiyat=item.get('birim_fiyat', 0),
+                    toplam=item.get('toplam', 0)
+                )
+            
+            return project_id
+            
+        except Exception as e:
+            print(f"Şablondan proje oluşturma hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def create_template_from_project(self, project_id: int, template_name: str, 
+                                    template_description: str = "") -> Optional[int]:
+        """
+        Projeden şablon oluştur.
+        
+        Args:
+            project_id: Proje ID'si
+            template_name: Şablon adı
+            template_description: Şablon açıklaması
+            
+        Returns:
+            Optional[int]: Oluşturulan şablonun ID'si
+        """
+        try:
+            # Yeni şablon oluştur
+            template_id = self.create_template(template_name, template_description)
+            
+            # Proje kalemlerini al
+            project_items = self.get_project_metraj(project_id)
+            
+            # Kalemleri şablona ekle
+            for item in project_items:
+                self.add_template_item(
+                    sablon_id=template_id,
+                    poz_no=item.get('poz_no', ''),
+                    tanim=item.get('tanim', ''),
+                    kategori=item.get('kategori', ''),
+                    miktar=item.get('miktar', 0),
+                    birim=item.get('birim', ''),
+                    birim_fiyat=item.get('birim_fiyat', 0),
+                    toplam=item.get('toplam', 0)
+                )
+            
+            return template_id
+            
+        except Exception as e:
+            print(f"Projeden şablon oluşturma hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def delete_template(self, template_id: int) -> bool:
+        """
+        Şablonu sil.
+        
+        Args:
+            template_id: Şablon ID'si
+            
+        Returns:
+            bool: Başarı durumu
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM sablonlar WHERE id = ?", (template_id,))
+            return cursor.rowcount > 0
+    
+    def update_template(self, template_id: int, **kwargs) -> bool:
+        """
+        Şablonu güncelle.
+        
+        Args:
+            template_id: Şablon ID'si
+            **kwargs: Güncellenecek alanlar
+            
+        Returns:
+            bool: Başarı durumu
+        """
+        if not kwargs:
+            return False
+            
+        now = datetime.now().isoformat()
+        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        fields += ", guncelleme_tarihi = ?"
+        values = list(kwargs.values()) + [now, template_id]
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE sablonlar SET {fields} WHERE id = ?", values)
+            return cursor.rowcount > 0
 
