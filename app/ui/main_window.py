@@ -2258,6 +2258,59 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
     
+    def on_search_text_changed(self) -> None:
+        """Arama metni değiştiğinde"""
+        search_text = self.search_input.text().strip().lower()
+        search_type = self.search_type_combo.currentText()
+        
+        if not search_text:
+            # Arama boşsa normal listeyi göster
+            self.load_projects()
+            if self.current_project_id:
+                self.load_metraj_data()
+            return
+        
+        # Proje araması
+        if search_type in ["Tümü", "Projeler"]:
+            projects = self.db.get_all_projects()
+            self.project_tree.clear()
+            for project in projects:
+                if search_text in project['ad'].lower() or (project.get('aciklama', '') and search_text in project['aciklama'].lower()):
+                    item = QTreeWidgetItem(self.project_tree)
+                    item.setText(0, project['ad'])
+                    item.setData(0, Qt.ItemDataRole.UserRole, project['id'])
+        
+        # Kalem araması (seçili projede)
+        if search_type in ["Tümü", "Kalemler"] and self.current_project_id:
+            metraj_items = self.db.get_project_metraj(self.current_project_id)
+            filtered_items = []
+            for item in metraj_items:
+                if (search_text in item.get('tanim', '').lower() or
+                    search_text in item.get('poz_no', '').lower() or
+                    search_text in item.get('kategori', '').lower()):
+                    filtered_items.append(item)
+            
+            # Metraj tablosunu filtrele
+            self.metraj_table.setRowCount(len(filtered_items))
+            for row, item in enumerate(filtered_items):
+                self.metraj_table.setItem(row, 0, QTableWidgetItem(item.get('poz_no', '')))
+                self.metraj_table.setItem(row, 1, QTableWidgetItem(item.get('tanim', '')))
+                self.metraj_table.setItem(row, 2, QTableWidgetItem(item.get('kategori', '')))
+                self.metraj_table.setItem(row, 3, QTableWidgetItem(f"{item.get('miktar', 0):,.2f}"))
+                self.metraj_table.setItem(row, 4, QTableWidgetItem(item.get('birim', '')))
+                self.metraj_table.setItem(row, 5, QTableWidgetItem(f"{item.get('birim_fiyat', 0):,.2f}"))
+                self.metraj_table.setItem(row, 6, QTableWidgetItem(f"{item.get('toplam', 0):,.2f}"))
+            
+            # Toplamı güncelle
+            toplam = sum(item.get('toplam', 0) for item in filtered_items)
+            self.total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+        
+        # Poz araması (tüm pozlar)
+        if search_type in ["Tümü", "Pozlar"]:
+            # Poz araması için bir dialog veya sonuç gösterimi eklenebilir
+            # Şimdilik sadece proje ve kalem araması yapıyoruz
+            pass
+    
     def show_about(self) -> None:
         """Hakkında dialogu"""
         QMessageBox.about(
