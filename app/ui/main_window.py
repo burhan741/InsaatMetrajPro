@@ -3121,6 +3121,460 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.critical(self, "Hata", "Şablon silinirken bir hata oluştu")
     
+    def load_ihaleler(self) -> None:
+        """İhaleleri yükle"""
+        ihaleler = self.db.get_all_ihaleler()
+        self.ihale_combo.clear()
+        self.ihale_combo.addItem("-- İhale Seçin --", None)
+        for ihale in ihaleler:
+            self.ihale_combo.addItem(ihale['ad'], ihale['id'])
+    
+    def on_ihale_changed(self) -> None:
+        """İhale seçildiğinde"""
+        ihale_id = self.ihale_combo.currentData()
+        self.current_ihale_id = ihale_id
+        if ihale_id:
+            self.load_ihale_kalemleri()
+        else:
+            self.ihale_kalem_table.setRowCount(0)
+            self.ihale_total_label.setText("Toplam: 0.00 ₺")
+    
+    def new_ihale(self) -> None:
+        """Yeni ihale oluştur"""
+        from PyQt6.QtWidgets import QInputDialog
+        
+        ad, ok1 = QInputDialog.getText(self, "Yeni İhale", "İhale adı:")
+        if not ok1 or not ad.strip():
+            return
+        
+        aciklama, ok2 = QInputDialog.getText(self, "İhale Açıklaması", "Açıklama (isteğe bağlı):")
+        if not ok2:
+            return
+        
+        ihale_id = self.db.create_ihale(ad.strip(), aciklama.strip())
+        if ihale_id:
+            self.load_ihaleler()
+            # Yeni oluşturulan ihale seçili olsun
+            index = self.ihale_combo.findData(ihale_id)
+            if index >= 0:
+                self.ihale_combo.setCurrentIndex(index)
+            QMessageBox.information(self, "Başarılı", "İhale oluşturuldu")
+            self.statusBar().showMessage(f"İhale oluşturuldu: {ad}")
+    
+    def on_ihale_poz_search(self) -> None:
+        """Poz arama metni değiştiğinde"""
+        search_text = self.ihale_poz_search.text().strip()
+        if len(search_text) < 2:
+            self.ihale_poz_results_table.setRowCount(0)
+            return
+        
+        pozlar = self.db.search_pozlar(search_text, limit=50)
+        self.ihale_poz_results_table.setRowCount(len(pozlar))
+        
+        for row, poz in enumerate(pozlar):
+            self.ihale_poz_results_table.setItem(row, 0, QTableWidgetItem(poz.get('poz_no', '')))
+            self.ihale_poz_results_table.setItem(row, 1, QTableWidgetItem(poz.get('tanim', '')))
+            self.ihale_poz_results_table.setItem(row, 2, QTableWidgetItem(poz.get('birim', '')))
+            
+            # Birim fiyatı getir
+            fiyat_data = self.db.get_birim_fiyat(poz_no=poz.get('poz_no', ''))
+            birim_fiyat = fiyat_data.get('birim_fiyat', 0) if fiyat_data else 0
+            self.ihale_poz_results_table.setItem(row, 3, QTableWidgetItem(f"{birim_fiyat:,.2f} ₺" if birim_fiyat else "Fiyat yok"))
+            
+            # Poz bilgisini sakla
+            item = self.ihale_poz_results_table.item(row, 0)
+            if item:
+                item.setData(Qt.ItemDataRole.UserRole, poz)
+    
+    def add_selected_poz_to_ihale(self, item: QTableWidgetItem) -> None:
+        """Seçili pozu ihale listesine ekle"""
+        if not self.current_ihale_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir ihale seçin")
+            return
+        
+        row = item.row()
+        poz_item = self.ihale_poz_results_table.item(row, 0)
+        if not poz_item:
+            return
+        
+        poz_data = poz_item.data(Qt.ItemDataRole.UserRole)
+        if not poz_data:
+            return
+        
+        self._add_poz_to_ihale_list(poz_data)
+    
+    def add_poz_to_ihale(self) -> None:
+        """Arama sonuçlarından seçili pozu ekle"""
+        if not self.current_ihale_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir ihale seçin")
+            return
+        
+        current_row = self.ihale_poz_results_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen bir poz seçin")
+            return
+        
+        poz_item = self.ihale_poz_results_table.item(current_row, 0)
+        if not poz_item:
+            return
+        
+        poz_data = poz_item.data(Qt.ItemDataRole.UserRole)
+        if not poz_data:
+            return
+        
+        self._add_poz_to_ihale_list(poz_data)
+    
+    def _add_poz_to_ihale_list(self, poz_data: Dict[str, Any]) -> None:
+        """Pozu ihale listesine ekle (iç fonksiyon)"""
+        poz_no = poz_data.get('poz_no', '')
+        poz_tanim = poz_data.get('tanim', '')
+        kategori = poz_data.get('kategori', '')
+        birim = poz_data.get('birim', '')
+        
+        # Birim fiyatı getir (otomatik)
+        fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no)
+        birim_fiyat = fiyat_data.get('birim_fiyat', 0) if fiyat_data else 0
+        
+        # İhale kalemine ekle (birim miktar 0, kullanıcı girecek)
+        kalem_id = self.db.add_ihale_kalem(
+            ihale_id=self.current_ihale_id,
+            poz_no=poz_no,
+            poz_tanim=poz_tanim,
+            kategori=kategori,
+            birim_miktar=0,  # Kullanıcı girecek
+            birim=birim,
+            birim_fiyat=birim_fiyat,
+            toplam=0
+        )
+        
+        if kalem_id:
+            self.load_ihale_kalemleri()
+            self.statusBar().showMessage(f"Poz eklendi: {poz_no}")
+    
+    def load_ihale_kalemleri(self) -> None:
+        """İhale kalemlerini yükle"""
+        if not self.current_ihale_id:
+            self.ihale_kalem_table.setRowCount(0)
+            return
+        
+        kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
+        self.ihale_kalem_table.setRowCount(len(kalemler))
+        
+        toplam = 0.0
+        
+        for row, kalem in enumerate(kalemler):
+            # Sıra
+            self.ihale_kalem_table.setItem(row, 0, QTableWidgetItem(str(kalem.get('sira_no', row + 1))))
+            
+            # Poz No
+            self.ihale_kalem_table.setItem(row, 1, QTableWidgetItem(kalem.get('poz_no', '')))
+            
+            # Tanım
+            self.ihale_kalem_table.setItem(row, 2, QTableWidgetItem(kalem.get('poz_tanim', '')))
+            
+            # Birim Miktar (düzenlenebilir)
+            miktar_item = QTableWidgetItem(f"{kalem.get('birim_miktar', 0):,.2f}")
+            miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.ihale_kalem_table.setItem(row, 3, miktar_item)
+            
+            # Birim
+            self.ihale_kalem_table.setItem(row, 4, QTableWidgetItem(kalem.get('birim', '')))
+            
+            # Birim Fiyat (düzenlenebilir)
+            fiyat_item = QTableWidgetItem(f"{kalem.get('birim_fiyat', 0):,.2f}")
+            fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.ihale_kalem_table.setItem(row, 5, fiyat_item)
+            
+            # Toplam (hesaplanır, düzenlenemez)
+            toplam_deger = kalem.get('toplam', 0)
+            toplam += toplam_deger
+            toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
+            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.ihale_kalem_table.setItem(row, 6, toplam_item)
+            
+            # ID'yi sakla
+            item = self.ihale_kalem_table.item(row, 0)
+            if item:
+                item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
+        
+        self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+    
+    def on_ihale_kalem_changed(self, item: QTableWidgetItem) -> None:
+        """İhale kalemi değiştiğinde (birim miktar veya birim fiyat)"""
+        row = item.row()
+        kalem_id_item = self.ihale_kalem_table.item(row, 0)
+        if not kalem_id_item:
+            return
+        
+        kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
+        if not kalem_id:
+            return
+        
+        # Birim miktar ve birim fiyatı al
+        miktar_item = self.ihale_kalem_table.item(row, 3)
+        fiyat_item = self.ihale_kalem_table.item(row, 5)
+        
+        if not miktar_item or not fiyat_item:
+            return
+        
+        try:
+            miktar_text = miktar_item.text().replace(",", ".").strip()
+            fiyat_text = fiyat_item.text().replace(",", ".").replace("₺", "").strip()
+            
+            birim_miktar = float(miktar_text) if miktar_text else 0.0
+            birim_fiyat = float(fiyat_text) if fiyat_text else 0.0
+            
+            # Toplam hesapla
+            toplam = birim_miktar * birim_fiyat
+            
+            # Veritabanını güncelle
+            self.db.update_ihale_kalem(kalem_id, birim_miktar=birim_miktar, birim_fiyat=birim_fiyat, toplam=toplam)
+            
+            # Toplam sütununu güncelle
+            toplam_item = QTableWidgetItem(f"{toplam:,.2f} ₺")
+            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.ihale_kalem_table.setItem(row, 6, toplam_item)
+            
+            # Genel toplamı güncelle
+            self.update_ihale_total()
+            
+        except ValueError:
+            QMessageBox.warning(self, "Hata", "Geçersiz sayı formatı")
+    
+    def update_ihale_total(self) -> None:
+        """İhale toplamını güncelle"""
+        toplam = 0.0
+        for row in range(self.ihale_kalem_table.rowCount()):
+            toplam_item = self.ihale_kalem_table.item(row, 6)
+            if toplam_item:
+                toplam_text = toplam_item.text().replace("₺", "").replace(",", ".").strip()
+                try:
+                    toplam += float(toplam_text)
+                except ValueError:
+                    pass
+        
+        self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+    
+    def delete_ihale_kalem(self) -> None:
+        """İhale kalemini sil"""
+        if not self.current_ihale_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir ihale seçin")
+            return
+        
+        current_row = self.ihale_kalem_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek istediğiniz kalemi seçin")
+            return
+        
+        kalem_id_item = self.ihale_kalem_table.item(current_row, 0)
+        if not kalem_id_item:
+            return
+        
+        kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
+        poz_no = self.ihale_kalem_table.item(current_row, 1).text()
+        
+        reply = QMessageBox.question(
+            self, "Kalem Sil",
+            f"'{poz_no}' kalemini silmek istediğinize emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            if self.db.delete_ihale_kalem(kalem_id):
+                self.load_ihale_kalemleri()
+                self.statusBar().showMessage("Kalem silindi")
+    
+    def export_ihale_pdf(self) -> None:
+        """İhale dosyasını PDF olarak export et"""
+        if not self.current_ihale_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir ihale seçin")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "PDF İhale Dosyası Oluştur", "", "PDF Dosyaları (*.pdf)"
+        )
+        
+        if file_path:
+            try:
+                ihale = self.db.get_ihale(self.current_ihale_id)
+                kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
+                
+                from reportlab.lib.pagesizes import A4
+                from reportlab.lib import colors
+                from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                from reportlab.lib.units import cm
+                from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                
+                doc = SimpleDocTemplate(str(file_path), pagesize=A4)
+                story = []
+                styles = getSampleStyleSheet()
+                
+                # Başlık
+                title_style = ParagraphStyle(
+                    'CustomTitle',
+                    parent=styles['Heading1'],
+                    fontSize=18,
+                    textColor=colors.HexColor('#1a1a2e'),
+                    spaceAfter=30,
+                    alignment=1
+                )
+                story.append(Paragraph(f"İHALE DOSYASI - {ihale.get('ad', '')}", title_style))
+                story.append(Spacer(1, 0.5*cm))
+                
+                # İhale bilgileri
+                info_data = [
+                    ['İhale Adı', ihale.get('ad', '')],
+                    ['Açıklama', ihale.get('aciklama', '')],
+                    ['Oluşturulma Tarihi', ihale.get('olusturma_tarihi', '')[:10] if ihale.get('olusturma_tarihi') else ''],
+                ]
+                
+                info_table = Table(info_data, colWidths=[6*cm, 6*cm])
+                info_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#16213e')),
+                    ('TEXTCOLOR', (0, 0), (0, -1), colors.whitesmoke),
+                    ('BACKGROUND', (1, 0), (1, -1), colors.white),
+                    ('TEXTCOLOR', (1, 0), (1, -1), colors.black),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 10),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                ]))
+                story.append(info_table)
+                story.append(Spacer(1, 0.5*cm))
+                
+                # Kalem listesi
+                if kalemler:
+                    story.append(Paragraph("İhale Kalem Listesi", styles['Heading2']))
+                    kalem_data = [['Sıra', 'Poz No', 'Tanım', 'Miktar', 'Birim', 'Birim Fiyat', 'Toplam']]
+                    
+                    toplam_genel = 0.0
+                    for kalem in kalemler:
+                        toplam_genel += kalem.get('toplam', 0)
+                        kalem_data.append([
+                            str(kalem.get('sira_no', '')),
+                            kalem.get('poz_no', ''),
+                            kalem.get('poz_tanim', '')[:40],
+                            f"{kalem.get('birim_miktar', 0):,.2f}",
+                            kalem.get('birim', ''),
+                            f"{kalem.get('birim_fiyat', 0):,.2f} TL",
+                            f"{kalem.get('toplam', 0):,.2f} TL"
+                        ])
+                    
+                    kalem_table = Table(kalem_data, colWidths=[1*cm, 2*cm, 5*cm, 2*cm, 1.5*cm, 2*cm, 2*cm])
+                    kalem_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#16213e')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                        ('ALIGN', (2, 1), (2, -1), 'LEFT'),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 10),
+                        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f5f5f5')]),
+                    ]))
+                    story.append(kalem_table)
+                    story.append(Spacer(1, 0.5*cm))
+                    
+                    # Toplam
+                    toplam_data = [['GENEL TOPLAM', f"{toplam_genel:,.2f} TL"]]
+                    toplam_table = Table(toplam_data, colWidths=[10*cm, 4*cm])
+                    toplam_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#16213e')),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0, 0), (-1, 0), 12),
+                        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+                    ]))
+                    story.append(toplam_table)
+                
+                doc.build(story)
+                QMessageBox.information(self, "Başarılı", f"İhale dosyası PDF'e aktarıldı:\n{file_path}")
+                self.statusBar().showMessage(f"PDF ihale dosyası oluşturuldu: {file_path}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"PDF oluşturulurken hata oluştu:\n{str(e)}")
+    
+    def export_ihale_excel(self) -> None:
+        """İhale dosyasını Excel olarak export et"""
+        if not self.current_ihale_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir ihale seçin")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Excel İhale Dosyası Oluştur", "", "Excel Dosyaları (*.xlsx)"
+        )
+        
+        if file_path:
+            try:
+                import pandas as pd
+                from openpyxl import load_workbook
+                from openpyxl.styles import Font, Alignment, PatternFill
+                
+                ihale = self.db.get_ihale(self.current_ihale_id)
+                kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
+                
+                # Excel writer
+                with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                    # İhale bilgileri
+                    info_data = {
+                        'Bilgi': ['İhale Adı', 'Açıklama', 'Oluşturulma Tarihi'],
+                        'Değer': [
+                            ihale.get('ad', ''),
+                            ihale.get('aciklama', ''),
+                            ihale.get('olusturma_tarihi', '')[:10] if ihale.get('olusturma_tarihi') else ''
+                        ]
+                    }
+                    df_info = pd.DataFrame(info_data)
+                    df_info.to_excel(writer, sheet_name='İhale Bilgileri', index=False)
+                    
+                    # Kalem listesi
+                    if kalemler:
+                        kalem_data = {
+                            'Sıra': [k.get('sira_no', '') for k in kalemler],
+                            'Poz No': [k.get('poz_no', '') for k in kalemler],
+                            'Tanım': [k.get('poz_tanim', '') for k in kalemler],
+                            'Birim Miktar': [k.get('birim_miktar', 0) for k in kalemler],
+                            'Birim': [k.get('birim', '') for k in kalemler],
+                            'Birim Fiyat': [f"{k.get('birim_fiyat', 0):,.2f} TL" for k in kalemler],
+                            'Toplam': [f"{k.get('toplam', 0):,.2f} TL" for k in kalemler]
+                        }
+                        df_kalem = pd.DataFrame(kalem_data)
+                        df_kalem.to_excel(writer, sheet_name='Kalem Listesi', index=False)
+                        
+                        # Toplam satırı
+                        toplam_genel = sum(k.get('toplam', 0) for k in kalemler)
+                        toplam_row = pd.DataFrame({
+                            'Sıra': [''],
+                            'Poz No': [''],
+                            'Tanım': ['GENEL TOPLAM'],
+                            'Birim Miktar': [''],
+                            'Birim': [''],
+                            'Birim Fiyat': [''],
+                            'Toplam': [f"{toplam_genel:,.2f} TL"]
+                        })
+                        df_kalem = pd.concat([df_kalem, toplam_row], ignore_index=True)
+                        df_kalem.to_excel(writer, sheet_name='Kalem Listesi', index=False)
+                
+                # Stil ayarları
+                wb = load_workbook(file_path)
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    header_fill = PatternFill(start_color='16213e', end_color='16213e', fill_type='solid')
+                    for cell in ws[1]:
+                        cell.font = Font(bold=True, color='FFFFFF')
+                        cell.fill = header_fill
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                wb.save(file_path)
+                
+                QMessageBox.information(self, "Başarılı", f"İhale dosyası Excel'e aktarıldı:\n{file_path}")
+                self.statusBar().showMessage(f"Excel ihale dosyası oluşturuldu: {file_path}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Excel oluşturulurken hata oluştu:\n{str(e)}")
+    
     def show_about(self) -> None:
         """Hakkında dialogu"""
         QMessageBox.about(
