@@ -1521,4 +1521,137 @@ class DatabaseManager:
             cursor.execute("SELECT * FROM pozlar WHERE poz_no = ?", (poz_no,))
             row = cursor.fetchone()
             return dict(row) if row else None
+    
+    # İhale İşlemleri
+    def create_ihale(self, ad: str, aciklama: str = "") -> int:
+        """
+        Yeni ihale oluştur.
+        
+        Args:
+            ad: İhale adı
+            aciklama: İhale açıklaması
+            
+        Returns:
+            int: Oluşturulan ihale ID'si
+        """
+        now = datetime.now().isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO ihaleler (ad, aciklama, olusturma_tarihi, guncelleme_tarihi)
+                VALUES (?, ?, ?, ?)
+            """, (ad, aciklama, now, now))
+            return cursor.lastrowid
+    
+    def get_all_ihaleler(self) -> List[Dict[str, Any]]:
+        """Tüm ihaleleri getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM ihaleler
+                ORDER BY olusturma_tarihi DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_ihale(self, ihale_id: int) -> Optional[Dict[str, Any]]:
+        """İhale bilgilerini getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM ihaleler WHERE id = ?", (ihale_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def get_ihale_kalemleri(self, ihale_id: int) -> List[Dict[str, Any]]:
+        """İhale kalemlerini getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM ihale_kalemleri
+                WHERE ihale_id = ?
+                ORDER BY sira_no, id
+            """, (ihale_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def add_ihale_kalem(self, ihale_id: int, poz_no: str = "", poz_tanim: str = "",
+                       kategori: str = "", birim_miktar: float = 0, birim: str = "",
+                       birim_fiyat: float = 0, toplam: float = 0, sira_no: Optional[int] = None) -> int:
+        """
+        İhaleye kalem ekle.
+        
+        Args:
+            ihale_id: İhale ID'si
+            poz_no: Poz numarası
+            poz_tanim: Poz tanımı
+            kategori: Kategori
+            birim_miktar: Birim miktar (kullanıcı girer)
+            birim: Birim
+            birim_fiyat: Birim fiyat (otomatik veya kullanıcı düzenler)
+            toplam: Toplam (birim_miktar * birim_fiyat)
+            sira_no: Sıra numarası
+            
+        Returns:
+            int: Eklenen kalemin ID'si
+        """
+        # Sıra numarası yoksa, mevcut maksimum + 1
+        if sira_no is None:
+            kalemler = self.get_ihale_kalemleri(ihale_id)
+            sira_no = len(kalemler) + 1
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO ihale_kalemleri 
+                (ihale_id, poz_no, poz_tanim, kategori, birim_miktar, birim, birim_fiyat, toplam, sira_no)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (ihale_id, poz_no, poz_tanim, kategori, birim_miktar, birim, birim_fiyat, toplam, sira_no))
+            return cursor.lastrowid
+    
+    def update_ihale_kalem(self, kalem_id: int, **kwargs) -> bool:
+        """İhale kalemini güncelle"""
+        if not kwargs:
+            return False
+        
+        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        values = list(kwargs.values()) + [kalem_id]
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE ihale_kalemleri SET {fields} WHERE id = ?", values)
+            return cursor.rowcount > 0
+    
+    def delete_ihale_kalem(self, kalem_id: int) -> bool:
+        """İhale kalemini sil"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM ihale_kalemleri WHERE id = ?", (kalem_id,))
+            return cursor.rowcount > 0
+    
+    def delete_ihale(self, ihale_id: int) -> bool:
+        """İhaleyi sil (kalemleri de silinir - CASCADE)"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM ihaleler WHERE id = ?", (ihale_id,))
+            return cursor.rowcount > 0
+    
+    def search_pozlar(self, search_text: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Poz numarası veya tanımına göre arama yap.
+        
+        Args:
+            search_text: Arama metni
+            limit: Maksimum sonuç sayısı
+            
+        Returns:
+            List[Dict]: Bulunan pozlar
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            search_pattern = f"%{search_text}%"
+            cursor.execute("""
+                SELECT * FROM pozlar
+                WHERE poz_no LIKE ? OR tanim LIKE ?
+                ORDER BY poz_no
+                LIMIT ?
+            """, (search_pattern, search_pattern, limit))
+            return [dict(row) for row in cursor.fetchall()]
 
