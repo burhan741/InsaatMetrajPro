@@ -2449,6 +2449,161 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
     
+    def import_from_pdf(self) -> None:
+        """PDF'den birim fiyat içe aktar"""
+        # PDF dosyası seç
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "PDF Dosyası Seç", "", "PDF Dosyaları (*.pdf)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            from PyQt6.QtWidgets import QProgressDialog, QDialog, QVBoxLayout, QLabel, QTableWidget, QPushButton, QHBoxLayout
+            from PyQt6.QtCore import Qt
+            
+            # Progress dialog
+            progress = QProgressDialog("PDF işleniyor...", "İptal", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+            
+            def progress_callback(current, total):
+                percent = int((current / total) * 100)
+                progress.setValue(percent)
+                progress.setLabelText(f"PDF işleniyor... Sayfa {current}/{total}")
+                if progress.wasCanceled():
+                    return False
+                return True
+            
+            # PDF'i işle
+            importer = PDFBirimFiyatImporter()
+            extracted_data = importer.extract_from_pdf(Path(file_path), progress_callback)
+            
+            progress.setValue(100)
+            
+            if not extracted_data:
+                QMessageBox.warning(
+                    self, "Uyarı",
+                    "PDF'den poz ve fiyat bilgisi çıkarılamadı.\n\n"
+                    "PDF formatını kontrol edin veya manuel olarak ekleyin."
+                )
+                return
+            
+            # Önizleme ve onay dialogu
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle("PDF İçe Aktarma Önizleme")
+            preview_dialog.setMinimumSize(800, 600)
+            
+            layout = QVBoxLayout(preview_dialog)
+            
+            info_label = QLabel(
+                f"📄 {len(extracted_data)} adet poz ve fiyat bulundu.\n\n"
+                f"Lütfen önizlemeyi kontrol edin ve onaylayın:"
+            )
+            layout.addWidget(info_label)
+            
+            preview_table = QTableWidget()
+            preview_table.setColumnCount(4)
+            preview_table.setHorizontalHeaderLabels(["Poz No", "Tanım", "Birim Fiyat", "Kaynak"])
+            preview_table.setRowCount(min(len(extracted_data), 100))  # İlk 100 kayıt
+            
+            for row, item in enumerate(extracted_data[:100]):
+                preview_table.setItem(row, 0, QTableWidgetItem(item.get('poz_no', '')))
+                preview_table.setItem(row, 1, QTableWidgetItem(item.get('tanim', '')[:50]))
+                fiyat = item.get('birim_fiyat', 0)
+                preview_table.setItem(row, 2, QTableWidgetItem(f"{fiyat:,.2f} ₺" if fiyat else "Bulunamadı"))
+                preview_table.setItem(row, 3, QTableWidgetItem(item.get('kaynak', '')))
+            
+            preview_table.horizontalHeader().setStretchLastSection(True)
+            layout.addWidget(preview_table)
+            
+            if len(extracted_data) > 100:
+                more_label = QLabel(f"... ve {len(extracted_data) - 100} kayıt daha")
+                layout.addWidget(more_label)
+            
+            btn_layout = QHBoxLayout()
+            btn_ok = QPushButton("İçe Aktar")
+            btn_ok.clicked.connect(preview_dialog.accept)
+            btn_cancel = QPushButton("İptal")
+            btn_cancel.clicked.connect(preview_dialog.reject)
+            btn_layout.addWidget(btn_ok)
+            btn_layout.addWidget(btn_cancel)
+            layout.addLayout(btn_layout)
+            
+            if preview_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            
+            # Veritabanına kaydet
+            success_count = 0
+            error_count = 0
+            errors = []
+            
+            progress = QProgressDialog("Veritabanına kaydediliyor...", "İptal", 0, len(extracted_data), self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+            
+            for idx, item in enumerate(extracted_data):
+                progress.setValue(idx)
+                progress.setLabelText(f"Kaydediliyor... {idx + 1}/{len(extracted_data)}")
+                
+                if progress.wasCanceled():
+                    break
+                
+                try:
+                    poz_no = item.get('poz_no', '').strip()
+                    birim_fiyat = item.get('birim_fiyat', 0)
+                    
+                    if not poz_no:
+                        error_count += 1
+                        continue
+                    
+                    if not birim_fiyat or birim_fiyat <= 0:
+                        error_count += 1
+                        errors.append(f"Poz {poz_no}: Fiyat bulunamadı")
+                        continue
+                    
+                    # Birim fiyatı ekle
+                    self.db.add_birim_fiyat(
+                        poz_no=poz_no,
+                        birim_fiyat=birim_fiyat,
+                        kaynak=item.get('kaynak', 'PDF Import'),
+                        aciklama=item.get('tanim', '')
+                    )
+                    success_count += 1
+                    
+                except Exception as e:
+                    error_count += 1
+                    errors.append(f"Poz {item.get('poz_no', '')}: {str(e)}")
+                    continue
+            
+            progress.setValue(len(extracted_data))
+            
+            # Sonuç mesajı
+            message = f"PDF içe aktarma tamamlandı!\n\n"
+            message += f"✅ Başarılı: {success_count}\n"
+            message += f"❌ Hatalı: {error_count}"
+            
+            if errors and error_count <= 20:
+                message += f"\n\nHatalar:\n" + "\n".join(errors[:20])
+            elif errors:
+                message += f"\n\n(İlk 20 hata gösteriliyor, toplam {error_count} hata var)"
+            
+            if success_count > 0:
+                QMessageBox.information(self, "Başarılı", message)
+                self.load_birim_fiyatlar()
+                self.statusBar().showMessage(f"{success_count} birim fiyat içe aktarıldı")
+            else:
+                QMessageBox.warning(self, "Uyarı", message)
+                
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Hata",
+                f"Excel dosyası okunurken hata oluştu:\n{str(e)}"
+            )
+            import traceback
+            traceback.print_exc()
+    
     def on_search_text_changed(self) -> None:
         """Arama metni değiştiğinde"""
         search_text = self.search_input.text().strip().lower()
