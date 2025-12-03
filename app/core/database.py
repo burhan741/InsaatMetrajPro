@@ -115,6 +115,21 @@ class DatabaseManager:
                 )
             """)
             
+            # Birim fiyatlar tablosu (poz bazlı, tarihli fiyat takibi)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS birim_fiyatlar (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    poz_id INTEGER,
+                    poz_no TEXT,
+                    birim_fiyat REAL NOT NULL,
+                    tarih TEXT NOT NULL,
+                    kaynak TEXT,
+                    aciklama TEXT,
+                    aktif INTEGER DEFAULT 1,
+                    FOREIGN KEY (poz_id) REFERENCES pozlar(id) ON DELETE SET NULL
+                )
+            """)
+            
             # Pozlar tablosu (Çevre ve Şehircilik Bakanlığı verileri için)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pozlar (
@@ -248,6 +263,21 @@ class DatabaseManager:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_malzeme_formul_malzeme 
                 ON malzeme_formulleri(malzeme_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_birim_fiyat_poz 
+                ON birim_fiyatlar(poz_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_birim_fiyat_poz_no 
+                ON birim_fiyatlar(poz_no)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_birim_fiyat_tarih 
+                ON birim_fiyatlar(tarih)
             """)
             
             conn.commit()
@@ -1221,4 +1251,240 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(f"UPDATE sablonlar SET {fields} WHERE id = ?", values)
             return cursor.rowcount > 0
+    
+    # Birim Fiyat İşlemleri
+    def add_birim_fiyat(self, poz_id: Optional[int] = None, poz_no: str = "",
+                       birim_fiyat: float = 0, tarih: Optional[str] = None,
+                       kaynak: str = "", aciklama: str = "", aktif: bool = True) -> int:
+        """
+        Birim fiyat ekle.
+        
+        Args:
+            poz_id: Poz ID'si (opsiyonel)
+            poz_no: Poz numarası
+            birim_fiyat: Birim fiyat
+            tarih: Tarih (None ise bugün)
+            kaynak: Fiyat kaynağı (ör: "Tedarikçi A", "Resmi Fiyat")
+            aciklama: Açıklama
+            aktif: Aktif mi (varsayılan: True)
+            
+        Returns:
+            int: Eklenen fiyatın ID'si
+        """
+        if tarih is None:
+            tarih = datetime.now().isoformat()
+        
+        # Eğer poz_id yoksa ama poz_no varsa, poz_id'yi bul
+        if not poz_id and poz_no:
+            poz = self.get_poz_by_no(poz_no)
+            if poz:
+                poz_id = poz['id']
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Yeni fiyat eklendiğinde eski fiyatları pasif yap (aynı poz için)
+            if poz_id:
+                cursor.execute("""
+                    UPDATE birim_fiyatlar SET aktif = 0
+                    WHERE poz_id = ? AND aktif = 1
+                """, (poz_id,))
+            elif poz_no:
+                cursor.execute("""
+                    UPDATE birim_fiyatlar SET aktif = 0
+                    WHERE poz_no = ? AND aktif = 1
+                """, (poz_no,))
+            
+            # Yeni fiyatı ekle
+            cursor.execute("""
+                INSERT INTO birim_fiyatlar 
+                (poz_id, poz_no, birim_fiyat, tarih, kaynak, aciklama, aktif)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (poz_id, poz_no, birim_fiyat, tarih, kaynak, aciklama, 1 if aktif else 0))
+            return cursor.lastrowid
+    
+    def get_birim_fiyat(self, poz_id: Optional[int] = None, poz_no: str = "",
+                        aktif_only: bool = True) -> Optional[Dict[str, Any]]:
+        """
+        Poz için aktif birim fiyatı getir.
+        
+        Args:
+            poz_id: Poz ID'si
+            poz_no: Poz numarası
+            aktif_only: Sadece aktif fiyatları getir
+            
+        Returns:
+            Optional[Dict]: Birim fiyat bilgisi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if poz_id:
+                if aktif_only:
+                    cursor.execute("""
+                        SELECT * FROM birim_fiyatlar
+                        WHERE poz_id = ? AND aktif = 1
+                        ORDER BY tarih DESC
+                        LIMIT 1
+                    """, (poz_id,))
+                else:
+                    cursor.execute("""
+                        SELECT * FROM birim_fiyatlar
+                        WHERE poz_id = ?
+                        ORDER BY tarih DESC
+                        LIMIT 1
+                    """, (poz_id,))
+            elif poz_no:
+                if aktif_only:
+                    cursor.execute("""
+                        SELECT * FROM birim_fiyatlar
+                        WHERE poz_no = ? AND aktif = 1
+                        ORDER BY tarih DESC
+                        LIMIT 1
+                    """, (poz_no,))
+                else:
+                    cursor.execute("""
+                        SELECT * FROM birim_fiyatlar
+                        WHERE poz_no = ?
+                        ORDER BY tarih DESC
+                        LIMIT 1
+                    """, (poz_no,))
+            else:
+                return None
+            
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def get_birim_fiyat_gecmisi(self, poz_id: Optional[int] = None, poz_no: str = "",
+                                limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Poz için fiyat geçmişini getir.
+        
+        Args:
+            poz_id: Poz ID'si
+            poz_no: Poz numarası
+            limit: Maksimum kayıt sayısı
+            
+        Returns:
+            List[Dict]: Fiyat geçmişi listesi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if poz_id:
+                cursor.execute("""
+                    SELECT * FROM birim_fiyatlar
+                    WHERE poz_id = ?
+                    ORDER BY tarih DESC
+                    LIMIT ?
+                """, (poz_id, limit))
+            elif poz_no:
+                cursor.execute("""
+                    SELECT * FROM birim_fiyatlar
+                    WHERE poz_no = ?
+                    ORDER BY tarih DESC
+                    LIMIT ?
+                """, (poz_no, limit))
+            else:
+                return []
+            
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_all_birim_fiyatlar(self, aktif_only: bool = True) -> List[Dict[str, Any]]:
+        """
+        Tüm birim fiyatları getir.
+        
+        Args:
+            aktif_only: Sadece aktif fiyatları getir
+            
+        Returns:
+            List[Dict]: Birim fiyat listesi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if aktif_only:
+                cursor.execute("""
+                    SELECT bf.*, p.tanim as poz_tanim, p.birim as poz_birim
+                    FROM birim_fiyatlar bf
+                    LEFT JOIN pozlar p ON bf.poz_id = p.id
+                    WHERE bf.aktif = 1
+                    ORDER BY bf.tarih DESC
+                """)
+            else:
+                cursor.execute("""
+                    SELECT bf.*, p.tanim as poz_tanim, p.birim as poz_birim
+                    FROM birim_fiyatlar bf
+                    LEFT JOIN pozlar p ON bf.poz_id = p.id
+                    ORDER BY bf.tarih DESC
+                """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def compare_birim_fiyatlar(self, poz_no: str) -> Dict[str, Any]:
+        """
+        Poz için fiyat karşılaştırması yap.
+        
+        Args:
+            poz_no: Poz numarası
+            
+        Returns:
+            Dict: Karşılaştırma sonuçları (en düşük, en yüksek, ortalama, kaynaklar)
+        """
+        fiyatlar = self.get_birim_fiyat_gecmisi(poz_no=poz_no, limit=100)
+        
+        if not fiyatlar:
+            return {
+                'poz_no': poz_no,
+                'fiyat_sayisi': 0,
+                'en_dusuk': None,
+                'en_yuksek': None,
+                'ortalama': None,
+                'kaynaklar': []
+            }
+        
+        fiyat_degerleri = [f['birim_fiyat'] for f in fiyatlar if f.get('birim_fiyat')]
+        
+        if not fiyat_degerleri:
+            return {
+                'poz_no': poz_no,
+                'fiyat_sayisi': 0,
+                'en_dusuk': None,
+                'en_yuksek': None,
+                'ortalama': None,
+                'kaynaklar': []
+            }
+        
+        en_dusuk = min(fiyat_degerleri)
+        en_yuksek = max(fiyat_degerleri)
+        ortalama = sum(fiyat_degerleri) / len(fiyat_degerleri)
+        
+        # Kaynakları topla
+        kaynaklar = {}
+        for f in fiyatlar:
+            kaynak = f.get('kaynak', 'Belirtilmemiş')
+            if kaynak not in kaynaklar:
+                kaynaklar[kaynak] = []
+            kaynaklar[kaynak].append(f['birim_fiyat'])
+        
+        return {
+            'poz_no': poz_no,
+            'fiyat_sayisi': len(fiyatlar),
+            'en_dusuk': en_dusuk,
+            'en_yuksek': en_yuksek,
+            'ortalama': ortalama,
+            'kaynaklar': kaynaklar,
+            'fiyatlar': fiyatlar
+        }
+    
+    def get_poz_by_no(self, poz_no: str) -> Optional[Dict[str, Any]]:
+        """
+        Poz numarasına göre poz bilgisini getir.
+        
+        Args:
+            poz_no: Poz numarası
+            
+        Returns:
+            Optional[Dict]: Poz bilgisi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM pozlar WHERE poz_no = ?", (poz_no,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
 

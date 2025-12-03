@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_projects()
         self.load_templates()
+        self.load_birim_fiyatlar()
         
         # İlk açılışta pozları kontrol et ve yükle (async - arka planda)
         self.check_and_load_pozlar_async()
@@ -241,6 +242,9 @@ class MainWindow(QMainWindow):
         
         # Sekme 5: Şablonlar
         self.create_sablonlar_tab()
+        
+        # Sekme 6: Birim Fiyat Yönetimi
+        self.create_birim_fiyat_tab()
         
         parent.addWidget(self.tabs)
         
@@ -920,6 +924,101 @@ class MainWindow(QMainWindow):
         layout.addWidget(items_group)
         
         self.tabs.addTab(tab, "📋 Şablonlar")
+    
+    def create_birim_fiyat_tab(self) -> None:
+        """Birim Fiyat Yönetimi sekmesini oluştur"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Üst panel: Butonlar ve arama
+        top_layout = QHBoxLayout()
+        
+        btn_add = QPushButton("Fiyat Ekle")
+        btn_add.clicked.connect(self.add_birim_fiyat)
+        top_layout.addWidget(btn_add)
+        
+        btn_refresh = QPushButton("Yenile")
+        btn_refresh.clicked.connect(self.load_birim_fiyatlar)
+        top_layout.addWidget(btn_refresh)
+        
+        top_layout.addStretch()
+        
+        # Filtre
+        filter_label = QLabel("Filtre:")
+        top_layout.addWidget(filter_label)
+        
+        self.fiyat_filter_combo = QComboBox()
+        self.fiyat_filter_combo.addItems(["Tümü", "Sadece Aktif"])
+        self.fiyat_filter_combo.setCurrentText("Sadece Aktif")
+        self.fiyat_filter_combo.currentTextChanged.connect(self.load_birim_fiyatlar)
+        top_layout.addWidget(self.fiyat_filter_combo)
+        
+        layout.addLayout(top_layout)
+        
+        # Splitter: Sol tarafta fiyat listesi, sağ tarafta detaylar
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Sol: Birim fiyat listesi
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        list_title = QLabel("💰 Birim Fiyat Listesi")
+        list_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        left_layout.addWidget(list_title)
+        
+        self.birim_fiyat_table = QTableWidget()
+        self.birim_fiyat_table.setColumnCount(6)
+        self.birim_fiyat_table.setHorizontalHeaderLabels([
+            "Poz No", "Poz Tanımı", "Birim Fiyat", "Tarih", "Kaynak", "Aktif"
+        ])
+        self.birim_fiyat_table.setAlternatingRowColors(True)
+        self.birim_fiyat_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.birim_fiyat_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.birim_fiyat_table.horizontalHeader().setStretchLastSection(True)
+        self.birim_fiyat_table.setColumnWidth(0, 120)
+        self.birim_fiyat_table.setColumnWidth(1, 300)
+        self.birim_fiyat_table.setColumnWidth(2, 120)
+        self.birim_fiyat_table.setColumnWidth(3, 120)
+        self.birim_fiyat_table.itemDoubleClicked.connect(self.view_fiyat_gecmisi)
+        left_layout.addWidget(self.birim_fiyat_table)
+        
+        splitter.addWidget(left_widget)
+        
+        # Sağ: Fiyat geçmişi ve karşılaştırma
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        detail_title = QLabel("📊 Fiyat Geçmişi ve Karşılaştırma")
+        detail_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        right_layout.addWidget(detail_title)
+        
+        # Fiyat geçmişi tablosu
+        self.fiyat_gecmisi_table = QTableWidget()
+        self.fiyat_gecmisi_table.setColumnCount(5)
+        self.fiyat_gecmisi_table.setHorizontalHeaderLabels([
+            "Tarih", "Birim Fiyat", "Kaynak", "Açıklama", "Aktif"
+        ])
+        self.fiyat_gecmisi_table.setAlternatingRowColors(True)
+        self.fiyat_gecmisi_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.fiyat_gecmisi_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.fiyat_gecmisi_table.horizontalHeader().setStretchLastSection(True)
+        right_layout.addWidget(self.fiyat_gecmisi_table)
+        
+        # Karşılaştırma özeti
+        self.fiyat_karsilastirma_label = QLabel("Bir fiyat seçin veya çift tıklayın")
+        self.fiyat_karsilastirma_label.setWordWrap(True)
+        self.fiyat_karsilastirma_label.setStyleSheet("padding: 10px; background-color: #f5f5f5; border: 1px solid #ddd;")
+        right_layout.addWidget(self.fiyat_karsilastirma_label)
+        
+        splitter.addWidget(right_widget)
+        
+        splitter.setSizes([500, 500])
+        layout.addWidget(splitter)
+        
+        self.tabs.addTab(tab, "💰 Birim Fiyatlar")
     
     def create_menu_bar(self) -> None:
         """Menü çubuğunu oluştur"""
