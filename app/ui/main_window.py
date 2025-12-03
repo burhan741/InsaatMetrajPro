@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         # Arayüzü oluştur
         self.init_ui()
         self.load_projects()
+        self.load_templates()
         
         # İlk açılışta pozları kontrol et ve yükle (async - arka planda)
         self.check_and_load_pozlar_async()
