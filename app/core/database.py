@@ -130,6 +130,35 @@ class DatabaseManager:
                 )
             """)
             
+            # İhaleler tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ihaleler (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ad TEXT NOT NULL,
+                    aciklama TEXT,
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    durum TEXT DEFAULT 'hazirlaniyor'
+                )
+            """)
+            
+            # İhale kalemleri tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ihale_kalemleri (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ihale_id INTEGER NOT NULL,
+                    poz_no TEXT,
+                    poz_tanim TEXT,
+                    kategori TEXT,
+                    birim_miktar REAL DEFAULT 0,
+                    birim TEXT,
+                    birim_fiyat REAL DEFAULT 0,
+                    toplam REAL DEFAULT 0,
+                    sira_no INTEGER,
+                    FOREIGN KEY (ihale_id) REFERENCES ihaleler(id) ON DELETE CASCADE
+                )
+            """)
+            
             # Pozlar tablosu (Çevre ve Şehircilik Bakanlığı verileri için)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pozlar (
@@ -278,6 +307,11 @@ class DatabaseManager:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_birim_fiyat_tarih 
                 ON birim_fiyatlar(tarih)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ihale_kalem_ihale 
+                ON ihale_kalemleri(ihale_id)
             """)
             
             conn.commit()

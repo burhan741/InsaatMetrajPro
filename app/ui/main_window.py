@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         self.load_projects()
         self.load_templates()
         self.load_birim_fiyatlar()
+        self.load_ihaleler()
         
         # İlk açılışta pozları kontrol et ve yükle (async - arka planda)
         self.check_and_load_pozlar_async()
@@ -246,6 +247,9 @@ class MainWindow(QMainWindow):
         
         # Sekme 6: Birim Fiyat Yönetimi
         self.create_birim_fiyat_tab()
+        
+        # Sekme 7: İhale Dosyası Hazırlama
+        self.create_ihale_tab()
         
         parent.addWidget(self.tabs)
         
@@ -1020,6 +1024,135 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
         
         self.tabs.addTab(tab, "💰 Birim Fiyatlar")
+    
+    def create_ihale_tab(self) -> None:
+        """İhale Dosyası Hazırlama sekmesini oluştur"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Üst panel: İhale seçimi ve poz arama
+        top_layout = QHBoxLayout()
+        
+        # İhale seçimi
+        ihale_label = QLabel("İhale:")
+        top_layout.addWidget(ihale_label)
+        
+        self.ihale_combo = QComboBox()
+        self.ihale_combo.setMinimumWidth(200)
+        self.ihale_combo.currentIndexChanged.connect(self.on_ihale_changed)
+        top_layout.addWidget(self.ihale_combo)
+        
+        btn_new_ihale = QPushButton("Yeni İhale")
+        btn_new_ihale.clicked.connect(self.new_ihale)
+        top_layout.addWidget(btn_new_ihale)
+        
+        top_layout.addStretch()
+        
+        # Poz arama
+        search_label = QLabel("Poz Ara:")
+        top_layout.addWidget(search_label)
+        
+        self.ihale_poz_search = QLineEdit()
+        self.ihale_poz_search.setPlaceholderText("Poz no veya tanım ara...")
+        self.ihale_poz_search.setMinimumWidth(200)
+        self.ihale_poz_search.textChanged.connect(self.on_ihale_poz_search)
+        top_layout.addWidget(self.ihale_poz_search)
+        
+        btn_add_poz = QPushButton("Listeye Ekle")
+        btn_add_poz.clicked.connect(self.add_poz_to_ihale)
+        top_layout.addWidget(btn_add_poz)
+        
+        layout.addLayout(top_layout)
+        
+        # Splitter: Sol tarafta poz arama sonuçları, sağ tarafta ihale kalemleri
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Sol: Poz arama sonuçları
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        poz_title = QLabel("🔍 Poz Arama Sonuçları")
+        poz_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        left_layout.addWidget(poz_title)
+        
+        self.ihale_poz_results_table = QTableWidget()
+        self.ihale_poz_results_table.setColumnCount(4)
+        self.ihale_poz_results_table.setHorizontalHeaderLabels(["Poz No", "Tanım", "Birim", "Birim Fiyat"])
+        self.ihale_poz_results_table.setAlternatingRowColors(True)
+        self.ihale_poz_results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.ihale_poz_results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.ihale_poz_results_table.horizontalHeader().setStretchLastSection(True)
+        self.ihale_poz_results_table.setColumnWidth(0, 120)
+        self.ihale_poz_results_table.setColumnWidth(1, 300)
+        self.ihale_poz_results_table.setColumnWidth(2, 80)
+        self.ihale_poz_results_table.itemDoubleClicked.connect(self.add_selected_poz_to_ihale)
+        left_layout.addWidget(self.ihale_poz_results_table)
+        
+        splitter.addWidget(left_widget)
+        
+        # Sağ: İhale kalemleri
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        kalem_title = QLabel("📋 İhale Kalem Listesi")
+        kalem_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        right_layout.addWidget(kalem_title)
+        
+        # Butonlar
+        kalem_btn_layout = QHBoxLayout()
+        
+        btn_delete_kalem = QPushButton("Kalem Sil")
+        btn_delete_kalem.clicked.connect(self.delete_ihale_kalem)
+        btn_delete_kalem.setStyleSheet("background-color: #c9184a;")
+        kalem_btn_layout.addWidget(btn_delete_kalem)
+        
+        btn_export = QPushButton("İhale Dosyası Oluştur (PDF)")
+        btn_export.clicked.connect(self.export_ihale_pdf)
+        kalem_btn_layout.addWidget(btn_export)
+        
+        btn_export_excel = QPushButton("İhale Dosyası Oluştur (Excel)")
+        btn_export_excel.clicked.connect(self.export_ihale_excel)
+        kalem_btn_layout.addWidget(btn_export_excel)
+        
+        kalem_btn_layout.addStretch()
+        
+        # Toplam etiketi
+        self.ihale_total_label = QLabel("Toplam: 0.00 ₺")
+        self.ihale_total_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        kalem_btn_layout.addWidget(self.ihale_total_label)
+        
+        right_layout.addLayout(kalem_btn_layout)
+        
+        self.ihale_kalem_table = QTableWidget()
+        self.ihale_kalem_table.setColumnCount(7)
+        self.ihale_kalem_table.setHorizontalHeaderLabels([
+            "Sıra", "Poz No", "Tanım", "Birim Miktar", "Birim", "Birim Fiyat", "Toplam"
+        ])
+        self.ihale_kalem_table.setAlternatingRowColors(True)
+        self.ihale_kalem_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.ihale_kalem_table.horizontalHeader().setStretchLastSection(True)
+        self.ihale_kalem_table.setColumnWidth(0, 50)
+        self.ihale_kalem_table.setColumnWidth(1, 120)
+        self.ihale_kalem_table.setColumnWidth(2, 250)
+        self.ihale_kalem_table.setColumnWidth(3, 120)
+        self.ihale_kalem_table.setColumnWidth(4, 80)
+        self.ihale_kalem_table.setColumnWidth(5, 120)
+        # Birim Miktar ve Birim Fiyat sütunları düzenlenebilir
+        self.ihale_kalem_table.itemChanged.connect(self.on_ihale_kalem_changed)
+        right_layout.addWidget(self.ihale_kalem_table)
+        
+        splitter.addWidget(right_widget)
+        
+        splitter.setSizes([400, 600])
+        layout.addWidget(splitter)
+        
+        # Mevcut ihale ID'si
+        self.current_ihale_id: Optional[int] = None
+        
+        self.tabs.addTab(tab, "📄 İhale Dosyası")
     
     def create_menu_bar(self) -> None:
         """Menü çubuğunu oluştur"""
