@@ -199,6 +199,23 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(btn_refresh)
         
         sidebar_layout.addLayout(btn_layout)
+        
+        # Proje Notları bölümü
+        notes_group = QGroupBox("📝 Proje Notları")
+        notes_layout = QVBoxLayout()
+        
+        self.project_notes_text = QTextEdit()
+        self.project_notes_text.setPlaceholderText("Proje notlarınızı buraya yazın...")
+        self.project_notes_text.setMaximumHeight(150)
+        notes_layout.addWidget(self.project_notes_text)
+        
+        btn_save_notes = QPushButton("Notları Kaydet")
+        btn_save_notes.clicked.connect(self.save_project_notes)
+        notes_layout.addWidget(btn_save_notes)
+        
+        notes_group.setLayout(notes_layout)
+        sidebar_layout.addWidget(notes_group)
+        
         sidebar_layout.addStretch()
         
         parent.addWidget(sidebar_widget)
