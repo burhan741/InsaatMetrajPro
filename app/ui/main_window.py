@@ -2717,7 +2717,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(
                 self, "Hata",
-                f"Excel dosyası okunurken hata oluştu:\n{str(e)}"
+                f"PDF dosyası işlenirken hata oluştu:\n{str(e)}"
             )
             import traceback
             traceback.print_exc()
@@ -2872,7 +2872,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(
                 self, "Hata",
-                f"Excel dosyası okunurken hata oluştu:\n{str(e)}"
+                f"PDF dosyası işlenirken hata oluştu:\n{str(e)}"
             )
             import traceback
             traceback.print_exc()

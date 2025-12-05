@@ -205,3 +205,5 @@ Görüşleriniz uygulamayı daha iyi hale getirmemize yardımcı olacak!
 
 **Not:** Bu bir test sürümüdür. Üretim ortamında kullanmadan önce tüm özellikleri test edin.
 
+
+

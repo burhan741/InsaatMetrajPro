@@ -68,3 +68,5 @@ Yeni bilgisayarda:
 
 Detaylı bilgi için: `KURULUM_REHBERI.md`
 
+
+

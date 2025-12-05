@@ -174,3 +174,5 @@ EXE'yi test paketi ile birleştirebilirsiniz:
 **Tarih:** 2024  
 **Versiyon:** 1.0
 
+
+

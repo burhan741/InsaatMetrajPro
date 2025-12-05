@@ -14,6 +14,14 @@ except ImportError:
     PDFPLUMBER_AVAILABLE = False
     pdfplumber = None
 
+# Alternatif: PyPDF2
+try:
+    import PyPDF2
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
+    PyPDF2 = None
+
 
 class PDFBirimFiyatImporter:
     """PDF'den birim fiyat içe aktarma sınıfı"""
@@ -37,38 +45,62 @@ class PDFBirimFiyatImporter:
         Returns:
             List[Dict]: Poz ve fiyat bilgileri listesi
         """
-        if not PDFPLUMBER_AVAILABLE:
+        if not PDFPLUMBER_AVAILABLE and not PYPDF2_AVAILABLE:
             raise ImportError(
-                "pdfplumber kütüphanesi yüklü değil. "
-                "Yüklemek için: pip install pdfplumber"
+                "PDF işleme kütüphanesi yüklü değil. "
+                "Yüklemek için: pip install pdfplumber veya pip install PyPDF2"
             )
         
         extracted_data = []
         
         try:
-            with pdfplumber.open(pdf_path) as pdf:
-                total_pages = len(pdf.pages)
-                
-                for page_num, page in enumerate(pdf.pages, 1):
-                    if progress_callback:
-                        progress_callback(page_num, total_pages)
+            # Önce pdfplumber dene (daha iyi tablo desteği)
+            if PDFPLUMBER_AVAILABLE:
+                with pdfplumber.open(pdf_path) as pdf:
+                    total_pages = len(pdf.pages)
                     
-                    # Sayfadan metni al
-                    text = page.extract_text()
+                    for page_num, page in enumerate(pdf.pages, 1):
+                        if progress_callback:
+                            if not progress_callback(page_num, total_pages):
+                                break
+                        
+                        # Sayfadan metni al
+                        text = page.extract_text()
+                        
+                        if not text:
+                            continue
+                        
+                        # Tabloları dene (daha yapılandırılmış veri)
+                        tables = page.extract_tables()
+                        if tables:
+                            for table in tables:
+                                table_data = self._parse_table(table)
+                                extracted_data.extend(table_data)
+                        
+                        # Metinden poz ve fiyat çıkar
+                        text_data = self._parse_text(text)
+                        extracted_data.extend(text_data)
+            
+            # Alternatif: PyPDF2 kullan
+            elif PYPDF2_AVAILABLE:
+                with open(pdf_path, 'rb') as file:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    total_pages = len(pdf_reader.pages)
                     
-                    if not text:
-                        continue
-                    
-                    # Tabloları dene (daha yapılandırılmış veri)
-                    tables = page.extract_tables()
-                    if tables:
-                        for table in tables:
-                            table_data = self._parse_table(table)
-                            extracted_data.extend(table_data)
-                    
-                    # Metinden poz ve fiyat çıkar
-                    text_data = self._parse_text(text)
-                    extracted_data.extend(text_data)
+                    for page_num in range(total_pages):
+                        if progress_callback:
+                            if not progress_callback(page_num + 1, total_pages):
+                                break
+                        
+                        page = pdf_reader.pages[page_num]
+                        text = page.extract_text()
+                        
+                        if not text:
+                            continue
+                        
+                        # Metinden poz ve fiyat çıkar
+                        text_data = self._parse_text(text)
+                        extracted_data.extend(text_data)
         
         except Exception as e:
             print(f"PDF okuma hatası: {e}")

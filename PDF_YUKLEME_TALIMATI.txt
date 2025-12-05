@@ -1,0 +1,37 @@
+PDF BIRIM FIYAT KUTUPHANESI YUKLEME TALIMATI
+=============================================
+
+Windows Store Python kullanıyorsunuz. pdfplumber kütüphanesini yüklemek için:
+
+1. YÖNTEM (Önerilen - Uygulama İçinden):
+   - Uygulamayı açın
+   - "Veri" menüsünden "PDF'den Birim Fiyat İçe Aktar" seçeneğini tıklayın
+   - Uygulama otomatik olarak pdfplumber yükleme talimatı verecektir
+
+2. YÖNTEM (Manuel - Komut Satırı):
+   PowerShell'i YÖNETİCİ OLARAK açın ve şu komutu çalıştırın:
+   
+   python -m pip install pdfplumber
+   
+   Eğer hata alırsanız:
+   
+   python -m pip install --user pdfplumber
+   
+   VEYA
+   
+   py -m pip install pdfplumber
+
+3. YÖNTEM (Alternatif - PyPDF2):
+   Eğer pdfplumber yüklenemezse, PyPDF2 kullanılabilir:
+   
+   python -m pip install PyPDF2
+
+NOT: Windows Store Python bazen pip yükleme işlemlerinde sorun çıkarabilir.
+     Bu durumda Python'u python.org'dan indirip kurmanız gerekebilir.
+
+DOSYA KONUMU:
+C:\Users\USER\Desktop\2025-yili-b-r-m-f-yatlari-20250117121853.pdf
+
+Bu dosyayı uygulama içinden içe aktarabilirsiniz.
+
+

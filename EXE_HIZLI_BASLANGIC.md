@@ -130,3 +130,5 @@ Windows Defender veya SmartScreen şu uyarıyı verebilir:
 
 **Detaylı bilgi için:** `EXE_KURULUM_REHBERI.md`
 
+
+

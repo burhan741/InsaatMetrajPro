@@ -138,3 +138,5 @@ Sorun yaşarsanız:
 2. Python sürümünü kontrol edin: `python --version`
 3. Kütüphanelerin yüklü olduğunu kontrol edin: `pip list`
 
+
+

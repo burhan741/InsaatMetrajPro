@@ -7,3 +7,5 @@ Yardımcı fonksiyonlar
 
 
 
+
+

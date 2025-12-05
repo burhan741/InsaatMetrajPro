@@ -64,3 +64,5 @@ echo veya InsaatMetrajPro.bat dosyasina cift tiklayin.
 echo.
 pause
 
+
+
