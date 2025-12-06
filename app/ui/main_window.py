@@ -1023,6 +1023,10 @@ class MainWindow(QMainWindow):
         btn_refresh.clicked.connect(self.load_birim_fiyatlar)
         top_layout.addWidget(btn_refresh)
         
+        btn_edit_fiyat = QPushButton("✏️ Fiyatı Düzelt")
+        btn_edit_fiyat.clicked.connect(self.edit_birim_fiyat)
+        top_layout.addWidget(btn_edit_fiyat)
+        
         top_layout.addStretch()
         
         # Filtre
@@ -1162,6 +1166,87 @@ class MainWindow(QMainWindow):
         
         # Karşılaştırma yap
         karsilastirma = self.db.compare_birim_fiyatlar(poz_no)
+    
+    def edit_birim_fiyat(self) -> None:
+        """Seçili pozun birim fiyatını düzelt"""
+        current_row = self.birim_fiyat_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen düzeltmek istediğiniz bir fiyat satırını seçin")
+            return
+        
+        poz_no_item = self.birim_fiyat_table.item(current_row, 0)
+        if not poz_no_item:
+            return
+        
+        poz_no = poz_no_item.data(Qt.ItemDataRole.UserRole)
+        if not poz_no:
+            poz_no = poz_no_item.text()
+        
+        # Mevcut fiyatı al
+        fiyat_item = self.birim_fiyat_table.item(current_row, 2)
+        mevcut_fiyat = 0.0
+        if fiyat_item:
+            fiyat_text = fiyat_item.text().replace("₺", "").replace(",", ".").strip()
+            try:
+                mevcut_fiyat = float(fiyat_text)
+            except:
+                pass
+        
+        # Yeni fiyat gir
+        from PyQt6.QtWidgets import QInputDialog
+        yeni_fiyat, ok = QInputDialog.getDouble(
+            self,
+            "Fiyat Düzelt",
+            f"Poz {poz_no} için yeni birim fiyatı girin:",
+            mevcut_fiyat,
+            0.0,
+            999999999.99,
+            2
+        )
+        
+        if ok and yeni_fiyat > 0:
+            # Poz bilgisini al
+            poz_data = self.db.get_poz_by_no(poz_no)
+            if not poz_data:
+                QMessageBox.warning(self, "Uyarı", f"Poz {poz_no} bulunamadı")
+                return
+            
+            poz_id = poz_data.get('id')
+            
+            # Eski aktif fiyatları pasif yap
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE birim_fiyatlar SET aktif = 0
+                    WHERE poz_id = ? AND aktif = 1
+                """, (poz_id,))
+            
+            # Yeni fiyatı ekle
+            fiyat_id = self.db.add_birim_fiyat(
+                poz_id=poz_id,
+                poz_no=poz_no,
+                birim_fiyat=yeni_fiyat,
+                kaynak='Manuel Düzeltme',
+                aciklama=f'Eski fiyat: {mevcut_fiyat:,.2f} ₺'
+            )
+            
+            if fiyat_id:
+                # Poz'un resmi_fiyat'ını da güncelle
+                with self.db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE pozlar SET resmi_fiyat = ?
+                        WHERE poz_no = ?
+                    """, (yeni_fiyat, poz_no))
+                
+                QMessageBox.information(self, "Başarılı", f"Poz {poz_no} için birim fiyat {yeni_fiyat:,.2f} ₺ olarak güncellendi")
+                self.load_birim_fiyatlar()
+                # Fiyat geçmişini de yenile
+                poz_no_item = self.birim_fiyat_table.item(current_row, 0)
+                if poz_no_item:
+                    self.view_fiyat_gecmisi(poz_no_item)
+            else:
+                QMessageBox.warning(self, "Hata", "Fiyat güncellenirken bir hata oluştu")
         
         if karsilastirma['fiyat_sayisi'] > 0:
             text = f"📊 Poz: {poz_no}\n\n"
@@ -1340,6 +1425,10 @@ class MainWindow(QMainWindow):
         btn_delete_kalem = QPushButton("Kalem Sil")
         btn_delete_kalem.clicked.connect(self.delete_ihale_kalem)
         btn_delete_kalem.setStyleSheet("background-color: #c9184a;")
+        
+        btn_edit_tanim = QPushButton("✏️ Tanımı Düzelt")
+        btn_edit_tanim.clicked.connect(self.edit_ihale_tanim)
+        right_layout.addWidget(btn_edit_tanim)
         kalem_btn_layout.addWidget(btn_delete_kalem)
         
         btn_export = QPushButton("İhale Dosyası Oluştur (PDF)")
@@ -1369,12 +1458,16 @@ class MainWindow(QMainWindow):
         self.ihale_kalem_table.horizontalHeader().setStretchLastSection(True)
         self.ihale_kalem_table.setColumnWidth(0, 50)
         self.ihale_kalem_table.setColumnWidth(1, 120)
-        self.ihale_kalem_table.setColumnWidth(2, 250)
+        self.ihale_kalem_table.setColumnWidth(2, 400)  # Tanım sütunu genişletildi
         self.ihale_kalem_table.setColumnWidth(3, 120)
         self.ihale_kalem_table.setColumnWidth(4, 80)
         self.ihale_kalem_table.setColumnWidth(5, 120)
+        # Tanım sütununu genişletilebilir yap
+        self.ihale_kalem_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         # Birim Miktar ve Birim Fiyat sütunları düzenlenebilir
         self.ihale_kalem_table.itemChanged.connect(self.on_ihale_kalem_changed)
+        # Tanım sütununa çift tıklayınca tam metni göster
+        self.ihale_kalem_table.itemDoubleClicked.connect(self.show_full_tanim)
         right_layout.addWidget(self.ihale_kalem_table)
         
         splitter.addWidget(right_widget)
@@ -3204,28 +3297,40 @@ class MainWindow(QMainWindow):
                                 birim_fiyat = 0.0
                             else:
                                 # Virgülü noktaya çevir (Türkçe format)
-                                birim_fiyat_str = birim_fiyat_str.replace(',', '.')
+                                birim_fiyat_str = birim_fiyat_str.replace(',', '.').replace(' ', '')
+                                # Binlik ayırıcıları temizle (1.234,56 -> 1234.56)
+                                if '.' in birim_fiyat_str and ',' in birim_fiyat_str:
+                                    # Türkçe format: 1.234,56
+                                    birim_fiyat_str = birim_fiyat_str.replace('.', '').replace(',', '.')
                                 birim_fiyat = float(birim_fiyat_str)
                                 if birim_fiyat < 0:
                                     birim_fiyat = 0.0
+                                print(f"DEBUG: Satır {index + 2}: Birim fiyat okundu: {birim_fiyat_val} -> {birim_fiyat}")
                         except (ValueError, TypeError) as e:
                             print(f"Satır {index + 2}: Birim fiyat dönüşüm hatası: {birim_fiyat_val} -> 0.0")
                             birim_fiyat = 0.0
                     
-                    # Toplam hesapla
-                    toplam = miktar * birim_fiyat if birim_fiyat > 0 else 0
-                    
-                    # Kalemi ekle
-                    self.db.add_item(
-                        proje_id=self.current_project_id,
+                    # Önce poz'u ekle/güncelle (add_poz zaten varsa günceller)
+                    poz_id = self.db.add_poz(
                         poz_no=poz_no,
                         tanim=tanim,
-                        kategori=kategori,
-                        miktar=miktar,
                         birim=birim,
-                        birim_fiyat=birim_fiyat,
-                        toplam=toplam
+                        kategori=kategori if kategori else "",
+                        resmi_fiyat=birim_fiyat if birim_fiyat > 0 else 0
                     )
+                    
+                    # Birim fiyat ekle (eğer birim fiyat > 0 ise)
+                    if birim_fiyat > 0:
+                        fiyat_id = self.db.add_birim_fiyat(
+                            poz_id=poz_id,
+                            poz_no=poz_no,
+                            birim_fiyat=birim_fiyat,
+                            kaynak='Excel Import'
+                        )
+                        print(f"DEBUG: Poz {poz_no} için birim fiyat eklendi: {birim_fiyat} (ID: {fiyat_id})")
+                    else:
+                        print(f"DEBUG: Poz {poz_no} için birim fiyat 0, eklenmedi")
+                    
                     success_count += 1
                     
                 except Exception as e:
@@ -4183,9 +4288,18 @@ class MainWindow(QMainWindow):
                         birim_text = "m²"
                     birim = birim_text.strip() if birim_text.strip() else "m²"
             
-            # Birim fiyatı getir (otomatik)
-            fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no)
+            # Birim fiyatı getir (otomatik) - önce aktif, sonra herhangi bir fiyat
+            fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no, aktif_only=True)
+            if not fiyat_data or not fiyat_data.get('birim_fiyat'):
+                # Aktif fiyat yoksa, aktif olmayan fiyatları da kontrol et
+                fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no, aktif_only=False)
             birim_fiyat = fiyat_data.get('birim_fiyat', 0) if fiyat_data else 0
+            
+            # Eğer hala 0 ise, poz'un resmi_fiyat'ını kontrol et
+            if birim_fiyat == 0:
+                poz_data = self.db.get_poz_by_no(poz_no)
+                if poz_data and poz_data.get('resmi_fiyat'):
+                    birim_fiyat = poz_data.get('resmi_fiyat', 0)
             
             # İhale kalemine ekle (birim miktar 0, kullanıcı girecek)
             kalem_id = self.db.add_ihale_kalem(
@@ -4200,9 +4314,12 @@ class MainWindow(QMainWindow):
             )
             
             if kalem_id:
-                self.load_ihale_kalemleri()
+                # Tabloyu yeniden yükleme - kullanıcının düzenlemelerini kaybetmemek için
+                # Sadece yeni eklenen satırı ekle, tüm tabloyu yeniden yükleme
                 self.statusBar().showMessage(f"Poz eklendi: {poz_no}")
                 QMessageBox.information(self, "Başarılı", f"Poz başarıyla eklendi:\n{poz_no} - {poz_tanim}")
+                # Tabloyu yeniden yükle (sadece yeni ekleme sonrası)
+                self.load_ihale_kalemleri()
             else:
                 QMessageBox.warning(self, "Uyarı", "Poz eklenirken bir hata oluştu")
         except Exception as e:
@@ -4225,67 +4342,245 @@ class MainWindow(QMainWindow):
         
         try:
             import re
-            kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
-            self.ihale_kalem_table.setRowCount(len(kalemler))
-            
-            toplam = 0.0
-            
-            for row, kalem in enumerate(kalemler):
-                # Sıra
-                self.ihale_kalem_table.setItem(row, 0, QTableWidgetItem(str(kalem.get('sira_no', row + 1))))
+            # itemChanged sinyalini blokla (tablo yüklenirken sinyal tetiklenmesin)
+            self.ihale_kalem_table.blockSignals(True)
+            try:
+                kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
+                self.ihale_kalem_table.setRowCount(len(kalemler))
                 
-                # Poz No
-                self.ihale_kalem_table.setItem(row, 1, QTableWidgetItem(kalem.get('poz_no', '')))
+                toplam = 0.0
                 
-                # Tanım (temizle - fiyat bilgisi varsa çıkar)
-                poz_tanim = str(kalem.get('poz_tanim', '')).strip()
-                # "Sa 250,00" veya "Sa 250.00" gibi pattern'leri temizle
-                poz_tanim = re.sub(r'\s*Sa\s*\d+[.,]\d+', '', poz_tanim).strip()
-                self.ihale_kalem_table.setItem(row, 2, QTableWidgetItem(poz_tanim))
+                for row, kalem in enumerate(kalemler):
+                    # Sıra (düzenlenemez)
+                    sira_item = QTableWidgetItem(str(kalem.get('sira_no', row + 1)))
+                    sira_item.setFlags(sira_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.ihale_kalem_table.setItem(row, 0, sira_item)
+                    
+                    # Poz No (düzenlenemez)
+                    poz_no_item = QTableWidgetItem(kalem.get('poz_no', ''))
+                    poz_no_item.setFlags(poz_no_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.ihale_kalem_table.setItem(row, 1, poz_no_item)
+                    
+                    # Tanım (temizle - fiyat bilgisi varsa çıkar, düzenlenebilir)
+                    poz_tanim = str(kalem.get('poz_tanim', '')).strip()
+                    # "Sa 250,00" veya "Sa 250.00" gibi pattern'leri temizle
+                    poz_tanim = re.sub(r'\s*Sa\s*\d+[.,]\d+', '', poz_tanim).strip()
+                    tanim_item = QTableWidgetItem(poz_tanim)
+                    # Tanım düzenlenebilir yapıldı
+                    # Tam metni tooltip olarak ekle (tüm metin görünsün)
+                    tanim_item.setToolTip(poz_tanim)
+                    # Word wrap özelliği için hizalama
+                    tanim_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                    self.ihale_kalem_table.setItem(row, 2, tanim_item)
+                    # Satır yüksekliğini otomatik ayarla (uzun metinler için)
+                    if len(poz_tanim) > 80:
+                        # Uzun metinler için satır yüksekliğini artır
+                        self.ihale_kalem_table.setRowHeight(row, max(40, min(100, len(poz_tanim) // 40 * 20)))
+                    # Satır yüksekliğini otomatik ayarla (uzun metinler için)
+                    if len(poz_tanim) > 80:
+                        # Uzun metinler için satır yüksekliğini artır
+                        self.ihale_kalem_table.setRowHeight(row, max(40, min(100, len(poz_tanim) // 40 * 20)))
+                    
+                    # Birim Miktar (düzenlenebilir) - 0 ise boş göster
+                    birim_miktar = kalem.get('birim_miktar', 0) or 0
+                    # Eğer birim_miktar None veya 0 ise, tablodan oku (kullanıcı yazmış olabilir)
+                    if birim_miktar == 0:
+                        # Tablodan oku (eğer kullanıcı yazdıysa)
+                        existing_item = self.ihale_kalem_table.item(row, 3)
+                        if existing_item and existing_item.text().strip():
+                            try:
+                                miktar_text_existing = existing_item.text().replace(",", ".").strip()
+                                birim_miktar = float(miktar_text_existing) if miktar_text_existing else 0.0
+                            except:
+                                pass
+                    miktar_text = f"{birim_miktar:,.2f}" if birim_miktar > 0 else ""
+                    miktar_item = QTableWidgetItem(miktar_text)
+                    miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    # Font'u büyüt ve kalın yap
+                    font = miktar_item.font()
+                    font.setPointSize(font.pointSize() + 2)  # 2 punto büyüt
+                    font.setBold(True)  # Kalın yap
+                    miktar_item.setFont(font)
+                    self.ihale_kalem_table.setItem(row, 3, miktar_item)
+                    
+                    # Birim (düzenlenebilir)
+                    birim_item = QTableWidgetItem(kalem.get('birim', ''))
+                    birim_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
+                    self.ihale_kalem_table.setItem(row, 4, birim_item)
+                    
+                    # Birim Fiyat (düzenlenebilir)
+                    birim_fiyat = kalem.get('birim_fiyat', 0) or 0
+                    # Eğer ihale_kalemleri tablosunda birim_fiyat 0 ise, birim_fiyatlar tablosundan al
+                    if birim_fiyat == 0:
+                        poz_no = kalem.get('poz_no', '')
+                        if poz_no:
+                            fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no, aktif_only=False)
+                            if fiyat_data and fiyat_data.get('birim_fiyat'):
+                                birim_fiyat = fiyat_data.get('birim_fiyat', 0)
+                                # İhale kalemindeki birim fiyatı güncelle
+                                kalem_id = kalem.get('id')
+                                if kalem_id:
+                                    self.db.update_ihale_kalem(kalem_id, birim_fiyat=birim_fiyat)
+                            else:
+                                # Poz'un resmi_fiyat'ını kontrol et
+                                poz_data = self.db.get_poz_by_no(poz_no)
+                                if poz_data and poz_data.get('resmi_fiyat'):
+                                    birim_fiyat = poz_data.get('resmi_fiyat', 0)
+                                    kalem_id = kalem.get('id')
+                                    if kalem_id:
+                                        self.db.update_ihale_kalem(kalem_id, birim_fiyat=birim_fiyat)
+                    
+                    fiyat_item = QTableWidgetItem(f"{birim_fiyat:,.2f}")
+                    fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.ihale_kalem_table.setItem(row, 5, fiyat_item)
+                    
+                    # Toplam (hesaplanır, düzenlenemez) - HER ZAMAN birim miktar ve birim fiyattan hesapla
+                    # ÖNEMLİ: Tabloda görünen değerleri kullan (kullanıcı yazmış olabilir)
+                    # Tablodan birim miktar ve birim fiyatı oku
+                    miktar_item_tablo = self.ihale_kalem_table.item(row, 3)
+                    fiyat_item_tablo = self.ihale_kalem_table.item(row, 5)
+                    
+                    birim_miktar_hesap = birim_miktar
+                    birim_fiyat_hesap = birim_fiyat
+                    
+                    # Eğer tabloda değerler varsa onları kullan
+                    if miktar_item_tablo and miktar_item_tablo.text().strip():
+                        try:
+                            miktar_text_tablo = miktar_item_tablo.text().strip()
+                            # Türkçe ve İngilizce format desteği
+                            miktar_text_tablo = miktar_text_tablo.replace(" ", "")
+                            if ',' in miktar_text_tablo and '.' in miktar_text_tablo:
+                                last_dot = miktar_text_tablo.rfind('.')
+                                last_comma = miktar_text_tablo.rfind(',')
+                                if last_dot > last_comma:
+                                    birim_miktar_hesap = float(miktar_text_tablo.replace(',', ''))
+                                else:
+                                    birim_miktar_hesap = float(miktar_text_tablo.replace('.', '').replace(',', '.'))
+                            elif ',' in miktar_text_tablo:
+                                birim_miktar_hesap = float(miktar_text_tablo.replace(',', '.'))
+                            else:
+                                birim_miktar_hesap = float(miktar_text_tablo.replace(',', '.'))
+                        except:
+                            pass
+                    
+                    if fiyat_item_tablo and fiyat_item_tablo.text().strip():
+                        try:
+                            fiyat_text_tablo = fiyat_item_tablo.text().replace("₺", "").strip()
+                            # Türkçe ve İngilizce format desteği
+                            fiyat_text_tablo = fiyat_text_tablo.replace(" ", "")
+                            if ',' in fiyat_text_tablo and '.' in fiyat_text_tablo:
+                                last_dot = fiyat_text_tablo.rfind('.')
+                                last_comma = fiyat_text_tablo.rfind(',')
+                                if last_dot > last_comma:
+                                    birim_fiyat_hesap = float(fiyat_text_tablo.replace(',', ''))
+                                else:
+                                    birim_fiyat_hesap = float(fiyat_text_tablo.replace('.', '').replace(',', '.'))
+                            elif ',' in fiyat_text_tablo:
+                                birim_fiyat_hesap = float(fiyat_text_tablo.replace(',', '.'))
+                            else:
+                                birim_fiyat_hesap = float(fiyat_text_tablo.replace(',', '.'))
+                        except:
+                            pass
+                    
+                    # Toplamı hesapla
+                    toplam_deger = birim_miktar_hesap * birim_fiyat_hesap
+                    
+                    # Veritabanını güncelle
+                    kalem_id = kalem.get('id')
+                    if kalem_id:
+                        # Veritabanındaki toplam ile hesaplanan toplam farklıysa güncelle
+                        db_toplam = kalem.get('toplam', 0) or 0
+                        if abs(db_toplam - toplam_deger) > 0.01:
+                            self.db.update_ihale_kalem(kalem_id, birim_miktar=birim_miktar_hesap, birim_fiyat=birim_fiyat_hesap, toplam=toplam_deger)
+                    
+                    toplam += toplam_deger
+                    toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
+                    toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.ihale_kalem_table.setItem(row, 6, toplam_item)
+                    
+                    # ID'yi sakla
+                    item = self.ihale_kalem_table.item(row, 0)
+                    if item:
+                        item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
                 
-                # Birim Miktar (düzenlenebilir) - 0 ise boş göster
-                birim_miktar = kalem.get('birim_miktar', 0) or 0
-                miktar_text = f"{birim_miktar:,.2f}" if birim_miktar > 0 else ""
-                miktar_item = QTableWidgetItem(miktar_text)
-                miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.ihale_kalem_table.setItem(row, 3, miktar_item)
-                
-                # Birim
-                self.ihale_kalem_table.setItem(row, 4, QTableWidgetItem(kalem.get('birim', '')))
-                
-                # Birim Fiyat (düzenlenebilir)
-                birim_fiyat = kalem.get('birim_fiyat', 0) or 0
-                fiyat_item = QTableWidgetItem(f"{birim_fiyat:,.2f}")
-                fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.ihale_kalem_table.setItem(row, 5, fiyat_item)
-                
-                # Toplam (hesaplanır, düzenlenemez)
-                toplam_deger = kalem.get('toplam', 0) or 0
-                toplam += toplam_deger
-                toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
-                toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.ihale_kalem_table.setItem(row, 6, toplam_item)
-                
-                # ID'yi sakla
-                item = self.ihale_kalem_table.item(row, 0)
-                if item:
-                    item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
-            
-            if hasattr(self, 'ihale_total_label'):
-                self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+                if hasattr(self, 'ihale_total_label'):
+                    self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+            finally:
+                # Sinyali tekrar aç
+                self.ihale_kalem_table.blockSignals(False)
         except Exception as e:
             print(f"İhale kalemleri yükleme hatası: {e}")
             import traceback
             traceback.print_exc()
             # Hata olsa bile tabloyu temizle
             try:
+                self.ihale_kalem_table.blockSignals(True)
                 self.ihale_kalem_table.setRowCount(0)
+                self.ihale_kalem_table.blockSignals(False)
             except:
                 pass
     
+    def show_full_tanim(self, item: QTableWidgetItem) -> None:
+        """Tanım sütununa çift tıklayınca tam metni göster"""
+        # Sadece tanım sütunu (2) için işlem yap
+        if item.column() != 2:
+            return
+        
+        tanim_text = item.text()
+        if not tanim_text:
+            return
+        
+        # Dialog oluştur
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Tam Tanım")
+        dialog.setMinimumWidth(700)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Metin alanı
+        text_edit = QTextEdit()
+        text_edit.setPlainText(tanim_text)
+        text_edit.setReadOnly(True)
+        text_edit.setFont(QFont("Arial", 10))
+        layout.addWidget(text_edit)
+        
+        # Kapat butonu
+        btn_close = QPushButton("Kapat")
+        btn_close.clicked.connect(dialog.close)
+        layout.addWidget(btn_close)
+        
+        dialog.exec()
+    
     def on_ihale_kalem_changed(self, item: QTableWidgetItem) -> None:
-        """İhale kalemi değiştiğinde (birim miktar veya birim fiyat)"""
+        """İhale kalemi değiştiğinde (tanım, birim miktar, birim veya birim fiyat)"""
+        # Düzenlenebilir sütunlar (2: Tanım, 3: Birim Miktar, 4: Birim, 5: Birim Fiyat)
+        if item.column() not in [2, 3, 4, 5]:
+            return
+        
+        # Tanım değiştiyse sadece tanımı güncelle
+        if item.column() == 2:
+            row = item.row()
+            kalem_id_item = self.ihale_kalem_table.item(row, 0)
+            if not kalem_id_item:
+                return
+            
+            kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
+            if not kalem_id:
+                return
+            
+            yeni_tanim = item.text().strip()
+            if yeni_tanim:
+                self.db.update_ihale_kalem(kalem_id, poz_tanim=yeni_tanim)
+                # Tooltip'i de güncelle
+                item.setToolTip(yeni_tanim)
+                # Satır yüksekliğini güncelle
+                if len(yeni_tanim) > 80:
+                    self.ihale_kalem_table.setRowHeight(row, max(40, min(100, len(yeni_tanim) // 40 * 20)))
+            return
+        
         row = item.row()
         kalem_id_item = self.ihale_kalem_table.item(row, 0)
         if not kalem_id_item:
@@ -4295,51 +4590,287 @@ class MainWindow(QMainWindow):
         if not kalem_id:
             return
         
-        # Birim miktar ve birim fiyatı al
+        # Birim miktar, birim ve birim fiyatı al
         miktar_item = self.ihale_kalem_table.item(row, 3)
+        birim_item = self.ihale_kalem_table.item(row, 4)
         fiyat_item = self.ihale_kalem_table.item(row, 5)
         
-        if not miktar_item or not fiyat_item:
+        if not miktar_item or not birim_item or not fiyat_item:
             return
         
+        # Birim miktar için font ayarlarını koru (büyük ve kalın)
+        if item.column() == 3:
+            # Mevcut font'u al ve ayarları koru
+            font = miktar_item.font()
+            if not font.bold() or font.pointSize() <= 10:
+                font.setPointSize(font.pointSize() + 2)
+                font.setBold(True)
+                miktar_item.setFont(font)
+        
         try:
-            miktar_text = miktar_item.text().replace(",", ".").strip()
-            fiyat_text = fiyat_item.text().replace(",", ".").replace("₺", "").strip()
+            miktar_text = miktar_item.text().strip()
+            birim_text = birim_item.text().strip()
+            fiyat_text = fiyat_item.text().replace("₺", "").strip()
             
-            birim_miktar = float(miktar_text) if miktar_text else 0.0
-            birim_fiyat = float(fiyat_text) if fiyat_text else 0.0
+            # Birim miktar parse - Türkçe ve İngilizce format desteği
+            birim_miktar = 0.0
+            if miktar_text:
+                try:
+                    # Önce boşlukları temizle
+                    miktar_text = miktar_text.replace(" ", "")
+                    # Eğer hem virgül hem nokta varsa
+                    if ',' in miktar_text and '.' in miktar_text:
+                        # Son noktadan önceki kısmı kontrol et
+                        last_dot = miktar_text.rfind('.')
+                        last_comma = miktar_text.rfind(',')
+                        if last_dot > last_comma:
+                            # Nokta ondalık ayırıcı (İngilizce format: 1,234.56)
+                            # Virgülleri kaldır, noktayı koru
+                            birim_miktar = float(miktar_text.replace(',', ''))
+                        else:
+                            # Virgül ondalık ayırıcı (Türkçe format: 1.234,56)
+                            # Noktaları kaldır, virgülü noktaya çevir
+                            birim_miktar = float(miktar_text.replace('.', '').replace(',', '.'))
+                    elif ',' in miktar_text:
+                        # Sadece virgül var - Türkçe format (ondalık ayırıcı)
+                        birim_miktar = float(miktar_text.replace(',', '.'))
+                    elif '.' in miktar_text:
+                        # Sadece nokta var - kontrol et
+                        # Eğer birden fazla nokta varsa, son nokta ondalık, diğerleri binlik
+                        dot_count = miktar_text.count('.')
+                        if dot_count > 1:
+                            # Son noktadan önceki noktaları kaldır
+                            last_dot = miktar_text.rfind('.')
+                            before_last = miktar_text[:last_dot].replace('.', '')
+                            after_last = miktar_text[last_dot:]
+                            birim_miktar = float(before_last + after_last)
+                        else:
+                            # Tek nokta - ondalık ayırıcı
+                            birim_miktar = float(miktar_text)
+                    else:
+                        # Sadece sayı
+                        birim_miktar = float(miktar_text)
+                except (ValueError, AttributeError) as e:
+                    print(f"Birim miktar parse hatası: {miktar_text} -> {e}")
+                    birim_miktar = 0.0
+            
+            birim = birim_text if birim_text else ""
+            
+            # Birim fiyat parse - Türkçe ve İngilizce format desteği
+            birim_fiyat = 0.0
+            if fiyat_text:
+                try:
+                    # Önce boşlukları temizle
+                    fiyat_text = fiyat_text.replace(" ", "")
+                    # Eğer hem virgül hem nokta varsa
+                    if ',' in fiyat_text and '.' in fiyat_text:
+                        # Son noktadan önceki kısmı kontrol et
+                        last_dot = fiyat_text.rfind('.')
+                        last_comma = fiyat_text.rfind(',')
+                        if last_dot > last_comma:
+                            # Nokta ondalık ayırıcı (İngilizce format: 19,100.00)
+                            # Virgülleri kaldır, noktayı koru
+                            birim_fiyat = float(fiyat_text.replace(',', ''))
+                        else:
+                            # Virgül ondalık ayırıcı (Türkçe format: 19.100,00)
+                            # Noktaları kaldır, virgülü noktaya çevir
+                            birim_fiyat = float(fiyat_text.replace('.', '').replace(',', '.'))
+                    elif ',' in fiyat_text:
+                        # Sadece virgül var - Türkçe format (ondalık ayırıcı)
+                        birim_fiyat = float(fiyat_text.replace(',', '.'))
+                    elif '.' in fiyat_text:
+                        # Sadece nokta var - kontrol et
+                        # Eğer birden fazla nokta varsa, son nokta ondalık, diğerleri binlik
+                        dot_count = fiyat_text.count('.')
+                        if dot_count > 1:
+                            # Son noktadan önceki noktaları kaldır
+                            last_dot = fiyat_text.rfind('.')
+                            before_last = fiyat_text[:last_dot].replace('.', '')
+                            after_last = fiyat_text[last_dot:]
+                            birim_fiyat = float(before_last + after_last)
+                        else:
+                            # Tek nokta - ondalık ayırıcı
+                            birim_fiyat = float(fiyat_text)
+                    else:
+                        # Sadece sayı
+                        birim_fiyat = float(fiyat_text)
+                except (ValueError, AttributeError) as e:
+                    print(f"Birim fiyat parse hatası: {fiyat_text} -> {e}")
+                    birim_fiyat = 0.0
             
             # Toplam hesapla
             toplam = birim_miktar * birim_fiyat
             
             # Veritabanını güncelle
-            self.db.update_ihale_kalem(kalem_id, birim_miktar=birim_miktar, birim_fiyat=birim_fiyat, toplam=toplam)
+            success = self.db.update_ihale_kalem(kalem_id, birim_miktar=birim_miktar, birim=birim, birim_fiyat=birim_fiyat, toplam=toplam)
             
-            # Toplam sütununu güncelle
-            toplam_item = QTableWidgetItem(f"{toplam:,.2f} ₺")
-            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.ihale_kalem_table.setItem(row, 6, toplam_item)
-            
-            # Genel toplamı güncelle
-            self.update_ihale_total()
+            if success:
+                # itemChanged sinyalini blokla (sadece toplam sütununu güncellerken)
+                self.ihale_kalem_table.blockSignals(True)
+                try:
+                    # Kullanıcının yazdığı değerleri KORU - hiçbir şey yapma
+                    # Birim miktar, birim ve birim fiyat sütunları kullanıcının yazdığı gibi kalacak
+                    
+                    # Sadece toplam sütununu güncelle
+                    toplam_item = QTableWidgetItem(f"{toplam:,.2f} ₺")
+                    toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.ihale_kalem_table.setItem(row, 6, toplam_item)
+                    
+                    # Genel toplamı güncelle
+                    self.update_ihale_total()
+                finally:
+                    # Sinyali tekrar aç
+                    self.ihale_kalem_table.blockSignals(False)
+            else:
+                QMessageBox.warning(self, "Hata", "Veritabanı güncellemesi başarısız oldu")
             
         except ValueError:
             QMessageBox.warning(self, "Hata", "Geçersiz sayı formatı")
+        except Exception as e:
+            print(f"İhale kalemi güncelleme hatası: {e}")
+            import traceback
+            traceback.print_exc()
     
     def update_ihale_total(self) -> None:
         """İhale toplamını güncelle"""
-        toplam = 0.0
-        for row in range(self.ihale_kalem_table.rowCount()):
-            toplam_item = self.ihale_kalem_table.item(row, 6)
-            if toplam_item:
-                toplam_text = toplam_item.text().replace("₺", "").replace(",", ".").strip()
-                try:
-                    toplam += float(toplam_text)
-                except ValueError:
-                    pass
+        if not hasattr(self, 'ihale_kalem_table') or not hasattr(self, 'ihale_total_label'):
+            return
         
-        self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+        try:
+            toplam = 0.0
+            for row in range(self.ihale_kalem_table.rowCount()):
+                # Toplam sütunundan oku (6. sütun)
+                toplam_item = self.ihale_kalem_table.item(row, 6)
+                if toplam_item:
+                    toplam_text = toplam_item.text().replace("₺", "").strip()
+                    try:
+                        # Türkçe ve İngilizce format desteği
+                        toplam_text = toplam_text.replace(" ", "")
+                        if ',' in toplam_text and '.' in toplam_text:
+                            # Son noktadan önceki kısmı kontrol et
+                            last_dot = toplam_text.rfind('.')
+                            last_comma = toplam_text.rfind(',')
+                            if last_dot > last_comma:
+                                # Nokta ondalık ayırıcı (İngilizce format: 19,100.00)
+                                toplam += float(toplam_text.replace(',', ''))
+                            else:
+                                # Virgül ondalık ayırıcı (Türkçe format: 19.100,00)
+                                toplam += float(toplam_text.replace('.', '').replace(',', '.'))
+                        elif ',' in toplam_text:
+                            # Sadece virgül var - Türkçe format (ondalık ayırıcı)
+                            toplam += float(toplam_text.replace(',', '.'))
+                        elif '.' in toplam_text:
+                            # Sadece nokta var - kontrol et
+                            dot_count = toplam_text.count('.')
+                            if dot_count > 1:
+                                # Son noktadan önceki noktaları kaldır
+                                last_dot = toplam_text.rfind('.')
+                                before_last = toplam_text[:last_dot].replace('.', '')
+                                after_last = toplam_text[last_dot:]
+                                toplam += float(before_last + after_last)
+                            else:
+                                # Tek nokta - ondalık ayırıcı
+                                toplam += float(toplam_text)
+                        else:
+                            # Sadece sayı
+                            toplam += float(toplam_text)
+                    except (ValueError, AttributeError) as e:
+                        print(f"Toplam parse hatası (satır {row}): {toplam_text} -> {e}")
+                        # Alternatif: Birim miktar ve birim fiyattan hesapla
+                        try:
+                            miktar_item = self.ihale_kalem_table.item(row, 3)
+                            fiyat_item = self.ihale_kalem_table.item(row, 5)
+                            if miktar_item and fiyat_item:
+                                miktar_text = miktar_item.text().strip()
+                                fiyat_text = fiyat_item.text().replace("₺", "").strip()
+                                
+                                # Miktar parse
+                                miktar_val = 0.0
+                                if miktar_text:
+                                    miktar_text = miktar_text.replace(" ", "")
+                                    if ',' in miktar_text and '.' in miktar_text:
+                                        last_dot = miktar_text.rfind('.')
+                                        last_comma = miktar_text.rfind(',')
+                                        if last_dot > last_comma:
+                                            miktar_val = float(miktar_text.replace(',', ''))
+                                        else:
+                                            miktar_val = float(miktar_text.replace('.', '').replace(',', '.'))
+                                    elif ',' in miktar_text:
+                                        miktar_val = float(miktar_text.replace(',', '.'))
+                                    else:
+                                        miktar_val = float(miktar_text.replace(',', '.'))
+                                
+                                # Fiyat parse
+                                fiyat_val = 0.0
+                                if fiyat_text:
+                                    fiyat_text = fiyat_text.replace(" ", "")
+                                    if ',' in fiyat_text and '.' in fiyat_text:
+                                        last_dot = fiyat_text.rfind('.')
+                                        last_comma = fiyat_text.rfind(',')
+                                        if last_dot > last_comma:
+                                            fiyat_val = float(fiyat_text.replace(',', ''))
+                                        else:
+                                            fiyat_val = float(fiyat_text.replace('.', '').replace(',', '.'))
+                                    elif ',' in fiyat_text:
+                                        fiyat_val = float(fiyat_text.replace(',', '.'))
+                                    else:
+                                        fiyat_val = float(fiyat_text.replace(',', '.'))
+                                
+                                # Çarp ve ekle
+                                toplam += miktar_val * fiyat_val
+                        except:
+                            pass
+            
+            self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+        except Exception as e:
+            print(f"İhale toplam güncelleme hatası: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def edit_ihale_tanim(self) -> None:
+        """Seçili kalemin tanımını düzelt"""
+        current_row = self.ihale_kalem_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen düzeltmek istediğiniz bir satırı seçin")
+            return
+        
+        kalem_id_item = self.ihale_kalem_table.item(current_row, 0)
+        if not kalem_id_item:
+            return
+        
+        kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
+        if not kalem_id:
+            return
+        
+        # Mevcut tanımı al
+        tanim_item = self.ihale_kalem_table.item(current_row, 2)
+        mevcut_tanim = tanim_item.text() if tanim_item else ""
+        poz_no_item = self.ihale_kalem_table.item(current_row, 1)
+        poz_no = poz_no_item.text() if poz_no_item else ""
+        
+        # Yeni tanım gir
+        from PyQt6.QtWidgets import QInputDialog
+        yeni_tanim, ok = QInputDialog.getMultiLineText(
+            self,
+            "Tanım Düzelt",
+            f"Poz {poz_no} için yeni tanımı girin:",
+            mevcut_tanim
+        )
+        
+        if ok and yeni_tanim.strip():
+            # Veritabanını güncelle
+            success = self.db.update_ihale_kalem(kalem_id, poz_tanim=yeni_tanim.strip())
+            if success:
+                # Tabloyu güncelle
+                tanim_item.setText(yeni_tanim.strip())
+                tanim_item.setToolTip(yeni_tanim.strip())
+                # Satır yüksekliğini güncelle
+                if len(yeni_tanim.strip()) > 80:
+                    self.ihale_kalem_table.setRowHeight(current_row, max(40, min(100, len(yeni_tanim.strip()) // 40 * 20)))
+                QMessageBox.information(self, "Başarılı", f"Poz {poz_no} için tanım güncellendi")
+            else:
+                QMessageBox.warning(self, "Hata", "Tanım güncellenirken bir hata oluştu")
     
     def delete_ihale_kalem(self) -> None:
         """İhale kalemini sil"""
@@ -4390,6 +4921,42 @@ class MainWindow(QMainWindow):
                 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
                 from reportlab.lib.units import cm
                 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                from reportlab.pdfbase import pdfmetrics
+                from reportlab.pdfbase.ttfonts import TTFont
+                
+                # Türkçe karakter desteği için font yükle (eğer yoksa varsayılan font kullanılır)
+                font_name = 'Helvetica'
+                font_bold_name = 'Helvetica-Bold'
+                try:
+                    # Windows'ta Arial fontunu kullan
+                    import platform
+                    if platform.system() == 'Windows':
+                        arial_path = 'C:/Windows/Fonts/arial.ttf'
+                        arial_bold_path = 'C:/Windows/Fonts/arialbd.ttf'
+                        if Path(arial_path).exists():
+                            pdfmetrics.registerFont(TTFont('Arial', arial_path))
+                            font_name = 'Arial'
+                            # Arial Bold fontunu da yükle
+                            if Path(arial_bold_path).exists():
+                                try:
+                                    pdfmetrics.registerFont(TTFont('Arial-Bold', arial_bold_path))
+                                    font_bold_name = 'Arial-Bold'
+                                except:
+                                    # Arial-Bold yüklenemezse Helvetica-Bold kullan
+                                    font_bold_name = 'Helvetica-Bold'
+                            else:
+                                # Arial Bold yoksa, Helvetica-Bold kullan
+                                font_bold_name = 'Helvetica-Bold'
+                        else:
+                            font_name = 'Helvetica'
+                            font_bold_name = 'Helvetica-Bold'
+                    else:
+                        font_name = 'Helvetica'
+                        font_bold_name = 'Helvetica-Bold'
+                except Exception as e:
+                    print(f"Font yükleme hatası: {e}")
+                    font_name = 'Helvetica'
+                    font_bold_name = 'Helvetica-Bold'
                 
                 doc = SimpleDocTemplate(str(file_path), pagesize=A4)
                 story = []
@@ -4399,6 +4966,7 @@ class MainWindow(QMainWindow):
                 title_style = ParagraphStyle(
                     'CustomTitle',
                     parent=styles['Heading1'],
+                    fontName=font_name,
                     fontSize=18,
                     textColor=colors.HexColor('#1a1a2e'),
                     spaceAfter=30,
@@ -4421,8 +4989,8 @@ class MainWindow(QMainWindow):
                     ('BACKGROUND', (1, 0), (1, -1), colors.white),
                     ('TEXTCOLOR', (1, 0), (1, -1), colors.black),
                     ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                    ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+                    ('FONTNAME', (0, 0), (0, -1), font_bold_name),
+                    ('FONTNAME', (1, 0), (1, -1), font_name),
                     ('FONTSIZE', (0, 0), (-1, -1), 10),
                     ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                 ]))
@@ -4431,7 +4999,15 @@ class MainWindow(QMainWindow):
                 
                 # Kalem listesi
                 if kalemler:
-                    story.append(Paragraph("İhale Kalem Listesi", styles['Heading2']))
+                    heading2_style = ParagraphStyle(
+                        'CustomHeading2',
+                        parent=styles['Heading2'],
+                        fontName=font_name,
+                        fontSize=14,
+                        textColor=colors.HexColor('#1a1a2e'),
+                        spaceAfter=20
+                    )
+                    story.append(Paragraph("İhale Kalem Listesi", heading2_style))
                     kalem_data = [['Sıra', 'Poz No', 'Tanım', 'Miktar', 'Birim', 'Birim Fiyat', 'Toplam']]
                     
                     toplam_genel = 0.0
@@ -4453,8 +5029,10 @@ class MainWindow(QMainWindow):
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                         ('ALIGN', (2, 1), (2, -1), 'LEFT'),
-                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTNAME', (0, 0), (-1, 0), f'{font_name}-Bold' if font_name == 'Arial' else 'Helvetica-Bold'),
+                        ('FONTNAME', (0, 1), (-1, -1), font_name),
                         ('FONTSIZE', (0, 0), (-1, 0), 10),
+                        ('FONTSIZE', (0, 1), (-1, -1), 9),
                         ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f5f5f5')]),
                     ]))

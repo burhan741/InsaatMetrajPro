@@ -1,8 +1,8 @@
 import os
 import sys
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication, QSplashScreen
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QSplashScreen, QMessageBox
+from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer
 from PyQt6.QtGui import QPixmap, QFont
 from app.ui.main_window import MainWindow
 from app.ui.styles import apply_dark_theme
@@ -60,6 +60,77 @@ def gui_uygulamasi():
             pass  # QMessageBox da hata verirse sessizce geç
     
     sys.excepthook = exception_handler
+    
+    # Hot reload özelliği (sadece development modunda)
+    def setup_hot_reload(app):
+        """Dosya değişikliklerini izle ve otomatik yeniden yükle"""
+        # Sadece normal Python modunda çalış (EXE'de çalışmasın)
+        if getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS'):
+            return
+        
+        try:
+            watcher = QFileSystemWatcher()
+            project_root = Path(__file__).parent
+            
+            # İzlenecek dosyalar ve klasörler
+            watch_paths = []
+            
+            # app/ klasöründeki tüm .py dosyalarını izle
+            app_dir = project_root / "app"
+            if app_dir.exists():
+                for py_file in app_dir.rglob("*.py"):
+                    watch_paths.append(str(py_file))
+            
+            # main.py'yi de izle
+            main_py = project_root / "main.py"
+            if main_py.exists():
+                watch_paths.append(str(main_py))
+            
+            if not watch_paths:
+                return
+            
+            # Dosyaları izlemeye başla
+            watcher.addPaths(watch_paths)
+            
+            # Yeniden başlatma timer'ı (çoklu değişiklikleri tek seferde işle)
+            restart_timer = QTimer()
+            restart_timer.setSingleShot(True)
+            restart_timer.timeout.connect(lambda: restart_application(app))
+            
+            def on_file_changed(path):
+                """Dosya değiştiğinde çağrılır"""
+                # Sadece .py dosyaları için yeniden başlat
+                if path.endswith('.py'):
+                    print(f"🔄 Dosya değişti: {Path(path).name}")
+                    # 1 saniye bekle (çoklu kaydetmeleri tek seferde işle)
+                    restart_timer.stop()
+                    restart_timer.start(1000)  # 1 saniye
+            
+            watcher.fileChanged.connect(on_file_changed)
+            
+            print(f"✅ Hot reload aktif: {len(watch_paths)} dosya izleniyor")
+            
+        except Exception as e:
+            print(f"⚠️ Hot reload kurulumu başarısız: {e}")
+    
+    def restart_application(app):
+        """Uygulamayı yeniden başlat"""
+        try:
+            reply = QMessageBox.question(
+                None, "Kod Değişikliği",
+                "Kod dosyalarında değişiklik algılandı.\n\n"
+                "Uygulamayı yeniden başlatmak ister misiniz?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                print("🔄 Uygulama yeniden başlatılıyor...")
+                # Python'u yeniden başlat
+                python = sys.executable
+                os.execl(python, python, *sys.argv)
+        except Exception as e:
+            print(f"❌ Yeniden başlatma hatası: {e}")
     
     try:
         app = QApplication(sys.argv)
@@ -123,6 +194,9 @@ def gui_uygulamasi():
         # Splash screen'i kapat
         splash.finish(window)
         window.show()
+        
+        # Hot reload özelliğini aktif et (development modunda)
+        setup_hot_reload(app)
         
         sys.exit(app.exec())
     except Exception as e:
