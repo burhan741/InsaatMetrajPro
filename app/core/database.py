@@ -1506,6 +1506,59 @@ class DatabaseManager:
             'fiyatlar': fiyatlar
         }
     
+    def delete_pdf_imported_data(self) -> Dict[str, int]:
+        """
+        PDF'den içe aktarılan tüm pozları ve birim fiyatları sil.
+        
+        Returns:
+            Dict: Silinen kayıt sayıları {'pozlar': int, 'birim_fiyatlar': int}
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 1. Önce PDF Import kaynaklı birim fiyatların poz_no'larını topla
+            cursor.execute("""
+                SELECT DISTINCT poz_no 
+                FROM birim_fiyatlar 
+                WHERE kaynak = 'PDF Import' AND poz_no IS NOT NULL
+            """)
+            pdf_poz_nos = [row['poz_no'] for row in cursor.fetchall()]
+            
+            # 2. Bu poz numaralarına sahip pozları sil (sadece PDF'den eklenenleri)
+            # PDF'den eklenen pozlar genellikle tanımında "PDF'den içe aktarıldı" içerir
+            # veya sadece PDF Import kaynaklı birim fiyatları vardır
+            deleted_poz_count = 0
+            for poz_no in pdf_poz_nos:
+                # Pozun başka kaynaklı birim fiyatı var mı kontrol et
+                cursor.execute("""
+                    SELECT COUNT(*) as count 
+                    FROM birim_fiyatlar 
+                    WHERE poz_no = ? AND (kaynak != 'PDF Import' OR kaynak IS NULL)
+                """, (poz_no,))
+                other_sources = cursor.fetchone()['count']
+                
+                # Eğer başka kaynak yoksa, pozun PDF'den eklenmiş olma ihtimali yüksek
+                # Pozu sil (tanımı "PDF'den içe aktarıldı" içeriyorsa veya başka kaynak yoksa)
+                if other_sources == 0:
+                    cursor.execute("""
+                        DELETE FROM pozlar 
+                        WHERE poz_no = ? 
+                        AND (tanim LIKE '%PDF%içe aktarıldı%' OR tanim LIKE '%PDF Import%' OR tanim = '' OR tanim IS NULL)
+                    """, (poz_no,))
+                    deleted_poz_count += cursor.rowcount
+            
+            # 3. PDF Import kaynaklı tüm birim fiyatları sil
+            cursor.execute("""
+                DELETE FROM birim_fiyatlar 
+                WHERE kaynak = 'PDF Import'
+            """)
+            deleted_fiyat_count = cursor.rowcount
+            
+            return {
+                'pozlar': deleted_poz_count,
+                'birim_fiyatlar': deleted_fiyat_count
+            }
+    
     def get_poz_by_no(self, poz_no: str) -> Optional[Dict[str, Any]]:
         """
         Poz numarasına göre poz bilgisini getir.
@@ -1636,6 +1689,7 @@ class DatabaseManager:
     def search_pozlar(self, search_text: str, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Poz numarası veya tanımına göre arama yap.
+        Poz numarası formatı: 15.250.1011 (nokta ile ayrılmış)
         
         Args:
             search_text: Arama metni
@@ -1646,12 +1700,41 @@ class DatabaseManager:
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            search_pattern = f"%{search_text}%"
-            cursor.execute("""
-                SELECT * FROM pozlar
-                WHERE poz_no LIKE ? OR tanim LIKE ?
-                ORDER BY poz_no
-                LIMIT ?
-            """, (search_pattern, search_pattern, limit))
-            return [dict(row) for row in cursor.fetchall()]
+            search_text = search_text.strip()
+            
+            # Eğer arama metni tam poz numarası formatındaysa (nokta içeriyorsa)
+            # önce tam eşleşme dene, sonra kısmi eşleşme
+            if '.' in search_text:
+                # Tam poz numarası araması - önce tam eşleşme
+                cursor.execute("""
+                    SELECT * FROM pozlar
+                    WHERE poz_no = ?
+                    ORDER BY poz_no
+                    LIMIT ?
+                """, (search_text, limit))
+                exact_matches = [dict(row) for row in cursor.fetchall()]
+                
+                # Eğer tam eşleşme varsa onları döndür
+                if exact_matches:
+                    return exact_matches
+                
+                # Tam eşleşme yoksa, başlangıçtan eşleşenleri ara (15.250.1011 -> 15.250 ile başlayanlar)
+                search_pattern = f"{search_text}%"
+                cursor.execute("""
+                    SELECT * FROM pozlar
+                    WHERE poz_no LIKE ? OR tanim LIKE ?
+                    ORDER BY poz_no
+                    LIMIT ?
+                """, (search_pattern, f"%{search_text}%", limit))
+                return [dict(row) for row in cursor.fetchall()]
+            else:
+                # Nokta yoksa, normal LIKE araması yap
+                search_pattern = f"%{search_text}%"
+                cursor.execute("""
+                    SELECT * FROM pozlar
+                    WHERE poz_no LIKE ? OR tanim LIKE ?
+                    ORDER BY poz_no
+                    LIMIT ?
+                """, (search_pattern, search_pattern, limit))
+                return [dict(row) for row in cursor.fetchall()]
 

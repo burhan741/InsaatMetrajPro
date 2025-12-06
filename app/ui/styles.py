@@ -1,173 +1,209 @@
 """
 Qt Style Sheets (QSS)
-Koyu kurumsal tema stilleri
+Modern inşaat teması - Gün batımı gökyüzü ve modern mimari esinli
 """
 
 
 def apply_dark_theme(app) -> None:
     """
-    Koyu kurumsal temayı uygula.
+    Modern inşaat temasını uygula (gün batımı gökyüzü ve modern mimari esinli).
     
     Args:
         app: QApplication instance
     """
     dark_theme = """
-    /* Genel Stil */
+    /* Genel Stil - Wireframe şehir teması (koyu gri-mavi) */
     QMainWindow {
-        background-color: #1e1e1e;
-        color: #d4d4d4;
+        background-color: #0a0a0a;
+        color: #e0e0e0;
     }
     
     QWidget {
-        background-color: #1e1e1e;
-        color: #d4d4d4;
+        background-color: #0a0a0a;
+        color: #e0e0e0;
         font-family: "Segoe UI", Arial, sans-serif;
         font-size: 10pt;
+        font-weight: 500;
     }
     
-    /* Menü Çubuğu */
+    /* Menü Çubuğu - Wireframe teması */
     QMenuBar {
-        background-color: #252526;
-        color: #d4d4d4;
-        border-bottom: 1px solid #3e3e42;
-        padding: 2px;
+        background-color: rgba(20, 25, 30, 200);
+        color: #e0e0e0;
+        border-bottom: 2px solid #00BFFF;
+        padding: 4px;
+        font-weight: 600;
     }
     
     QMenuBar::item {
         background-color: transparent;
-        padding: 4px 8px;
+        padding: 6px 12px;
+        border-radius: 4px;
     }
     
     QMenuBar::item:selected {
-        background-color: #2a2d2e;
+        background-color: rgba(0, 191, 255, 150);
+        color: #ffffff;
     }
     
     QMenu {
-        background-color: #252526;
-        color: #d4d4d4;
-        border: 1px solid #3e3e42;
+        background-color: rgba(20, 25, 30, 240);
+        color: #e0e0e0;
+        border: 2px solid #00BFFF;
+        border-radius: 6px;
     }
     
     QMenu::item {
-        padding: 4px 20px;
+        padding: 6px 24px;
+        border-radius: 3px;
     }
     
     QMenu::item:selected {
-        background-color: #094771;
+        background-color: rgba(0, 191, 255, 200);
+        color: #ffffff;
     }
     
-    /* Durum Çubuğu */
+    /* Durum Çubuğu - Mavi tonları */
     QStatusBar {
-        background-color: #007acc;
-        color: #ffffff;
-        border-top: 1px solid #3e3e42;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+            stop:0 #2a3a4a, stop:1 #1a2a3a);
+        color: #e0e0e0;
+        border-top: 2px solid #00BFFF;
+        font-weight: bold;
     }
     
-    /* Butonlar */
+    /* Butonlar - Wireframe teması (mavi tonları) */
     QPushButton {
-        background-color: #0e639c;
-        color: #ffffff;
-        border: none;
-        border-radius: 3px;
-        padding: 6px 12px;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #2a4a6a, stop:1 #1a3a5a);
+        color: #e0e0e0;
+        border: 2px solid #00BFFF;
+        border-radius: 6px;
+        padding: 8px 16px;
         min-width: 80px;
+        font-weight: bold;
     }
     
     QPushButton:hover {
-        background-color: #1177bb;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #3a5a7a, stop:1 #2a4a6a);
+        border: 2px solid #00DDFF;
+        color: #ffffff;
     }
     
     QPushButton:pressed {
-        background-color: #0a4d73;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #1a3a5a, stop:1 #0a2a4a);
     }
     
     QPushButton:disabled {
-        background-color: #3e3e42;
+        background-color: #1a1a2a;
         color: #6e6e6e;
+        border: 2px solid #3a3a4a;
     }
     
-    /* Tablo */
+    /* Tablo - Wireframe teması */
     QTableWidget {
-        background-color: #252526;
-        color: #d4d4d4;
-        border: 1px solid #3e3e42;
-        gridline-color: #3e3e42;
-        selection-background-color: #094771;
+        background-color: #14191e;
+        color: #e0e0e0;
+        border: 2px solid #00BFFF;
+        border-radius: 8px;
+        gridline-color: #0066cc;
+        selection-background-color: #00BFFF;
         selection-color: #ffffff;
+        font-weight: 500;
     }
     
     QTableWidget::item {
-        padding: 4px;
+        padding: 6px;
+        border: none;
     }
     
     QTableWidget::item:selected {
-        background-color: #094771;
+        background-color: #00BFFF;
         color: #ffffff;
     }
     
     QTableWidget::item:alternate {
-        background-color: #2a2d2e;
+        background-color: rgba(42, 45, 46, 180);
     }
     
     QHeaderView::section {
-        background-color: #2d2d30;
-        color: #d4d4d4;
-        padding: 6px;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #2a4a6a, stop:1 #1a3a5a);
+        color: #ffffff;
+        padding: 8px;
         border: none;
-        border-right: 1px solid #3e3e42;
-        border-bottom: 1px solid #3e3e42;
+        border-right: 1px solid #00BFFF;
+        border-bottom: 2px solid #00BFFF;
         font-weight: bold;
     }
     
     QHeaderView::section:hover {
-        background-color: #3e3e42;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #3a5a7a, stop:1 #2a4a6a);
     }
     
-    /* Ağaç Widget */
+    /* Ağaç Widget - Yarı saydam, görselle uyumlu */
     QTreeWidget {
-        background-color: #252526;
-        color: #d4d4d4;
-        border: 1px solid #3e3e42;
-        selection-background-color: #094771;
+        background-color: rgba(37, 37, 38, 200);
+        color: #ffffff;
+        border: 2px solid #ffa07a;
+        border-radius: 8px;
+        selection-background-color: rgba(255, 160, 122, 220);
         selection-color: #ffffff;
+        font-weight: 500;
     }
     
     QTreeWidget::item {
-        padding: 4px;
+        padding: 6px;
+        border-radius: 3px;
     }
     
     QTreeWidget::item:selected {
-        background-color: #094771;
+        background-color: rgba(255, 160, 122, 250);
         color: #ffffff;
     }
     
     QTreeWidget::item:hover {
-        background-color: #2a2d2e;
+        background-color: rgba(255, 182, 193, 150);
     }
     
-    /* Sekmeler */
+    /* Sekmeler - Yarı saydam, görselle uyumlu */
     QTabWidget::pane {
-        border: 1px solid #3e3e42;
-        background-color: #1e1e1e;
+        border: 2px solid #00BFFF;
+        border-radius: 8px;
+        background-color: rgba(20, 25, 30, 220);
+        top: -1px;
     }
     
     QTabBar::tab {
-        background-color: #2d2d30;
-        color: #d4d4d4;
-        padding: 8px 16px;
-        border: 1px solid #3e3e42;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 rgba(45, 45, 48, 200), stop:1 rgba(37, 37, 38, 200));
+        color: #ffffff;
+        padding: 10px 20px;
+        border: 2px solid rgba(255, 160, 122, 100);
         border-bottom: none;
-        margin-right: 2px;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
+        margin-right: 3px;
+        min-width: 100px;
     }
     
     QTabBar::tab:selected {
-        background-color: #1e1e1e;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #3a5a7a, stop:1 #2a4a6a);
         color: #ffffff;
-        border-bottom: 2px solid #007acc;
+        border: 2px solid #00BFFF;
+        border-bottom: 3px solid #00BFFF;
+        font-weight: bold;
     }
     
     QTabBar::tab:hover {
-        background-color: #2a2d2e;
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #3a4a5a, stop:1 #2a3a4a);
+        border: 2px solid #00DDFF;
+        color: #e0e0e0;
     }
     
     /* Label */
@@ -175,31 +211,35 @@ def apply_dark_theme(app) -> None:
         color: #d4d4d4;
     }
     
-    /* Line Edit */
+    /* Line Edit - Yarı saydam, görselle uyumlu */
     QLineEdit {
-        background-color: #3c3c3c;
-        color: #d4d4d4;
-        border: 1px solid #3e3e42;
-        border-radius: 3px;
-        padding: 4px;
+        background-color: rgba(60, 60, 60, 200);
+        color: #ffffff;
+        border: 2px solid #ffa07a;
+        border-radius: 6px;
+        padding: 6px;
+        font-weight: 500;
     }
     
     QLineEdit:focus {
-        border: 1px solid #007acc;
+        border: 2px solid #ffb6c1;
+        background-color: rgba(60, 60, 60, 240);
     }
     
-    /* Combo Box */
+    /* Combo Box - Yarı saydam, görselle uyumlu */
     QComboBox {
-        background-color: #3c3c3c;
-        color: #d4d4d4;
-        border: 1px solid #3e3e42;
-        border-radius: 3px;
-        padding: 4px;
+        background-color: rgba(60, 60, 60, 200);
+        color: #ffffff;
+        border: 2px solid #ffa07a;
+        border-radius: 6px;
+        padding: 6px;
         min-width: 120px;
+        font-weight: 500;
     }
     
     QComboBox:hover {
-        border: 1px solid #007acc;
+        border: 2px solid #ffb6c1;
+        background-color: rgba(60, 60, 60, 240);
     }
     
     QComboBox::drop-down {
@@ -217,34 +257,41 @@ def apply_dark_theme(app) -> None:
     }
     
     QComboBox QAbstractItemView {
-        background-color: #252526;
-        color: #d4d4d4;
-        selection-background-color: #094771;
-        border: 1px solid #3e3e42;
+        background-color: rgba(37, 37, 38, 240);
+        color: #ffffff;
+        selection-background-color: rgba(255, 160, 122, 220);
+        border: 2px solid #ffa07a;
+        border-radius: 6px;
     }
     
-    /* Text Edit */
+    /* Text Edit - Yarı saydam, görselle uyumlu */
     QTextEdit {
-        background-color: #252526;
-        color: #d4d4d4;
-        border: 1px solid #3e3e42;
-        border-radius: 3px;
+        background-color: rgba(37, 37, 38, 200);
+        color: #ffffff;
+        border: 2px solid #ffa07a;
+        border-radius: 8px;
+        font-weight: 500;
     }
     
-    /* Group Box */
+    /* Group Box - Yarı saydam, görselle uyumlu */
     QGroupBox {
-        border: 1px solid #3e3e42;
-        border-radius: 3px;
-        margin-top: 10px;
-        padding-top: 10px;
-        font-weight: bold;
+        border: 2px solid #ffa07a;
+        border-radius: 8px;
+        margin-top: 12px;
+        padding-top: 12px;
+        font-weight: 600;
+        color: #ffffff;
+        background-color: rgba(30, 30, 30, 180);
     }
     
     QGroupBox::title {
         subcontrol-origin: margin;
         subcontrol-position: top left;
-        padding: 0 5px;
-        background-color: #1e1e1e;
+        padding: 0 8px;
+        background-color: rgba(255, 160, 122, 220);
+        color: #ffffff;
+        border-radius: 4px;
+        font-weight: 600;
     }
     
     /* Spin Box */
@@ -303,6 +350,9 @@ def apply_dark_theme(app) -> None:
     """
     
     app.setStyleSheet(dark_theme)
+
+
+
 
 
 

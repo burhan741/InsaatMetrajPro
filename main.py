@@ -1,7 +1,6 @@
-import pandas as pd
-from app.core.dxf_engine import DXFAnaliz
 import os
 import sys
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QSplashScreen
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QFont
@@ -14,33 +13,112 @@ BIRIM = "cm"                           # Projenin birimi
 BOSLUK_TOLERANSI = 20                  # CM olduğu için 20 yazdık (20 cm boşlukları kapatır)
 
 
+def log_error_to_file(error_msg: str, error_trace: str = "") -> None:
+    """Hatayı dosyaya yaz"""
+    try:
+        error_log_path = Path(__file__).parent / "error_log.txt"
+        with open(error_log_path, 'a', encoding='utf-8') as f:
+            from datetime import datetime
+            f.write(f"\n{'='*60}\n")
+            f.write(f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"{error_msg}\n")
+            if error_trace:
+                f.write(f"{error_trace}\n")
+            f.write(f"{'='*60}\n")
+        print(f"✅ Hata log dosyasına yazıldı: {error_log_path}")
+    except Exception as e:
+        print(f"Log yazma hatası: {e}")
+
+
 def gui_uygulamasi():
     """PyQt6 GUI uygulamasını başlat"""
+    # Global exception handler (tüm yakalanmamış hatalar için)
+    def exception_handler(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        import traceback
+        error_msg = f"Yakalanmamış hata: {exc_type.__name__}: {exc_value}"
+        error_trace = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        print(f"\n❌ {error_msg}")
+        print(error_trace)
+        log_error_to_file(error_msg, error_trace)
+        
+        # Uygulamayı kapatmadan devam et (kullanıcıya hata göster)
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            app = QApplication.instance()
+            if app:
+                QMessageBox.critical(
+                    None, "Kritik Hata",
+                    f"Bir hata oluştu:\n{str(exc_value)}\n\n"
+                    f"Hata detayları 'error_log.txt' dosyasına kaydedildi.\n\n"
+                    f"Lütfen programı yeniden başlatın."
+                )
+        except:
+            pass  # QMessageBox da hata verirse sessizce geç
+    
+    sys.excepthook = exception_handler
+    
     try:
         app = QApplication(sys.argv)
         app.setApplicationName("InsaatMetrajPro")
         app.setOrganizationName("InsaatMetrajPro")
         
-        # Splash screen oluştur
-        splash = QSplashScreen()
+        # Splash screen oluştur (görsel arka plan ile)
+        splash_path = Path(__file__).parent / "assets" / "splash.jpg"
+        splash = None
+        try:
+            if splash_path.exists():
+                splash_pixmap = QPixmap(str(splash_path))
+                if not splash_pixmap.isNull():
+                    splash = QSplashScreen(splash_pixmap)
+                else:
+                    splash = QSplashScreen()
+            else:
+                splash = QSplashScreen()
+        except Exception as e:
+            print(f"Splash screen görsel yükleme hatası: {e}")
+            splash = QSplashScreen()
+        
+        # Splash screen stili (wireframe teması)
         splash.setStyleSheet("""
             QSplashScreen {
-                background-color: #1a1a2e;
-                color: white;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #0a0a1a, stop:0.5 #1a2a3a, stop:1 #0a0a0a);
+                color: #e0e0e0;
+                font-family: "Segoe UI", Arial, sans-serif;
+                font-size: 18pt;
+                font-weight: bold;
             }
         """)
+        
         splash.showMessage(
-            "InsaatMetrajPro Yükleniyor...",
+            "🏗️ İnşaat Metraj Pro Yükleniyor...",
             Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
             Qt.GlobalColor.white
         )
         splash.show()
         app.processEvents()  # UI'ı güncelle
         
+        splash.showMessage(
+            "Tema yükleniyor...",
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+            Qt.GlobalColor.white
+        )
+        app.processEvents()
         apply_dark_theme(app)
         
+        splash.showMessage(
+            "Arayüz hazırlanıyor...",
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+            Qt.GlobalColor.white
+        )
+        app.processEvents()
+        
         # Ana pencereyi oluştur (optimizasyonlar sayesinde hızlı)
-        window = MainWindow()
+        window = MainWindow(splash=splash)
         
         # Splash screen'i kapat
         splash.finish(window)
@@ -48,9 +126,12 @@ def gui_uygulamasi():
         
         sys.exit(app.exec())
     except Exception as e:
-        print(f"HATA: {e}")
+        error_msg = f"Uygulama başlatma hatası: {e}"
+        print(f"❌ {error_msg}")
         import traceback
-        traceback.print_exc()
+        error_trace = traceback.format_exc()
+        print(error_trace)
+        log_error_to_file(error_msg, error_trace)
         sys.exit(1)
 
 
@@ -63,6 +144,10 @@ def rapor_olustur(dxf_dosya_adi=None, cizim_birimi=None, bosluk_toleransi=None):
         cizim_birimi: Çizim birimi (None ise AYARLAR'dan alınır)
         bosluk_toleransi: Boşluk toleransı (None ise AYARLAR'dan alınır)
     """
+    # Lazy import - sadece gerektiğinde yükle
+    import pandas as pd
+    from app.core.dxf_engine import DXFAnaliz
+    
     # Parametreler verilmemişse AYARLAR'dan al
     if dxf_dosya_adi is None:
         dxf_dosya_adi = DOSYA_ADI

@@ -77,12 +77,33 @@ class DataLoaderThread(QThread):
         self.data_loaded.emit(result)
 
 
+class InitialDataLoaderThread(QThread):
+    """İlk açılışta proje ve diğer verileri yükleyen thread"""
+    projects_loaded = pyqtSignal(list)
+    
+    def __init__(self, db: DatabaseManager) -> None:
+        super().__init__()
+        self.db = db
+    
+    def run(self) -> None:
+        """Thread çalıştığında"""
+        try:
+            # Projeleri yükle
+            projects = self.db.get_all_projects()
+            self.projects_loaded.emit(projects)
+        except Exception as e:
+            print(f"Proje yükleme hatası: {e}")
+            self.projects_loaded.emit([])
+
+
 class MainWindow(QMainWindow):
     """Ana uygulama penceresi"""
     
-    def __init__(self) -> None:
+    def __init__(self, splash: Optional[Any] = None) -> None:
         """Ana pencereyi başlat"""
         super().__init__()
+        
+        self.splash = splash
         
         # Core modüller (hafif olanlar hemen yükle)
         self.db = DatabaseManager()
@@ -96,15 +117,43 @@ class MainWindow(QMainWindow):
         self.current_project_id: Optional[int] = None
         self.current_materials: List[Dict[str, Any]] = []  # Hesaplanan malzemeler
         
+        # Sekme lazy loading için
+        self._tabs_created = {
+            'metraj': False,
+            'ozet': False,
+            'taseron': False,
+            'malzeme': False,
+            'sablonlar': False,
+            'birim_fiyat': False,
+            'ihale': False
+        }
+        
         # Arayüzü oluştur
+        if self.splash:
+            self.splash.showMessage(
+                "Arayüz oluşturuluyor...",
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+                Qt.GlobalColor.white
+            )
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+        
         self.init_ui()
-        self.load_projects()
-        self.load_templates()
-        self.load_birim_fiyatlar()
-        self.load_ihaleler()
+        
+        # Veritabanı yüklemelerini async yap (UI'ı bloklamadan)
+        self.load_data_async()
         
         # İlk açılışta pozları kontrol et ve yükle (async - arka planda)
         self.check_and_load_pozlar_async()
+        
+        if self.splash:
+            self.splash.showMessage(
+                "Hazırlanıyor...",
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+                Qt.GlobalColor.white
+            )
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
     
     @property
     def material_calculator(self) -> MaterialCalculator:
@@ -118,9 +167,36 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("InsaatMetrajPro - İnşaat Metraj Uygulaması")
         self.setGeometry(100, 100, 1400, 900)
         
+        # Uygulama ikonunu ayarla
+        icon_path = Path(__file__).parent.parent.parent / "assets" / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+        
         # Merkezi widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
+        
+        # Arka plan görseli ayarla (ana pencere için - wireframe şehir)
+        bg_path = Path(__file__).parent.parent.parent / "assets" / "wireframe_background.jpg"
+        if bg_path.exists():
+            try:
+                # QLabel ile arka plan görseli ekle (daha güvenilir yöntem)
+                from PyQt6.QtWidgets import QLabel
+                from PyQt6.QtGui import QPixmap
+                
+                bg_label = QLabel(central_widget)
+                bg_pixmap = QPixmap(str(bg_path))
+                if not bg_pixmap.isNull():
+                    bg_label.setPixmap(bg_pixmap)
+                    bg_label.setScaledContents(True)
+                    bg_label.lower()  # En alta gönder (arka planda kalsın)
+                    self._bg_label = bg_label  # Referansı sakla
+                else:
+                    print("Arka plan görseli yüklenemedi: QPixmap null")
+            except Exception as e:
+                print(f"Arka plan görseli yükleme hatası: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Ana layout
         main_layout = QHBoxLayout(central_widget)
@@ -225,31 +301,23 @@ class MainWindow(QMainWindow):
         parent.addWidget(sidebar_widget)
         
     def create_tabs(self, parent: QSplitter) -> None:
-        """Sekmeli yapıyı oluştur"""
+        """Sekmeli yapıyı oluştur (lazy loading ile)"""
         self.tabs = QTabWidget()
-        # Sekme değiştiğinde özeti güncelle
+        # Sekme değiştiğinde lazy loading ve özeti güncelle
         self.tabs.currentChanged.connect(self.on_tab_changed)
         
-        # Sekme 1: Metraj Cetveli
+        # Sadece ilk sekmeyi hemen oluştur, diğerleri lazy loading ile
+        # Sekme 1: Metraj Cetveli (ilk sekme, hemen yükle)
         self.create_metraj_tab()
+        self._tabs_created['metraj'] = True
         
-        # Sekme 2: Proje Özeti
-        self.create_proje_ozet_tab()
-        
-        # Sekme 3: Taşeron Analizi
-        self.create_taseron_tab()
-        
-        # Sekme 4: Malzeme Listesi
-        self.create_malzeme_tab()
-        
-        # Sekme 5: Şablonlar
-        self.create_sablonlar_tab()
-        
-        # Sekme 6: Birim Fiyat Yönetimi
-        self.create_birim_fiyat_tab()
-        
-        # Sekme 7: İhale Dosyası Hazırlama
-        self.create_ihale_tab()
+        # Diğer sekmeler placeholder olarak ekle, lazy loading ile yüklenecek
+        self.tabs.addTab(QWidget(), "Proje Özeti")
+        self.tabs.addTab(QWidget(), "Taşeron Analizi")
+        self.tabs.addTab(QWidget(), "Malzeme Listesi")
+        self.tabs.addTab(QWidget(), "Şablonlar")
+        self.tabs.addTab(QWidget(), "Birim Fiyat Yönetimi")
+        self.tabs.addTab(QWidget(), "İhale Dosyası Hazırlama")
         
         parent.addWidget(self.tabs)
         
@@ -364,7 +432,7 @@ class MainWindow(QMainWindow):
         
         self.tabs.addTab(tab, "📊 Metraj Cetveli")
     
-    def create_proje_ozet_tab(self) -> None:
+    def create_proje_ozet_tab(self, add_to_tabs: bool = True) -> None:
         """Proje Özeti/Rapor sekmesini oluştur"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -427,7 +495,7 @@ class MainWindow(QMainWindow):
         self.ozet_taseron_label = QLabel("0")
         self.ozet_taseron_label.setFont(QFont("Arial", 24, QFont.Weight.Bold))
         self.ozet_taseron_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.ozet_taseron_label.setStyleSheet("color: #ff9800;")
+        self.ozet_taseron_label.setStyleSheet("color: #00BFFF;")
         taseron_layout.addWidget(self.ozet_taseron_label)
         self.ozet_taseron_card.setLayout(taseron_layout)
         self.ozet_taseron_card.setMinimumHeight(100)
@@ -541,9 +609,11 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(export_layout)
         
-        self.tabs.addTab(tab, "📈 Proje Özeti")
+        self.ozet_widget = tab
+        if add_to_tabs:
+            self.tabs.addTab(tab, "📈 Proje Özeti")
         
-    def create_taseron_tab(self) -> None:
+    def create_taseron_tab(self, add_to_tabs: bool = True) -> None:
         """Taşeron Analizi sekmesini oluştur"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -618,9 +688,11 @@ class MainWindow(QMainWindow):
         comparison_group.setLayout(comparison_layout)
         layout.addWidget(comparison_group)
         
-        self.tabs.addTab(tab, "💼 Taşeron Analizi")
+        self.taseron_widget = tab
+        if add_to_tabs:
+            self.tabs.addTab(tab, "💼 Taşeron Analizi")
     
-    def create_malzeme_tab(self) -> None:
+    def create_malzeme_tab(self, add_to_tabs: bool = True) -> None:
         """Malzeme Listesi sekmesini oluştur"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -702,7 +774,9 @@ class MainWindow(QMainWindow):
         self.material_table.setColumnWidth(2, 100)
         layout.addWidget(self.material_table)
         
-        self.tabs.addTab(tab, "📦 Malzeme Listesi")
+        self.malzeme_widget = tab
+        if add_to_tabs:
+            self.tabs.addTab(tab, "📦 Malzeme Listesi")
     
     def on_fire_mode_changed(self, index: int) -> None:
         """Fire oranı modu değiştiğinde"""
@@ -864,7 +938,7 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.critical(self, "Hata", "Export sırasında bir hata oluştu.")
         
-    def create_sablonlar_tab(self) -> None:
+    def create_sablonlar_tab(self, add_to_tabs: bool = True) -> None:
         """Şablonlar sekmesini oluştur"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -928,9 +1002,11 @@ class MainWindow(QMainWindow):
         items_group.setLayout(items_layout)
         layout.addWidget(items_group)
         
-        self.tabs.addTab(tab, "📋 Şablonlar")
+        self.sablonlar_widget = tab
+        if add_to_tabs:
+            self.tabs.addTab(tab, "📋 Şablonlar")
     
-    def create_birim_fiyat_tab(self) -> None:
+    def create_birim_fiyat_tab(self, add_to_tabs: bool = True) -> None:
         """Birim Fiyat Yönetimi sekmesini oluştur"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -1023,10 +1099,19 @@ class MainWindow(QMainWindow):
         splitter.setSizes([500, 500])
         layout.addWidget(splitter)
         
-        self.tabs.addTab(tab, "💰 Birim Fiyatlar")
+        self.birim_fiyat_widget = tab
+        if add_to_tabs:
+            self.tabs.addTab(tab, "💰 Birim Fiyatlar")
     
     def load_birim_fiyatlar(self) -> None:
         """Birim fiyatları yükle"""
+        # Sekme henüz oluşturulmamışsa (lazy loading) yükleme yapma
+        if not hasattr(self, 'fiyat_filter_combo') or not self._tabs_created.get('birim_fiyat', False):
+            return
+        
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()  # UI'ı güncelle
+        
         aktif_only = self.fiyat_filter_combo.currentText() == "Sadece Aktif"
         fiyatlar = self.db.get_all_birim_fiyatlar(aktif_only=aktif_only)
         
@@ -1046,6 +1131,10 @@ class MainWindow(QMainWindow):
             item = self.birim_fiyat_table.item(row, 0)
             if item:
                 item.setData(Qt.ItemDataRole.UserRole, fiyat.get('poz_no', ''))
+            
+            # Her 50 satırda bir UI'ı güncelle
+            if row % 50 == 0:
+                QApplication.processEvents()
     
     def view_fiyat_gecmisi(self, item: QTableWidgetItem) -> None:
         """Fiyat geçmişini ve karşılaştırmayı göster"""
@@ -1165,7 +1254,7 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.critical(self, "Hata", "Birim fiyat eklenirken bir hata oluştu")
     
-    def create_ihale_tab(self) -> None:
+    def create_ihale_tab(self, add_to_tabs: bool = True) -> None:
         """İhale Dosyası Hazırlama sekmesini oluştur"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -1227,7 +1316,11 @@ class MainWindow(QMainWindow):
         self.ihale_poz_results_table.setColumnWidth(0, 120)
         self.ihale_poz_results_table.setColumnWidth(1, 300)
         self.ihale_poz_results_table.setColumnWidth(2, 80)
+        self.ihale_poz_results_table.setColumnWidth(3, 120)
+        self.ihale_poz_results_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.ihale_poz_results_table.itemDoubleClicked.connect(self.add_selected_poz_to_ihale)
+        # Tablo görünürlüğünü garanti et
+        self.ihale_poz_results_table.setVisible(True)
         left_layout.addWidget(self.ihale_poz_results_table)
         
         splitter.addWidget(left_widget)
@@ -1292,7 +1385,9 @@ class MainWindow(QMainWindow):
         # Mevcut ihale ID'si
         self.current_ihale_id: Optional[int] = None
         
-        self.tabs.addTab(tab, "📄 İhale Dosyası")
+        self.ihale_widget = tab
+        if add_to_tabs:
+            self.tabs.addTab(tab, "📄 İhale Dosyası")
     
     def create_menu_bar(self) -> None:
         """Menü çubuğunu oluştur"""
@@ -1351,6 +1446,10 @@ class MainWindow(QMainWindow):
         pdf_import_action = data_menu.addAction("PDF'den Birim Fiyat İçe Aktar")
         pdf_import_action.triggered.connect(self.import_from_pdf)
         
+        # PDF Import Temizle
+        pdf_clear_action = data_menu.addAction("PDF'den Eklenen Pozları Temizle")
+        pdf_clear_action.triggered.connect(self.clear_pdf_imported_data)
+        
         data_menu.addSeparator()
         check_pozlar_action = data_menu.addAction("Poz Durumunu Kontrol Et")
         check_pozlar_action.triggered.connect(self.check_pozlar_status)
@@ -1361,8 +1460,25 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self.show_about)
         
     # Proje İşlemleri
+    def load_data_async(self) -> None:
+        """Veritabanı verilerini async yükle"""
+        # Projeleri async yükle
+        self.initial_data_thread = InitialDataLoaderThread(self.db)
+        self.initial_data_thread.projects_loaded.connect(self.on_projects_loaded)
+        self.initial_data_thread.start()
+    
+    @pyqtSlot(list)
+    def on_projects_loaded(self, projects: List[Dict[str, Any]]) -> None:
+        """Projeler yüklendiğinde çağrılır"""
+        self.project_tree.clear()
+        for project in projects:
+            item = QTreeWidgetItem(self.project_tree)
+            item.setText(0, project['ad'])
+            item.setData(0, Qt.ItemDataRole.UserRole, project['id'])
+        self.statusBar().showMessage(f"{len(projects)} proje yüklendi")
+    
     def load_projects(self) -> None:
-        """Projeleri yükle"""
+        """Projeleri yükle (sync versiyon - eski)"""
         self.project_tree.clear()
         projects = self.db.get_all_projects()
         
@@ -1381,10 +1497,13 @@ class MainWindow(QMainWindow):
             self.current_project_id = project_id
             # Projeyi seçili olarak işaretle
             self.project_tree.setCurrentItem(item)
-            # Verileri yükle
-            self.load_metraj_data()
-            self.load_taseron_data()
-            self.update_proje_ozet()
+            # Verileri yükle (sadece sekmeler oluşturulmuşsa)
+            if hasattr(self, 'metraj_table'):
+                self.load_metraj_data()
+            if hasattr(self, 'taseron_table'):
+                self.load_taseron_data()
+            if hasattr(self, 'ozet_kalem_label'):
+                self.update_proje_ozet()
             self.load_project_notes()
             self.statusBar().showMessage(f"Proje seçildi: {item.text(0)}")
         else:
@@ -1399,15 +1518,22 @@ class MainWindow(QMainWindow):
         if ok and name:
             project_id = self.db.create_project(name)
             if project_id:
-                self.load_projects()
-                # Yeni oluşturulan projeyi otomatik seç
-                for i in range(self.project_tree.topLevelItemCount()):
-                    item = self.project_tree.topLevelItem(i)
-                    if item and item.data(0, Qt.ItemDataRole.UserRole) == project_id:
-                        self.project_tree.setCurrentItem(item)
-                        self.on_project_selected(item, 0)
-                        break
-                self.statusBar().showMessage(f"Yeni proje oluşturuldu ve seçildi: {name}")
+                # Projeleri async yükle
+                self.load_data_async()
+                # Yeni oluşturulan projeyi otomatik seç (biraz bekle)
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
+                # Proje listesi yüklendikten sonra seç
+                from PyQt6.QtCore import QTimer
+                def select_new_project():
+                    for i in range(self.project_tree.topLevelItemCount()):
+                        item = self.project_tree.topLevelItem(i)
+                        if item and item.data(0, Qt.ItemDataRole.UserRole) == project_id:
+                            self.project_tree.setCurrentItem(item)
+                            self.on_project_selected(item, 0)
+                            break
+                QTimer.singleShot(100, select_new_project)  # 100ms sonra seç
+                self.statusBar().showMessage(f"Yeni proje oluşturuldu: {name}")
                 
     def open_project(self) -> None:
         """Proje aç (şimdilik bilgi mesajı)"""
@@ -1488,10 +1614,18 @@ class MainWindow(QMainWindow):
     # Metraj İşlemleri
     def load_metraj_data(self) -> None:
         """Metraj verilerini yükle"""
+        # Sekme henüz oluşturulmamışsa (lazy loading) yükleme yapma
+        if not hasattr(self, 'metraj_table') or not self._tabs_created.get('metraj', False):
+            return
+        
         if not self.current_project_id:
             return
+        
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()  # UI'ı güncelle
             
         items = self.db.get_project_metraj(self.current_project_id)
+        QApplication.processEvents()  # UI'ı güncelle
         self.metraj_table.setRowCount(len(items))
         
         total = 0.0
@@ -1504,6 +1638,10 @@ class MainWindow(QMainWindow):
             self.metraj_table.setItem(row, 5, QTableWidgetItem(f"{item['birim_fiyat']:.2f}"))
             self.metraj_table.setItem(row, 6, QTableWidgetItem(f"{item['toplam']:.2f}"))
             total += item['toplam']
+            
+            # Her 50 satırda bir UI'ı güncelle
+            if row % 50 == 0:
+                QApplication.processEvents()
             
         self.total_label.setText(f"Toplam: {total:.2f} ₺")
         
@@ -1776,10 +1914,18 @@ class MainWindow(QMainWindow):
     # Taşeron İşlemleri
     def load_taseron_data(self) -> None:
         """Taşeron verilerini yükle"""
+        # Sekme henüz oluşturulmamışsa (lazy loading) yükleme yapma
+        if not hasattr(self, 'taseron_table') or not self._tabs_created.get('taseron', False):
+            return
+        
         if not self.current_project_id:
             return
+        
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()  # UI'ı güncelle
             
         offers = self.db.get_taseron_teklifleri(self.current_project_id)
+        QApplication.processEvents()  # UI'ı güncelle
         self.taseron_table.setRowCount(len(offers))
         
         for row, offer in enumerate(offers):
@@ -1807,6 +1953,10 @@ class MainWindow(QMainWindow):
             toplam_item = QTableWidgetItem(f"{offer.get('toplam', 0):,.2f} ₺")
             toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.taseron_table.setItem(row, 6, toplam_item)
+            
+            # Her 50 satırda bir UI'ı güncelle
+            if row % 50 == 0:
+                QApplication.processEvents()
             
     def add_taseron_offer(self) -> None:
         """Taşeron teklifi ekle"""
@@ -2098,7 +2248,7 @@ class MainWindow(QMainWindow):
                 print(f"Malzeme yükleme hatası: {e}")
                 
     def load_pozlar(self, silent: bool = False) -> None:
-        """Pozları veritabanına yükle"""
+        """Pozları veritabanına yükle (async - UI'ı bloklamaz)"""
         try:
             # Mevcut pozlar var mı kontrol et
             if check_pozlar_loaded(self.db) and not silent:
@@ -2111,8 +2261,21 @@ class MainWindow(QMainWindow):
                 if reply != QMessageBox.StandardButton.Yes:
                     return
             
-            # Pozları yükle
+            # Progress dialog göster
+            from PyQt6.QtWidgets import QProgressDialog
+            progress = QProgressDialog("Pozlar yükleniyor...", "İptal", 0, 0, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setCancelButton(None)  # İptal butonunu kaldır (uzun sürmeyecek)
+            progress.show()
+            QApplication.processEvents()  # UI'ı güncelle
+            
+            # Pozları yükle (kısa süreli işlem, ama yine de progress göster)
             result = initialize_database_data(self.db, force_reload=False)
+            
+            progress.close()
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()  # UI'ı güncelle
             
             if not silent:
                 if result['pozlar']['success'] > 0:
@@ -2171,13 +2334,182 @@ class MainWindow(QMainWindow):
             )
     
     def on_tab_changed(self, index: int) -> None:
-        """Sekme değiştiğinde çağrılır"""
-        # Proje Özeti sekmesine geçildiğinde güncelle
-        if index == 1:  # Proje Özeti sekmesi (2. sekme, 0-indexed)
-            self.update_proje_ozet()
+        """Sekme değiştiğinde çağrılır (lazy loading ile)"""
+        try:
+            # Index 0 (Metraj Cetveli) için bir şey yapma, zaten oluşturulmuş
+            if index == 0:
+                return
+            
+            # Lazy loading: Sekmeyi ilk kez açıldığında oluştur
+            if index == 1 and not self._tabs_created['ozet']:
+                try:
+                    # Proje Özeti sekmesi
+                    placeholder = self.tabs.widget(1)
+                    self.create_proje_ozet_tab(add_to_tabs=False)
+                    # Signal'ı geçici olarak blokla (sonsuz döngüyü önlemek için)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(1)
+                    self.tabs.insertTab(1, self.ozet_widget, "📈 Proje Özeti")
+                    self.tabs.setCurrentIndex(1)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['ozet'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)  # Hata durumunda da bloklamayı kaldır
+                    print(f"Proje Özeti sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 2 and not self._tabs_created['taseron']:
+                try:
+                    # Taşeron Analizi sekmesi
+                    placeholder = self.tabs.widget(2)
+                    self.create_taseron_tab(add_to_tabs=False)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(2)
+                    self.tabs.insertTab(2, self.taseron_widget, "💼 Taşeron Analizi")
+                    self.tabs.setCurrentIndex(2)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['taseron'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"Taşeron Analizi sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 3 and not self._tabs_created['malzeme']:
+                try:
+                    # Malzeme Listesi sekmesi
+                    placeholder = self.tabs.widget(3)
+                    self.create_malzeme_tab(add_to_tabs=False)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(3)
+                    self.tabs.insertTab(3, self.malzeme_widget, "📦 Malzeme Listesi")
+                    self.tabs.setCurrentIndex(3)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['malzeme'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"Malzeme Listesi sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 4 and not self._tabs_created['sablonlar']:
+                try:
+                    # Şablonlar sekmesi
+                    placeholder = self.tabs.widget(4)
+                    self.create_sablonlar_tab(add_to_tabs=False)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(4)
+                    self.tabs.insertTab(4, self.sablonlar_widget, "📋 Şablonlar")
+                    self.tabs.setCurrentIndex(4)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['sablonlar'] = True
+                    self.load_templates()  # İlk açılışta yükle
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"Şablonlar sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 5 and not self._tabs_created['birim_fiyat']:
+                try:
+                    # Birim Fiyat Yönetimi sekmesi
+                    placeholder = self.tabs.widget(5)
+                    self.create_birim_fiyat_tab(add_to_tabs=False)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(5)
+                    self.tabs.insertTab(5, self.birim_fiyat_widget, "💰 Birim Fiyatlar")
+                    self.tabs.setCurrentIndex(5)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['birim_fiyat'] = True
+                    self.load_birim_fiyatlar()  # İlk açılışta yükle
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"Birim Fiyat sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 6 and not self._tabs_created['ihale']:
+                try:
+                    # İhale Dosyası Hazırlama sekmesi
+                    placeholder = self.tabs.widget(6)
+                    self.create_ihale_tab(add_to_tabs=False)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(6)
+                    self.tabs.insertTab(6, self.ihale_widget, "📄 İhale Dosyası")
+                    self.tabs.setCurrentIndex(6)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['ihale'] = True
+                    self.load_ihaleler()  # İlk açılışta yükle
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"İhale Dosyası sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            
+            # Proje Özeti sekmesine geçildiğinde güncelle (sadece sekme zaten oluşturulmuşsa)
+            if index == 1 and self._tabs_created['ozet']:
+                try:
+                    self.update_proje_ozet()
+                except Exception as e:
+                    print(f"Proje özeti güncelleme hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+        except Exception as e:
+            # Hata durumunda logla ve dosyaya yaz
+            error_msg = f"Sekme değiştirme hatası (index: {index}): {e}"
+            print(f"\n❌ {error_msg}")
+            import traceback
+            error_trace = traceback.format_exc()
+            print(error_trace)
+            
+            # Hatayı dosyaya yaz
+            try:
+                error_log_path = Path(__file__).parent.parent.parent / "error_log.txt"
+                with open(error_log_path, 'a', encoding='utf-8') as f:
+                    from datetime import datetime
+                    f.write(f"\n{'='*60}\n")
+                    f.write(f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"{error_msg}\n")
+                    f.write(f"{error_trace}\n")
+                    f.write(f"{'='*60}\n")
+                print(f"✅ Hata log dosyasına yazıldı: {error_log_path}")
+            except Exception as log_error:
+                print(f"❌ Log yazma hatası: {log_error}")
+                import traceback
+                traceback.print_exc()
+            
+            # Kullanıcıya bilgi ver (ama uygulamayı kapatma)
+            try:
+                QMessageBox.critical(
+                    self, "Hata",
+                    f"Sekme değiştirilirken bir hata oluştu:\n{str(e)}\n\n"
+                    f"Hata detayları 'error_log.txt' dosyasına kaydedildi.\n\n"
+                    f"Lütfen programı yeniden başlatın."
+                )
+            except Exception as msg_error:
+                print(f"QMessageBox hatası: {msg_error}")
+                # Uygulamayı kapatma, sadece logla
             
     def update_proje_ozet(self) -> None:
         """Proje özeti sekmesini güncelle"""
+        # Sekme henüz oluşturulmamışsa (lazy loading) güncelleme yapma
+        if not hasattr(self, 'ozet_kalem_label') or not self._tabs_created.get('ozet', False):
+            return
+        
         if not self.current_project_id:
             # Proje seçili değilse temizle
             self.ozet_kalem_label.setText("0")
@@ -2645,36 +2977,240 @@ class MainWindow(QMainWindow):
             # Excel dosyasını oku
             df = pd.read_excel(file_path)
             
-            # Gerekli sütunları kontrol et
-            required_columns = ['poz_no', 'tanim', 'miktar', 'birim']
+            # Sütun adlarını normalize et (boşlukları temizle)
+            original_columns = df.columns.tolist()
+            df.columns = [str(col).strip() for col in df.columns]
+            
+            # Sütun adlarını eşleştir (Türkçe ve İngilizce desteği)
+            # Hem tam eşleşme hem de case-insensitive eşleşme
+            column_mapping_dict = {
+                # Türkçe -> İngilizce
+                'Poz No': 'poz_no',
+                'poz no': 'poz_no',
+                'POZ NO': 'poz_no',
+                'Tanım': 'tanim',
+                'tanım': 'tanim',
+                'TANIM': 'tanim',
+                'Tanim': 'tanim',
+                'Miktar': 'miktar',
+                'miktar': 'miktar',
+                'MIKTAR': 'miktar',
+                'Birim': 'birim',
+                'birim': 'birim',
+                'BİRİM': 'birim',
+                'Birim Fiyat': 'birim_fiyat',
+                'birim fiyat': 'birim_fiyat',
+                'BİRİM FİYAT': 'birim_fiyat',
+                'BirimFiyat': 'birim_fiyat',
+                'Kategori': 'kategori',
+                'kategori': 'kategori',
+                'KATEGORİ': 'kategori',
+                'Kaynak': 'kaynak',
+                'kaynak': 'kaynak',
+                'KAYNAK': 'kaynak',
+            }
+            
+            # İngilizce sütun adları zaten doğruysa ekle
+            for eng_col in ['poz_no', 'tanim', 'miktar', 'birim', 'birim_fiyat', 'kategori', 'kaynak']:
+                if eng_col not in column_mapping_dict:
+                    column_mapping_dict[eng_col] = eng_col
+            
+            # Sütun adlarını normalize et
+            normalized_columns = {}
+            for col in df.columns:
+                col_clean = str(col).strip()
+                # Önce tam eşleşme
+                if col_clean in column_mapping_dict:
+                    normalized_columns[col] = column_mapping_dict[col_clean]
+                # Sonra case-insensitive eşleşme
+                else:
+                    col_lower = col_clean.lower()
+                    found = False
+                    for key, value in column_mapping_dict.items():
+                        if key.lower() == col_lower:
+                            normalized_columns[col] = value
+                            found = True
+                            break
+                    if not found:
+                        # Eşleşme bulunamadı, olduğu gibi bırak
+                        normalized_columns[col] = col_clean
+            
+            # Sütun adlarını değiştir
+            df = df.rename(columns=normalized_columns)
+            
+            # Debug: Sütun adlarını kontrol et
+            print(f"Original columns: {original_columns}")
+            print(f"Normalized columns: {df.columns.tolist()}")
+            
+            # Gerekli sütunları kontrol et (miktar ve birim opsiyonel)
+            required_columns = ['poz_no', 'tanim']
             missing_columns = [col for col in required_columns if col not in df.columns]
             
             if missing_columns:
+                # Mevcut sütunları göster
+                available_cols = ', '.join(df.columns.tolist())
                 QMessageBox.warning(
                     self, "Hata",
                     f"Excel dosyasında gerekli sütunlar eksik:\n{', '.join(missing_columns)}\n\n"
-                    f"Gerekli sütunlar: {', '.join(required_columns)}"
+                    f"Gerekli sütunlar:\n"
+                    f"  - poz_no (veya 'Poz No')\n"
+                    f"  - tanim (veya 'Tanım')\n\n"
+                    f"Opsiyonel sütunlar:\n"
+                    f"  - birim (veya 'Birim') - Yoksa varsayılan 'adet' kullanılır\n"
+                    f"  - miktar (veya 'Miktar') - Yoksa varsayılan 1.0 kullanılır\n"
+                    f"  - birim_fiyat (veya 'Birim Fiyat') - Yoksa 0 kullanılır\n\n"
+                    f"Mevcut sütunlar:\n{available_cols}"
                 )
                 return
+            
+            # Miktar sütunu yoksa ekle (varsayılan 1.0)
+            if 'miktar' not in df.columns:
+                df['miktar'] = 1.0
+                print(f"Added 'miktar' column with default value 1.0")
+            
+            # Birim sütunu yoksa ekle (varsayılan 'adet')
+            if 'birim' not in df.columns:
+                df['birim'] = 'adet'
+                print(f"Added 'birim' column with default value 'adet'")
+            
+            # Birim fiyat sütunu yoksa ekle (varsayılan 0)
+            if 'birim_fiyat' not in df.columns:
+                df['birim_fiyat'] = 0.0
+                print(f"Added 'birim_fiyat' column with default value 0.0")
+            
+            print(f"Final columns before processing: {df.columns.tolist()}")
+            
+            # Veri kontrolü: Boş satırları temizle
+            df = df.dropna(subset=['poz_no', 'tanim'], how='all')  # Her iki sütun da boşsa sil
+            
+            if df.empty:
+                QMessageBox.warning(
+                    self, "Uyarı",
+                    "Excel dosyasında işlenecek veri bulunamadı.\n\n"
+                    "Lütfen 'Poz No' ve 'Tanım' sütunlarının dolu olduğundan emin olun."
+                )
+                return
+            
+            print(f"Processing {len(df)} rows...")
+            
+            # Progress dialog ekle (çok satır varsa)
+            from PyQt6.QtWidgets import QProgressDialog
+            from PyQt6.QtCore import Qt
+            if len(df) > 100:
+                progress = QProgressDialog("Excel verileri işleniyor...", "İptal", 0, len(df), self)
+                progress.setWindowModality(Qt.WindowModality.WindowModal)
+                progress.setMinimumDuration(0)
+                progress.show()
             
             # Kalemleri ekle
             success_count = 0
             error_count = 0
             errors = []
+            skipped_empty = 0
             
-            for index, row in df.iterrows():
+            for idx, (index, row) in enumerate(df.iterrows()):
                 try:
-                    poz_no = str(row.get('poz_no', '')).strip()
-                    tanim = str(row.get('tanim', '')).strip()
-                    kategori = str(row.get('kategori', '')).strip() if 'kategori' in df.columns else ''
-                    miktar = float(row.get('miktar', 0))
-                    birim = str(row.get('birim', '')).strip()
-                    birim_fiyat = float(row.get('birim_fiyat', 0)) if 'birim_fiyat' in df.columns else 0
+                    # Progress güncelle
+                    if len(df) > 100 and idx % 100 == 0:
+                        progress.setValue(idx)
+                        progress.setLabelText(f"Excel verileri işleniyor... {idx}/{len(df)}")
+                        from PyQt6.QtWidgets import QApplication
+                        QApplication.processEvents()
+                        if progress.wasCanceled():
+                            break
                     
-                    if not poz_no or not tanim:
-                        error_count += 1
-                        errors.append(f"Satır {index + 2}: Poz no veya tanım boş")
+                    # Sütun değerlerini al (normalize edilmiş sütun adları ile)
+                    poz_no_raw = row.get('poz_no', '')
+                    tanim_raw = row.get('tanim', '')
+                    
+                    # NaN kontrolü ve string'e çevirme
+                    if pd.isna(poz_no_raw):
+                        poz_no = ''
+                    else:
+                        poz_no = str(poz_no_raw).strip()
+                        if poz_no.lower() == 'nan' or poz_no == '':
+                            poz_no = ''
+                    
+                    if pd.isna(tanim_raw):
+                        tanim = ''
+                    else:
+                        tanim = str(tanim_raw).strip()
+                        if tanim.lower() == 'nan' or tanim == '':
+                            tanim = ''
+                    
+                    # Boş satırları atla
+                    if not poz_no and not tanim:
+                        skipped_empty += 1
                         continue
+                    
+                    # Poz no veya tanım boşsa hata
+                    if not poz_no:
+                        error_count += 1
+                        if len(errors) < 20:  # İlk 20 hatayı göster
+                            errors.append(f"Satır {index + 2}: Poz no boş (Tanım: '{tanim[:50]}...' if len(tanim) > 50 else tanim)")
+                        continue
+                    
+                    if not tanim:
+                        error_count += 1
+                        if len(errors) < 20:
+                            errors.append(f"Satır {index + 2}: Tanım boş (Poz: '{poz_no}')")
+                        continue
+                    
+                    # Kategori (opsiyonel)
+                    kategori = ''
+                    if 'kategori' in df.columns:
+                        kategori_raw = row.get('kategori', '')
+                        if pd.notna(kategori_raw):
+                            kategori_str = str(kategori_raw).strip()
+                            if kategori_str.lower() != 'nan' and kategori_str:
+                                kategori = kategori_str
+                    
+                    # Miktar - varsa kullan, yoksa 1.0
+                    miktar_val = row.get('miktar', 1.0)
+                    if pd.isna(miktar_val):
+                        miktar = 1.0
+                    else:
+                        try:
+                            miktar_str = str(miktar_val).strip()
+                            if miktar_str.lower() == 'nan' or miktar_str == '':
+                                miktar = 1.0
+                            else:
+                                miktar = float(miktar_val)
+                                if miktar < 0:
+                                    miktar = 1.0
+                        except (ValueError, TypeError) as e:
+                            print(f"Satır {index + 2}: Miktar dönüşüm hatası: {miktar_val} -> 1.0")
+                            miktar = 1.0
+                    
+                    # Birim - varsa kullan, yoksa 'adet'
+                    birim_val = row.get('birim', 'adet')
+                    if pd.isna(birim_val):
+                        birim = 'adet'
+                    else:
+                        birim_str = str(birim_val).strip()
+                        if birim_str.lower() == 'nan' or not birim_str:
+                            birim = 'adet'
+                        else:
+                            birim = birim_str
+                    
+                    # Birim fiyat - varsa kullan, yoksa 0
+                    birim_fiyat_val = row.get('birim_fiyat', 0)
+                    if pd.isna(birim_fiyat_val):
+                        birim_fiyat = 0.0
+                    else:
+                        try:
+                            birim_fiyat_str = str(birim_fiyat_val).strip()
+                            if birim_fiyat_str.lower() == 'nan' or birim_fiyat_str == '':
+                                birim_fiyat = 0.0
+                            else:
+                                # Virgülü noktaya çevir (Türkçe format)
+                                birim_fiyat_str = birim_fiyat_str.replace(',', '.')
+                                birim_fiyat = float(birim_fiyat_str)
+                                if birim_fiyat < 0:
+                                    birim_fiyat = 0.0
+                        except (ValueError, TypeError) as e:
+                            print(f"Satır {index + 2}: Birim fiyat dönüşüm hatası: {birim_fiyat_val} -> 0.0")
+                            birim_fiyat = 0.0
                     
                     # Toplam hesapla
                     toplam = miktar * birim_fiyat if birim_fiyat > 0 else 0
@@ -2694,16 +3230,32 @@ class MainWindow(QMainWindow):
                     
                 except Exception as e:
                     error_count += 1
-                    errors.append(f"Satır {index + 2}: {str(e)}")
+                    error_msg = str(e)
+                    if len(errors) < 20:  # İlk 20 hatayı göster
+                        errors.append(f"Satır {index + 2}: {error_msg}")
+                    print(f"Satır {index + 2} hatası: {error_msg}")
+                    import traceback
+                    if error_count <= 5:  # İlk 5 hatanın detayını göster
+                        traceback.print_exc()
                     continue
             
-            # Sonuç mesajı
-            message = f"İçe aktarma tamamlandı!\n\nBaşarılı: {success_count}\nHatalı: {error_count}"
+            # Progress dialog'u kapat
+            if len(df) > 100:
+                progress.setValue(len(df))
+                progress.close()
             
-            if errors and error_count <= 10:
-                message += f"\n\nHatalar:\n" + "\n".join(errors[:10])
-            elif errors:
-                message += f"\n\n(İlk 10 hata gösteriliyor, toplam {error_count} hata var)"
+            # Sonuç mesajı
+            message = f"İçe aktarma tamamlandı!\n\n"
+            message += f"✅ Başarılı: {success_count}\n"
+            message += f"❌ Hatalı: {error_count}\n"
+            if skipped_empty > 0:
+                message += f"⏭️ Boş satırlar atlandı: {skipped_empty}\n"
+            
+            if errors:
+                if error_count <= 20:
+                    message += f"\n\nHatalar:\n" + "\n".join(errors)
+                else:
+                    message += f"\n\n(İlk 20 hata gösteriliyor, toplam {error_count} hata var)\n\nHatalar:\n" + "\n".join(errors[:20])
             
             if success_count > 0:
                 QMessageBox.information(self, "Başarılı", message)
@@ -2712,12 +3264,19 @@ class MainWindow(QMainWindow):
                 self.update_proje_ozet()
                 self.statusBar().showMessage(f"{success_count} kalem içe aktarıldı")
             else:
-                QMessageBox.warning(self, "Uyarı", message)
+                QMessageBox.warning(
+                    self, "Uyarı", 
+                    message + "\n\nHiçbir kalem eklenemedi. Lütfen Excel dosyasını kontrol edin."
+                )
                 
         except Exception as e:
             QMessageBox.critical(
                 self, "Hata",
-                f"PDF dosyası işlenirken hata oluştu:\n{str(e)}"
+                f"Excel dosyası işlenirken hata oluştu:\n{str(e)}\n\n"
+                f"Lütfen Excel dosyasının formatını kontrol edin:\n"
+                f"- 'Poz No' veya 'poz_no' sütunu olmalı\n"
+                f"- 'Tanım' veya 'tanim' sütunu olmalı\n"
+                f"- Diğer sütunlar (Miktar, Birim, Birim Fiyat) opsiyoneldir"
             )
             import traceback
             traceback.print_exc()
@@ -2766,7 +3325,7 @@ class MainWindow(QMainWindow):
             # Önizleme ve onay dialogu
             preview_dialog = QDialog(self)
             preview_dialog.setWindowTitle("PDF İçe Aktarma Önizleme")
-            preview_dialog.setMinimumSize(800, 600)
+            preview_dialog.setMinimumSize(900, 650)
             
             layout = QVBoxLayout(preview_dialog)
             
@@ -2796,13 +3355,121 @@ class MainWindow(QMainWindow):
                 layout.addWidget(more_label)
             
             btn_layout = QHBoxLayout()
-            btn_ok = QPushButton("İçe Aktar")
+            
+            # Excel'e Aktar butonu
+            btn_export_excel = QPushButton("📊 Excel'e Aktar")
+            btn_export_excel.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
+            
+            def export_to_excel():
+                """PDF verilerini Excel'e aktar"""
+                excel_path, _ = QFileDialog.getSaveFileName(
+                    preview_dialog, 
+                    "Excel Dosyası Oluştur", 
+                    f"PDF_Pozlar_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    "Excel Dosyaları (*.xlsx)"
+                )
+                
+                if excel_path:
+                    try:
+                        import pandas as pd
+                        from openpyxl.styles import Font, Alignment, PatternFill
+                        
+                        # DataFrame oluştur
+                        data = []
+                        for item in extracted_data:
+                            data.append({
+                                'Poz No': item.get('poz_no', ''),
+                                'Tanım': item.get('tanim', ''),
+                                'Miktar': 1.0,  # Varsayılan miktar (kullanıcı düzenleyebilir)
+                                'Birim': '',  # Kullanıcı dolduracak
+                                'Birim Fiyat': item.get('birim_fiyat', 0) if item.get('birim_fiyat') else '',
+                                'Kategori': '',  # Kullanıcı dolduracak
+                                'Kaynak': item.get('kaynak', 'PDF Import')
+                            })
+                        
+                        df = pd.DataFrame(data)
+                        
+                        # Excel'e yaz
+                        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+                            df.to_excel(writer, sheet_name='Pozlar', index=False)
+                            
+                            # Stil ayarları
+                            worksheet = writer.sheets['Pozlar']
+                            
+                            # Sütun genişlikleri
+                            worksheet.column_dimensions['A'].width = 20  # Poz No
+                            worksheet.column_dimensions['B'].width = 60  # Tanım
+                            worksheet.column_dimensions['C'].width = 12  # Miktar
+                            worksheet.column_dimensions['D'].width = 10  # Birim
+                            worksheet.column_dimensions['E'].width = 15  # Birim Fiyat
+                            worksheet.column_dimensions['F'].width = 20  # Kategori
+                            worksheet.column_dimensions['G'].width = 15  # Kaynak
+                            
+                            # Başlık satırını stilize et
+                            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                            header_font = Font(bold=True, color="FFFFFF")
+                            header_alignment = Alignment(horizontal='center', vertical='center')
+                            
+                            for cell in worksheet[1]:
+                                cell.font = header_font
+                                cell.fill = header_fill
+                                cell.alignment = header_alignment
+                            
+                            # Sayı formatları
+                            from openpyxl.styles import numbers
+                            # Miktar sütunu (C)
+                            for row in range(2, len(df) + 2):
+                                cell = worksheet[f'C{row}']
+                                if cell.value:
+                                    cell.number_format = '#,##0.00'
+                            # Birim Fiyat sütunu (E)
+                            for row in range(2, len(df) + 2):
+                                cell = worksheet[f'E{row}']
+                                if cell.value:
+                                    cell.number_format = '#,##0.00'
+                        
+                        QMessageBox.information(
+                            preview_dialog,
+                            "Başarılı",
+                            f"✅ Excel dosyası oluşturuldu!\n\n"
+                            f"📁 Konum: {excel_path}\n\n"
+                            f"📝 {len(extracted_data)} adet poz Excel'e aktarıldı.\n\n"
+                            f"💡 Excel'de verileri kontrol edip düzenleyebilir,\n"
+                            f"sonra 'Excel'den Kalem İçe Aktar' ile programa yükleyebilirsiniz."
+                        )
+                        
+                        # Dialog'u kapat
+                        preview_dialog.accept()
+                        
+                    except Exception as e:
+                        QMessageBox.critical(
+                            preview_dialog,
+                            "Hata",
+                            f"Excel dosyası oluşturulurken hata oluştu:\n{str(e)}"
+                        )
+                        import traceback
+                        traceback.print_exc()
+            
+            btn_export_excel.clicked.connect(export_to_excel)
+            
+            btn_ok = QPushButton("✅ Doğrudan İçe Aktar")
             btn_ok.clicked.connect(preview_dialog.accept)
-            btn_cancel = QPushButton("İptal")
+            btn_cancel = QPushButton("❌ İptal")
             btn_cancel.clicked.connect(preview_dialog.reject)
+            
+            btn_layout.addWidget(btn_export_excel)
+            btn_layout.addStretch()
             btn_layout.addWidget(btn_ok)
             btn_layout.addWidget(btn_cancel)
             layout.addLayout(btn_layout)
+            
+            # Bilgi mesajı ekle
+            info_text = QLabel(
+                "💡 İpucu: Excel'e aktarıp kontrol etmek daha güvenilirdir!\n"
+                "Excel'de verileri düzenleyebilir, sonra 'Excel'den Kalem İçe Aktar' ile yükleyebilirsiniz."
+            )
+            info_text.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+            layout.insertWidget(1, info_text)
             
             if preview_dialog.exec() != QDialog.DialogCode.Accepted:
                 return
@@ -2810,6 +3477,8 @@ class MainWindow(QMainWindow):
             # Veritabanına kaydet
             success_count = 0
             error_count = 0
+            poz_added_count = 0
+            fiyat_added_count = 0
             errors = []
             
             progress = QProgressDialog("Veritabanına kaydediliyor...", "İptal", 0, len(extracted_data), self)
@@ -2826,23 +3495,87 @@ class MainWindow(QMainWindow):
                 try:
                     poz_no = item.get('poz_no', '').strip()
                     birim_fiyat = item.get('birim_fiyat', 0)
+                    tanim = item.get('tanim', '') or "PDF'den içe aktarıldı"
                     
                     if not poz_no:
                         error_count += 1
                         continue
                     
-                    if not birim_fiyat or birim_fiyat <= 0:
-                        error_count += 1
-                        errors.append(f"Poz {poz_no}: Fiyat bulunamadı")
-                        continue
+                    # ÖNCE POZU POZLAR TABLOSUNA EKLE (yoksa)
+                    poz = self.db.get_poz(poz_no)
+                    if not poz:
+                        # Poz yoksa ekle
+                        try:
+                            # Birim bilgisini tahmin et (tanımdan veya varsayılan)
+                            birim = "m²"  # Varsayılan birim
+                            if "m³" in tanim.lower() or "metreküp" in tanim.lower():
+                                birim = "m³"
+                            elif "m²" in tanim.lower() or "metrekare" in tanim.lower():
+                                birim = "m²"
+                            elif "kg" in tanim.lower() or "kilogram" in tanim.lower():
+                                birim = "kg"
+                            elif "adet" in tanim.lower() or "ad." in tanim.lower():
+                                birim = "adet"
+                            elif "m" in tanim.lower() and "m²" not in tanim.lower() and "m³" not in tanim.lower():
+                                birim = "m"
+                            
+                            # Kategoriyi poz numarasından tahmin et
+                            kategori = ""
+                            if poz_no.startswith("03.") or poz_no.startswith("03-"):
+                                kategori = "Toprak İşleri"
+                            elif poz_no.startswith("04.") or poz_no.startswith("04-"):
+                                kategori = "Beton İşleri"
+                            elif poz_no.startswith("05.") or poz_no.startswith("05-"):
+                                kategori = "Demir İşleri"
+                            elif poz_no.startswith("15.") or poz_no.startswith("15-"):
+                                kategori = "Yalıtım İşleri"
+                            else:
+                                kategori = "Genel"
+                            
+                            self.db.add_poz(
+                                poz_no=poz_no,
+                                tanim=tanim[:200],  # İlk 200 karakter
+                                birim=birim,
+                                resmi_fiyat=birim_fiyat if birim_fiyat > 0 else 0,
+                                kategori=kategori,
+                                fire_orani=0.05  # Varsayılan fire oranı
+                            )
+                            poz_added_count += 1
+                        except Exception as e:
+                            errors.append(f"Poz {poz_no} eklenirken hata: {str(e)}")
                     
-                    # Birim fiyatı ekle
-                    self.db.add_birim_fiyat(
-                        poz_no=poz_no,
-                        birim_fiyat=birim_fiyat,
-                        kaynak=item.get('kaynak', 'PDF Import'),
-                        aciklama=item.get('tanim', '')
-                    )
+                    # SONRA BİRİM FİYATI EKLE (varsa)
+                    # Fiyat varsa hem poz tablosundaki resmi_fiyat hem de birim_fiyatlar tablosuna ekle
+                    if birim_fiyat and birim_fiyat > 0:
+                        try:
+                            # Birim fiyatlar tablosuna ekle
+                            fiyat_id = self.db.add_birim_fiyat(
+                                poz_no=poz_no,
+                                birim_fiyat=birim_fiyat,
+                                kaynak=item.get('kaynak', 'PDF Import'),
+                                aciklama=tanim[:100]
+                            )
+                            if fiyat_id:
+                                fiyat_added_count += 1
+                            
+                            # Poz tablosundaki resmi_fiyat'ı da güncelle (eğer poz eklendiyse)
+                            if poz_added_count > 0 or poz:
+                                try:
+                                    with self.db.get_connection() as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute("""
+                                            UPDATE pozlar 
+                                            SET resmi_fiyat = ? 
+                                            WHERE poz_no = ? AND (resmi_fiyat = 0 OR resmi_fiyat IS NULL)
+                                        """, (birim_fiyat, poz_no))
+                                except:
+                                    pass  # Güncelleme başarısız olsa bile devam et
+                        except Exception as e:
+                            errors.append(f"Poz {poz_no} fiyat eklenirken hata: {str(e)}")
+                    else:
+                        # Fiyat yoksa da poz eklendi, bu başarılı sayılır
+                        pass
+                    
                     success_count += 1
                     
                 except Exception as e:
@@ -2854,7 +3587,11 @@ class MainWindow(QMainWindow):
             
             # Sonuç mesajı
             message = f"PDF içe aktarma tamamlandı!\n\n"
-            message += f"✅ Başarılı: {success_count}\n"
+            message += f"✅ Toplam işlenen: {success_count}\n"
+            if poz_added_count > 0:
+                message += f"📝 Yeni poz eklendi: {poz_added_count}\n"
+            if fiyat_added_count > 0:
+                message += f"💰 Birim fiyat eklendi: {fiyat_added_count}\n"
             message += f"❌ Hatalı: {error_count}"
             
             if errors and error_count <= 20:
@@ -2864,7 +3601,9 @@ class MainWindow(QMainWindow):
             
             if success_count > 0:
                 QMessageBox.information(self, "Başarılı", message)
-                self.load_birim_fiyatlar()
+                # Birim fiyat sekmesi açıksa güncelle
+                if hasattr(self, 'fiyat_filter_combo') and self._tabs_created.get('birim_fiyat', False):
+                    self.load_birim_fiyatlar()
                 self.statusBar().showMessage(f"{success_count} birim fiyat içe aktarıldı")
             else:
                 QMessageBox.warning(self, "Uyarı", message)
@@ -2873,6 +3612,50 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self, "Hata",
                 f"PDF dosyası işlenirken hata oluştu:\n{str(e)}"
+            )
+            import traceback
+            traceback.print_exc()
+    
+    def clear_pdf_imported_data(self) -> None:
+        """PDF'den eklenen pozları ve birim fiyatları temizle"""
+        # Onay mesajı
+        reply = QMessageBox.question(
+            self, 
+            "PDF Pozları Temizle",
+            "PDF'den eklenen tüm pozları ve birim fiyatları silmek istediğinizden emin misiniz?\n\n"
+            "Bu işlem geri alınamaz!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            # PDF'den eklenen verileri sil
+            result = self.db.delete_pdf_imported_data()
+            
+            poz_count = result.get('pozlar', 0)
+            fiyat_count = result.get('birim_fiyatlar', 0)
+            
+            message = f"PDF'den eklenen veriler temizlendi!\n\n"
+            message += f"✅ Silinen poz sayısı: {poz_count}\n"
+            message += f"✅ Silinen birim fiyat sayısı: {fiyat_count}\n\n"
+            message += "Artık PDF'yi yeniden yükleyebilirsiniz."
+            
+            QMessageBox.information(self, "Başarılı", message)
+            
+            # İlgili sekmeleri güncelle
+            if hasattr(self, 'fiyat_filter_combo') and self._tabs_created.get('birim_fiyat', False):
+                self.load_birim_fiyatlar()
+            
+            self.statusBar().showMessage(f"{poz_count} poz ve {fiyat_count} birim fiyat silindi")
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self, 
+                "Hata",
+                f"PDF verileri temizlenirken hata oluştu:\n{str(e)}"
             )
             import traceback
             traceback.print_exc()
@@ -2932,6 +3715,9 @@ class MainWindow(QMainWindow):
     
     def load_templates(self) -> None:
         """Şablonları yükle"""
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()  # UI'ı güncelle
+        
         templates = self.db.get_all_templates()
         self.template_table.setRowCount(len(templates))
         
@@ -2949,6 +3735,10 @@ class MainWindow(QMainWindow):
             item = self.template_table.item(row, 0)
             if item:
                 item.setData(Qt.ItemDataRole.UserRole, template['id'])
+            
+            # Her 10 şablonda bir UI'ı güncelle
+            if row % 10 == 0:
+                QApplication.processEvents()
     
     def view_template_items(self, item: QTableWidgetItem) -> None:
         """Şablon kalemlerini göster"""
@@ -3123,11 +3913,15 @@ class MainWindow(QMainWindow):
     
     def load_ihaleler(self) -> None:
         """İhaleleri yükle"""
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()  # UI'ı güncelle
+        
         ihaleler = self.db.get_all_ihaleler()
         self.ihale_combo.clear()
         self.ihale_combo.addItem("-- İhale Seçin --", None)
         for ihale in ihaleler:
             self.ihale_combo.addItem(ihale['ad'], ihale['id'])
+            QApplication.processEvents()  # UI'ı güncelle
     
     def on_ihale_changed(self) -> None:
         """İhale seçildiğinde"""
@@ -3163,31 +3957,101 @@ class MainWindow(QMainWindow):
     
     def on_ihale_poz_search(self) -> None:
         """Poz arama metni değiştiğinde"""
+        # Tablo widget'ı henüz oluşturulmamışsa (lazy loading) işlem yapma
+        if not hasattr(self, 'ihale_poz_results_table'):
+            print("DEBUG: ihale_poz_results_table henüz oluşturulmamış")
+            return
+        
+        if not self._tabs_created.get('ihale', False):
+            print("DEBUG: İhale sekmesi henüz oluşturulmamış")
+            return
+        
         search_text = self.ihale_poz_search.text().strip()
-        if len(search_text) < 2:
+        
+        # Minimum 1 karakter yeterli olsun (poz numarası tek karakter olabilir)
+        if len(search_text) < 1:
             self.ihale_poz_results_table.setRowCount(0)
             return
         
-        pozlar = self.db.search_pozlar(search_text, limit=50)
-        self.ihale_poz_results_table.setRowCount(len(pozlar))
-        
-        for row, poz in enumerate(pozlar):
-            self.ihale_poz_results_table.setItem(row, 0, QTableWidgetItem(poz.get('poz_no', '')))
-            self.ihale_poz_results_table.setItem(row, 1, QTableWidgetItem(poz.get('tanim', '')))
-            self.ihale_poz_results_table.setItem(row, 2, QTableWidgetItem(poz.get('birim', '')))
+        try:
+            # Önce pozları ara
+            print(f"DEBUG: Arama yapılıyor: '{search_text}'")
+            pozlar = self.db.search_pozlar(search_text, limit=50)
+            print(f"DEBUG: {len(pozlar)} poz bulundu")
             
-            # Birim fiyatı getir
-            fiyat_data = self.db.get_birim_fiyat(poz_no=poz.get('poz_no', ''))
-            birim_fiyat = fiyat_data.get('birim_fiyat', 0) if fiyat_data else 0
-            self.ihale_poz_results_table.setItem(row, 3, QTableWidgetItem(f"{birim_fiyat:,.2f} ₺" if birim_fiyat else "Fiyat yok"))
+            # Sonuçları göster
+            self.ihale_poz_results_table.setRowCount(len(pozlar))
             
-            # Poz bilgisini sakla
-            item = self.ihale_poz_results_table.item(row, 0)
-            if item:
-                item.setData(Qt.ItemDataRole.UserRole, poz)
+            if len(pozlar) == 0:
+                # Sonuç yoksa kullanıcıya bilgi ver ve manuel ekleme seçeneği sun
+                self.statusBar().showMessage(f"'{search_text}' için poz bulunamadı. Manuel eklemek için 'Listeye Ekle' butonuna tıklayın.", 5000)
+                
+                # Eğer arama metni poz numarası formatındaysa (nokta içeriyorsa), 
+                # manuel olarak eklenebilir şekilde tabloya tek satır ekle
+                if '.' in search_text and len(search_text) > 3:
+                    # Poz numarası formatında görünüyor, manuel ekleme için göster
+                    self.ihale_poz_results_table.setRowCount(1)
+                    poz_no_item = QTableWidgetItem(search_text)
+                    self.ihale_poz_results_table.setItem(0, 0, poz_no_item)
+                    self.ihale_poz_results_table.setItem(0, 1, QTableWidgetItem("(Manuel ekleme - Poz bulunamadı)"))
+                    self.ihale_poz_results_table.setItem(0, 2, QTableWidgetItem(""))
+                    self.ihale_poz_results_table.setItem(0, 3, QTableWidgetItem("Fiyat yok"))
+                    
+                    # Poz bilgisini sakla (sadece poz_no ile)
+                    poz_data = {
+                        'poz_no': search_text,
+                        'tanim': '',
+                        'birim': '',
+                        'kategori': ''
+                    }
+                    poz_no_item.setData(Qt.ItemDataRole.UserRole, poz_data)
+            else:
+                self.statusBar().showMessage(f"{len(pozlar)} poz bulundu", 2000)
+            
+            for row, poz in enumerate(pozlar):
+                poz_no = poz.get('poz_no', '')
+                poz_tanim = poz.get('tanim', '')
+                birim = poz.get('birim', '')
+                kategori = poz.get('kategori', '')
+                
+                # Poz no
+                poz_no_item = QTableWidgetItem(poz_no)
+                self.ihale_poz_results_table.setItem(row, 0, poz_no_item)
+                
+                # Tanım
+                self.ihale_poz_results_table.setItem(row, 1, QTableWidgetItem(poz_tanim))
+                
+                # Birim
+                self.ihale_poz_results_table.setItem(row, 2, QTableWidgetItem(birim))
+                
+                # Birim fiyatı getir
+                fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no)
+                birim_fiyat = fiyat_data.get('birim_fiyat', 0) if fiyat_data else 0
+                self.ihale_poz_results_table.setItem(row, 3, QTableWidgetItem(f"{birim_fiyat:,.2f} ₺" if birim_fiyat else "Fiyat yok"))
+                
+                # Poz bilgisini sakla (tüm bilgileri içeren dict)
+                poz_data = {
+                    'poz_no': poz_no,
+                    'tanim': poz_tanim,
+                    'birim': birim,
+                    'kategori': kategori
+                }
+                poz_no_item.setData(Qt.ItemDataRole.UserRole, poz_data)
+            
+            # Tabloyu güncelle ve görünür yap
+            self.ihale_poz_results_table.resizeColumnsToContents()
+            self.ihale_poz_results_table.setVisible(True)
+            self.ihale_poz_results_table.update()  # Tabloyu yeniden çiz
+            
+        except Exception as e:
+            error_msg = f"Poz arama sırasında hata oluştu:\n{str(e)}"
+            QMessageBox.critical(self, "Hata", error_msg)
+            self.statusBar().showMessage(f"Hata: {str(e)}", 5000)
+            import traceback
+            traceback.print_exc()
     
     def add_selected_poz_to_ihale(self, item: QTableWidgetItem) -> None:
-        """Seçili pozu ihale listesine ekle"""
+        """Seçili pozu ihale listesine ekle (çift tıklama)"""
         if not self.current_ihale_id:
             QMessageBox.warning(self, "Uyarı", "Lütfen önce bir ihale seçin")
             return
@@ -3195,13 +4059,37 @@ class MainWindow(QMainWindow):
         row = item.row()
         poz_item = self.ihale_poz_results_table.item(row, 0)
         if not poz_item:
+            QMessageBox.warning(self, "Uyarı", "Poz bilgisi bulunamadı")
             return
         
         poz_data = poz_item.data(Qt.ItemDataRole.UserRole)
         if not poz_data:
-            return
+            # Poz data yoksa, tablodan manuel olarak al
+            poz_no = poz_item.text()
+            poz_tanim_item = self.ihale_poz_results_table.item(row, 1)
+            poz_tanim = poz_tanim_item.text() if poz_tanim_item else ""
+            birim_item = self.ihale_poz_results_table.item(row, 2)
+            birim = birim_item.text() if birim_item else ""
+            
+            # Poz bilgilerini veritabanından getir
+            poz = self.db.get_poz_by_no(poz_no)
+            if not poz:
+                QMessageBox.warning(self, "Uyarı", f"Poz bulunamadı: {poz_no}")
+                return
+            
+            poz_data = {
+                'poz_no': poz_no,
+                'tanim': poz_tanim or poz.get('tanim', ''),
+                'kategori': poz.get('kategori', ''),
+                'birim': birim or poz.get('birim', '')
+            }
         
-        self._add_poz_to_ihale_list(poz_data)
+        try:
+            self._add_poz_to_ihale_list(poz_data)
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Poz eklenirken hata oluştu:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def add_poz_to_ihale(self) -> None:
         """Arama sonuçlarından seçili pozu ekle"""
@@ -3216,89 +4104,185 @@ class MainWindow(QMainWindow):
         
         poz_item = self.ihale_poz_results_table.item(current_row, 0)
         if not poz_item:
+            QMessageBox.warning(self, "Uyarı", "Poz bilgisi bulunamadı")
             return
         
         poz_data = poz_item.data(Qt.ItemDataRole.UserRole)
         if not poz_data:
-            return
+            # Poz data yoksa, tablodan manuel olarak al
+            poz_no = poz_item.text()
+            poz_tanim_item = self.ihale_poz_results_table.item(current_row, 1)
+            poz_tanim = poz_tanim_item.text() if poz_tanim_item else ""
+            birim_item = self.ihale_poz_results_table.item(current_row, 2)
+            birim = birim_item.text() if birim_item else ""
+            
+            # Poz bilgilerini veritabanından getir (yoksa manuel ekleme yapılacak)
+            poz = self.db.get_poz_by_no(poz_no)
+            if poz:
+                # Poz bulundu, bilgileri kullan
+                poz_data = {
+                    'poz_no': poz_no,
+                    'tanim': poz_tanim or poz.get('tanim', ''),
+                    'kategori': poz.get('kategori', ''),
+                    'birim': birim or poz.get('birim', '')
+                }
+            else:
+                # Poz bulunamadı, manuel ekleme için sadece poz_no ile devam et
+                poz_data = {
+                    'poz_no': poz_no,
+                    'tanim': poz_tanim,
+                    'kategori': '',
+                    'birim': birim
+                }
         
-        self._add_poz_to_ihale_list(poz_data)
+        try:
+            self._add_poz_to_ihale_list(poz_data)
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Poz eklenirken hata oluştu:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def _add_poz_to_ihale_list(self, poz_data: Dict[str, Any]) -> None:
         """Pozu ihale listesine ekle (iç fonksiyon)"""
-        poz_no = poz_data.get('poz_no', '')
-        poz_tanim = poz_data.get('tanim', '')
-        kategori = poz_data.get('kategori', '')
-        birim = poz_data.get('birim', '')
-        
-        # Birim fiyatı getir (otomatik)
-        fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no)
-        birim_fiyat = fiyat_data.get('birim_fiyat', 0) if fiyat_data else 0
-        
-        # İhale kalemine ekle (birim miktar 0, kullanıcı girecek)
-        kalem_id = self.db.add_ihale_kalem(
-            ihale_id=self.current_ihale_id,
-            poz_no=poz_no,
-            poz_tanim=poz_tanim,
-            kategori=kategori,
-            birim_miktar=0,  # Kullanıcı girecek
-            birim=birim,
-            birim_fiyat=birim_fiyat,
-            toplam=0
-        )
-        
-        if kalem_id:
-            self.load_ihale_kalemleri()
-            self.statusBar().showMessage(f"Poz eklendi: {poz_no}")
+        try:
+            poz_no = poz_data.get('poz_no', '')
+            if not poz_no:
+                QMessageBox.warning(self, "Uyarı", "Poz numarası bulunamadı")
+                return
+            
+            poz_tanim = poz_data.get('tanim', '')
+            kategori = poz_data.get('kategori', '')
+            birim = poz_data.get('birim', '')
+            
+            # Eğer poz veritabanında yoksa, veritabanından tekrar kontrol et
+            if not poz_tanim or poz_tanim == "(Manuel ekleme - Poz bulunamadı)":
+                poz = self.db.get_poz_by_no(poz_no)
+                if poz:
+                    poz_tanim = poz.get('tanim', '')
+                    birim = poz.get('birim', '') if not birim else birim
+                    kategori = poz.get('kategori', '') if not kategori else kategori
+                else:
+                    # Poz veritabanında yok, kullanıcıdan bilgi al
+                    from PyQt6.QtWidgets import QInputDialog
+                    tanim, ok = QInputDialog.getText(
+                        self, "Poz Bilgisi",
+                        f"Poz '{poz_no}' veritabanında bulunamadı.\n\nLütfen poz tanımını girin:",
+                        text=""
+                    )
+                    if not ok or not tanim.strip():
+                        return
+                    poz_tanim = tanim.strip()
+                    
+                    # Birim seçimi
+                    birim_text, ok = QInputDialog.getText(
+                        self, "Birim",
+                        "Birim (m², m³, kg, adet, vb.):",
+                        text="m²"
+                    )
+                    if not ok:
+                        birim_text = "m²"
+                    birim = birim_text.strip() if birim_text.strip() else "m²"
+            
+            # Birim fiyatı getir (otomatik)
+            fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no)
+            birim_fiyat = fiyat_data.get('birim_fiyat', 0) if fiyat_data else 0
+            
+            # İhale kalemine ekle (birim miktar 0, kullanıcı girecek)
+            kalem_id = self.db.add_ihale_kalem(
+                ihale_id=self.current_ihale_id,
+                poz_no=poz_no,
+                poz_tanim=poz_tanim,
+                kategori=kategori,
+                birim_miktar=0,  # Kullanıcı girecek
+                birim=birim,
+                birim_fiyat=birim_fiyat,
+                toplam=0
+            )
+            
+            if kalem_id:
+                self.load_ihale_kalemleri()
+                self.statusBar().showMessage(f"Poz eklendi: {poz_no}")
+                QMessageBox.information(self, "Başarılı", f"Poz başarıyla eklendi:\n{poz_no} - {poz_tanim}")
+            else:
+                QMessageBox.warning(self, "Uyarı", "Poz eklenirken bir hata oluştu")
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Poz eklenirken hata oluştu:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def load_ihale_kalemleri(self) -> None:
         """İhale kalemlerini yükle"""
-        if not self.current_ihale_id:
-            self.ihale_kalem_table.setRowCount(0)
+        # Lazy loading kontrolü - sekme henüz oluşturulmamışsa çık
+        if not hasattr(self, 'ihale_kalem_table') or not self._tabs_created.get('ihale', False):
             return
         
-        kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
-        self.ihale_kalem_table.setRowCount(len(kalemler))
+        if not self.current_ihale_id:
+            try:
+                self.ihale_kalem_table.setRowCount(0)
+            except:
+                pass
+            return
         
-        toplam = 0.0
-        
-        for row, kalem in enumerate(kalemler):
-            # Sıra
-            self.ihale_kalem_table.setItem(row, 0, QTableWidgetItem(str(kalem.get('sira_no', row + 1))))
+        try:
+            import re
+            kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
+            self.ihale_kalem_table.setRowCount(len(kalemler))
             
-            # Poz No
-            self.ihale_kalem_table.setItem(row, 1, QTableWidgetItem(kalem.get('poz_no', '')))
+            toplam = 0.0
             
-            # Tanım
-            self.ihale_kalem_table.setItem(row, 2, QTableWidgetItem(kalem.get('poz_tanim', '')))
+            for row, kalem in enumerate(kalemler):
+                # Sıra
+                self.ihale_kalem_table.setItem(row, 0, QTableWidgetItem(str(kalem.get('sira_no', row + 1))))
+                
+                # Poz No
+                self.ihale_kalem_table.setItem(row, 1, QTableWidgetItem(kalem.get('poz_no', '')))
+                
+                # Tanım (temizle - fiyat bilgisi varsa çıkar)
+                poz_tanim = str(kalem.get('poz_tanim', '')).strip()
+                # "Sa 250,00" veya "Sa 250.00" gibi pattern'leri temizle
+                poz_tanim = re.sub(r'\s*Sa\s*\d+[.,]\d+', '', poz_tanim).strip()
+                self.ihale_kalem_table.setItem(row, 2, QTableWidgetItem(poz_tanim))
+                
+                # Birim Miktar (düzenlenebilir) - 0 ise boş göster
+                birim_miktar = kalem.get('birim_miktar', 0) or 0
+                miktar_text = f"{birim_miktar:,.2f}" if birim_miktar > 0 else ""
+                miktar_item = QTableWidgetItem(miktar_text)
+                miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.ihale_kalem_table.setItem(row, 3, miktar_item)
+                
+                # Birim
+                self.ihale_kalem_table.setItem(row, 4, QTableWidgetItem(kalem.get('birim', '')))
+                
+                # Birim Fiyat (düzenlenebilir)
+                birim_fiyat = kalem.get('birim_fiyat', 0) or 0
+                fiyat_item = QTableWidgetItem(f"{birim_fiyat:,.2f}")
+                fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.ihale_kalem_table.setItem(row, 5, fiyat_item)
+                
+                # Toplam (hesaplanır, düzenlenemez)
+                toplam_deger = kalem.get('toplam', 0) or 0
+                toplam += toplam_deger
+                toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
+                toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.ihale_kalem_table.setItem(row, 6, toplam_item)
+                
+                # ID'yi sakla
+                item = self.ihale_kalem_table.item(row, 0)
+                if item:
+                    item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
             
-            # Birim Miktar (düzenlenebilir)
-            miktar_item = QTableWidgetItem(f"{kalem.get('birim_miktar', 0):,.2f}")
-            miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.ihale_kalem_table.setItem(row, 3, miktar_item)
-            
-            # Birim
-            self.ihale_kalem_table.setItem(row, 4, QTableWidgetItem(kalem.get('birim', '')))
-            
-            # Birim Fiyat (düzenlenebilir)
-            fiyat_item = QTableWidgetItem(f"{kalem.get('birim_fiyat', 0):,.2f}")
-            fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.ihale_kalem_table.setItem(row, 5, fiyat_item)
-            
-            # Toplam (hesaplanır, düzenlenemez)
-            toplam_deger = kalem.get('toplam', 0)
-            toplam += toplam_deger
-            toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
-            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.ihale_kalem_table.setItem(row, 6, toplam_item)
-            
-            # ID'yi sakla
-            item = self.ihale_kalem_table.item(row, 0)
-            if item:
-                item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
-        
-        self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+            if hasattr(self, 'ihale_total_label'):
+                self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+        except Exception as e:
+            print(f"İhale kalemleri yükleme hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            # Hata olsa bile tabloyu temizle
+            try:
+                self.ihale_kalem_table.setRowCount(0)
+            except:
+                pass
     
     def on_ihale_kalem_changed(self, item: QTableWidgetItem) -> None:
         """İhale kalemi değiştiğinde (birim miktar veya birim fiyat)"""

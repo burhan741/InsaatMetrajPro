@@ -132,3 +132,6 @@ Windows Defender veya SmartScreen şu uyarıyı verebilir:
 
 
 
+
+
+

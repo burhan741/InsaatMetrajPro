@@ -30,6 +30,9 @@ class PDFBirimFiyatImporter:
         self.poz_patterns = [
             # Standart poz formatları: 03.001, 03.001/1, 03.001/A, 03.001.001
             r'\b\d{2}\.\d{3}(?:[/\.]\d+)?(?:[/\.][A-Z])?\b',
+            # 3 seviyeli poz formatları: 15.250.1011, 03.001.001
+            r'\b\d{2}\.\d{3}\.\d{4}\b',
+            r'\b\d{2}\.\d{3}\.\d{3}\b',
             # Alternatif: 03-001, 03/001
             r'\b\d{2}[-/]\d{3}(?:[/\.]\d+)?\b',
         ]
@@ -64,22 +67,19 @@ class PDFBirimFiyatImporter:
                             if not progress_callback(page_num, total_pages):
                                 break
                         
-                        # Sayfadan metni al
-                        text = page.extract_text()
-                        
-                        if not text:
-                            continue
-                        
-                        # Tabloları dene (daha yapılandırılmış veri)
+                        # OPTİMİZASYON: Sadece tablo içeren sayfaları işle
+                        # Önce tabloları kontrol et
                         tables = page.extract_tables()
+                        
                         if tables:
+                            # Tablo varsa işle (çok daha hızlı)
                             for table in tables:
                                 table_data = self._parse_table(table)
                                 extracted_data.extend(table_data)
-                        
-                        # Metinden poz ve fiyat çıkar
-                        text_data = self._parse_text(text)
-                        extracted_data.extend(text_data)
+                        else:
+                            # Tablo yoksa sayfayı atla (metin parsing yapma)
+                            # Bu sayede çok daha hızlı işlem yapılır
+                            continue
             
             # Alternatif: PyPDF2 kullan
             elif PYPDF2_AVAILABLE:
@@ -187,33 +187,92 @@ class PDFBirimFiyatImporter:
     
     def _find_price(self, text: str) -> Optional[float]:
         """Metinden fiyat bul (TL, ₺, veya sadece sayı)"""
+        # Önce poz numarasını bul (poz numarasını fiyat sanmamak için)
+        poz_no = self._find_poz_number(text)
+        poz_start = text.find(poz_no) if poz_no else -1
+        poz_end = poz_start + len(poz_no) if poz_start >= 0 else -1
+        
+        # Poz numarasından sonraki metni al (fiyat genellikle poz numarasından sonra gelir)
+        search_text = text[poz_end + 1:] if poz_end >= 0 else text
+        
         # Türk Lirası formatları: 1.234,56 TL, 1,234.56 ₺, 1234.56
+        # Öncelik sırası: TL/₺ işaretli olanlar, sonra sadece sayılar
         price_patterns = [
-            r'(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)\s*(?:TL|₺|tl)',
-            r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:TL|₺|tl)',
-            r'(\d+[.,]\d{2})\s*(?:TL|₺|tl)',
-            r'(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)',  # Sadece sayı (nokta binlik, virgül ondalık)
-            r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)',  # Sadece sayı (virgül binlik, nokta ondalık)
+            # TL/₺ işaretli formatlar (en güvenilir)
+            (r'(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)\s*(?:TL|₺|tl)', True),  # 1.234,56 TL (Türk formatı)
+            (r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s*(?:TL|₺|tl)', 'english'),  # 1,234.56 TL (İngiliz formatı)
+            (r'(\d+[.,]\d{2})\s*(?:TL|₺|tl)', True),  # 1250.50 TL veya 1250,50 TL
+            
+            # Sadece sayı formatları (daha dikkatli)
+            (r'(?<!\d)(\d{1,4}(?:\.\d{3})*(?:,\d{2})?)(?!\d)', True),  # 1.234,56 (Türk formatı, poz numarası değil)
+            (r'(?<!\d)(\d{1,4}(?:,\d{3})+(?:\.\d{2})?)(?!\d)', 'english'),  # 1,234.56 (İngiliz formatı - en az 1 virgül olmalı)
         ]
         
-        for pattern in price_patterns:
-            matches = re.findall(pattern, text)
-            if matches:
-                # En büyük sayıyı al (genellikle fiyat)
-                prices = []
-                for match in matches:
-                    try:
-                        # Türk formatı: 1.234,56 -> 1234.56
-                        price_str = match.replace('.', '').replace(',', '.')
+        prices = []
+        
+        # Tüm pattern'lerden match'leri topla
+        all_matches = []
+        for pattern, is_turkish_format in price_patterns:
+            for match_obj in re.finditer(pattern, search_text):
+                match_str = match_obj.group(1)  # İlk capture group'u al
+                start_pos = match_obj.start(1)  # Capture group'un başlangıcı
+                end_pos = match_obj.end(1)      # Capture group'un sonu
+                all_matches.append((match_str, start_pos, end_pos, is_turkish_format))
+        
+        # İç içe match'leri temizle (küçük olanlar büyük olanların içindeyse at)
+        filtered_matches = []
+        for match_str, start, end, fmt in all_matches:
+            is_contained = False
+            for other_str, other_start, other_end, _ in all_matches:
+                if match_str != other_str and other_start <= start and other_end >= end:
+                    # Bu match başka bir match'in içinde
+                    is_contained = True
+                    break
+            if not is_contained:
+                filtered_matches.append((match_str, fmt))
+        
+        # Eğer birden fazla match varsa, en uzun olanı al (tam fiyat)
+        if filtered_matches:
+            # Uzunluğa göre sırala (en uzun önce)
+            filtered_matches.sort(key=lambda x: len(x[0]), reverse=True)
+            
+            # En uzun match'i işle
+            match_str, is_turkish_format = filtered_matches[0]
+            
+            try:
+                if is_turkish_format == True:
+                    # Türk formatı: 1.234,56 -> nokta binlik, virgül ondalık
+                    # Önce noktaları kaldır (binlik ayraç), sonra virgülü noktaya çevir
+                    price_str = match_str.replace('.', '').replace(',', '.')
+                    price = float(price_str)
+                    if price > 0 and not (price < 100 and '.' in match_str and len(match_str.split('.')[0]) <= 2):
+                        prices.append(price)
+                elif is_turkish_format == 'english':
+                    # İngiliz formatı: 1,234.56 -> virgül binlik, nokta ondalık
+                    # Önce virgülleri kaldır (binlik ayraç), nokta zaten ondalık
+                    # En az 1 virgül olmalı (binlik ayraç için)
+                    if ',' in match_str:
+                        price_str = match_str.replace(',', '')
                         price = float(price_str)
                         if price > 0:
                             prices.append(price)
-                    except ValueError:
-                        continue
-                
-                if prices:
-                    # En büyük fiyatı döndür (genellikle birim fiyat)
-                    return max(prices)
+                else:
+                    # Varsayılan: Türk formatı gibi işle
+                    price_str = match_str.replace('.', '').replace(',', '.')
+                    price = float(price_str)
+                    if price > 0 and not (price < 100 and '.' in match_str and len(match_str.split('.')[0]) <= 2):
+                        prices.append(price)
+            except (ValueError, AttributeError):
+                pass
+        
+        if prices:
+            # En büyük fiyatı döndür (genellikle birim fiyat)
+            # Ama çok büyük sayıları filtrele (muhtemelen poz numarası)
+            valid_prices = [p for p in prices if p < 1000000]  # 1 milyondan küçük olmalı
+            if valid_prices:
+                return max(valid_prices)
+            elif prices:
+                return max(prices)
         
         return None
     
