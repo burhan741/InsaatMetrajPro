@@ -3,3 +3,38 @@
 Tarih: 2025-12-06 20:30:53
 Test mesajı: Hata log dosyası yazma testi
 ============================================================
+
+============================================================
+Tarih: 2025-12-07 20:06:07
+Yakalanmamış hata: NameError: cannot access free variable 'calculate_total' where it is not associated with a value in enclosing scope
+Traceback (most recent call last):
+  File "E:\data\yeni_proje\app\ui\taseron_window.py", line 839, in bulk_add_puantaj
+    add_personel_row(personel)
+  File "E:\data\yeni_proje\app\ui\taseron_window.py", line 823, in add_personel_row
+    checkbox.toggled.connect(calculate_total)
+                             ^^^^^^^^^^^^^^^
+NameError: cannot access free variable 'calculate_total' where it is not associated with a value in enclosing scope
+
+============================================================
+
+============================================================
+Tarih: 2025-12-07 23:06:39
+Pencere oluşturma hatası: MainWindow.__init__() got an unexpected keyword argument 'db'
+Traceback (most recent call last):
+  File "E:\data\yeni_proje\main.py", line 268, in gui_uygulamasi
+    window = MainWindow(db=db, splash=splash, user_type=user_type)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: MainWindow.__init__() got an unexpected keyword argument 'db'
+
+============================================================
+
+============================================================
+Tarih: 2025-12-07 23:07:48
+Pencere oluşturma hatası: MainWindow.__init__() got an unexpected keyword argument 'db'
+Traceback (most recent call last):
+  File "E:\data\yeni_proje\main.py", line 268, in gui_uygulamasi
+    window = MainWindow(db=db, splash=splash, user_type=user_type)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: MainWindow.__init__() got an unexpected keyword argument 'db'
+
+============================================================

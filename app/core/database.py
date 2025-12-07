@@ -1394,6 +1394,180 @@ class DatabaseManager:
             cursor.execute(f"UPDATE sablonlar SET {fields} WHERE id = ?", values)
             return cursor.rowcount > 0
     
+    def get_template_item(self, item_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Şablon kalemi bilgilerini getir.
+        
+        Args:
+            item_id: Kalem ID'si
+            
+        Returns:
+            Optional[Dict]: Kalem bilgileri
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM sablon_kalemleri WHERE id = ?", (item_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def update_template_item(self, item_id: int, **kwargs) -> bool:
+        """
+        Şablon kalemini güncelle.
+        
+        Args:
+            item_id: Kalem ID'si
+            **kwargs: Güncellenecek alanlar
+            
+        Returns:
+            bool: Başarı durumu
+        """
+        if not kwargs:
+            return False
+        
+        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+        values = list(kwargs.values()) + [item_id]
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE sablon_kalemleri SET {fields} WHERE id = ?", values)
+            return cursor.rowcount > 0
+    
+    def delete_template_item(self, item_id: int) -> bool:
+        """
+        Şablon kalemini sil.
+        
+        Args:
+            item_id: Kalem ID'si
+            
+        Returns:
+            bool: Başarı durumu
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM sablon_kalemleri WHERE id = ?", (item_id,))
+            return cursor.rowcount > 0
+    
+    def copy_template(self, template_id: int, new_name: str, new_description: str = "") -> Optional[int]:
+        """
+        Şablonu kopyala.
+        
+        Args:
+            template_id: Kopyalanacak şablon ID'si
+            new_name: Yeni şablon adı
+            new_description: Yeni şablon açıklaması
+            
+        Returns:
+            Optional[int]: Yeni şablonun ID'si
+        """
+        try:
+            # Orijinal şablonu al
+            original_template = self.get_template(template_id)
+            if not original_template:
+                return None
+            
+            # Yeni şablon oluştur
+            new_template_id = self.create_template(new_name, new_description or original_template.get('aciklama', ''))
+            
+            # Kalemleri kopyala
+            items = self.get_template_items(template_id)
+            for item in items:
+                self.add_template_item(
+                    sablon_id=new_template_id,
+                    poz_no=item.get('poz_no', ''),
+                    tanim=item.get('tanim', ''),
+                    kategori=item.get('kategori', ''),
+                    miktar=item.get('miktar', 0),
+                    birim=item.get('birim', ''),
+                    birim_fiyat=item.get('birim_fiyat', 0),
+                    toplam=item.get('toplam', 0)
+                )
+            
+            return new_template_id
+            
+        except Exception as e:
+            print(f"Şablon kopyalama hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def get_all_kategoriler(self) -> List[str]:
+        """
+        Tüm kategorileri getir (projelerden ve şablonlardan).
+        
+        Returns:
+            List[str]: Kategori listesi
+        """
+        kategoriler = set()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Projelerden kategoriler
+            cursor.execute("SELECT DISTINCT kategori FROM metraj WHERE kategori IS NOT NULL AND kategori != ''")
+            for row in cursor.fetchall():
+                kategoriler.add(row[0])
+            # Şablonlardan kategoriler
+            cursor.execute("SELECT DISTINCT kategori FROM sablon_kalemleri WHERE kategori IS NOT NULL AND kategori != ''")
+            for row in cursor.fetchall():
+                kategoriler.add(row[0])
+        return sorted(list(kategoriler))
+    
+    def get_items_by_kategoriler(self, kategoriler: List[str]) -> List[Dict[str, Any]]:
+        """
+        Belirtilen kategorilerdeki kalemleri getir (projelerden ve şablonlardan).
+        
+        Args:
+            kategoriler: Kategori listesi
+            
+        Returns:
+            List[Dict]: Kalem listesi
+        """
+        if not kategoriler:
+            return []
+        
+        items = []
+        placeholders = ','.join(['?'] * len(kategoriler))
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Projelerden kalemler
+            cursor.execute(f"""
+                SELECT DISTINCT poz_no, tanim, kategori, birim, 
+                       (SELECT birim_fiyat FROM birim_fiyatlar 
+                        WHERE birim_fiyatlar.poz_no = metraj.poz_no 
+                        AND birim_fiyatlar.aktif = 1 
+                        ORDER BY tarih DESC LIMIT 1) as birim_fiyat
+                FROM metraj
+                WHERE kategori IN ({placeholders})
+            """, kategoriler)
+            
+            for row in cursor.fetchall():
+                items.append({
+                    'poz_no': row[0] or '',
+                    'tanim': row[1] or '',
+                    'kategori': row[2] or '',
+                    'birim': row[3] or '',
+                    'birim_fiyat': row[4] or 0.0
+                })
+            
+            # Şablonlardan kalemler
+            cursor.execute(f"""
+                SELECT DISTINCT poz_no, tanim, kategori, birim, birim_fiyat
+                FROM sablon_kalemleri
+                WHERE kategori IN ({placeholders})
+            """, kategoriler)
+            
+            for row in cursor.fetchall():
+                # Aynı poz_no varsa atla
+                if not any(item.get('poz_no') == (row[0] or '') for item in items):
+                    items.append({
+                        'poz_no': row[0] or '',
+                        'tanim': row[1] or '',
+                        'kategori': row[2] or '',
+                        'birim': row[3] or '',
+                        'birim_fiyat': row[4] or 0.0
+                    })
+        
+        return items
+    
     # Birim Fiyat İşlemleri
     def add_birim_fiyat(self, poz_id: Optional[int] = None, poz_no: str = "",
                        birim_fiyat: float = 0, tarih: Optional[str] = None,

@@ -43,7 +43,25 @@ def gui_uygulamasi():
         error_trace = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
         print(f"\n❌ {error_msg}")
         print(error_trace)
-        log_error_to_file(error_msg, error_trace)
+        
+        # Hata log dosyasına yaz (mutlaka)
+        try:
+            log_error_to_file(error_msg, error_trace)
+        except Exception as log_err:
+            # Log yazma hatası olsa bile konsola yaz
+            print(f"⚠️ Log yazma hatası: {log_err}")
+            try:
+                # Alternatif: Direkt dosyaya yazmayı dene
+                error_log_path = Path(__file__).parent / "error_log.txt"
+                with open(error_log_path, 'a', encoding='utf-8') as f:
+                    from datetime import datetime
+                    f.write(f"\n{'='*60}\n")
+                    f.write(f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"{error_msg}\n")
+                    f.write(f"{error_trace}\n")
+                    f.write(f"{'='*60}\n")
+            except:
+                pass
         
         # Uygulamayı kapatmadan devam et (kullanıcıya hata göster)
         try:
@@ -137,6 +155,26 @@ def gui_uygulamasi():
         app.setApplicationName("InsaatMetrajPro")
         app.setOrganizationName("InsaatMetrajPro")
         
+        # PyQt6 signal/slot hatalarını yakala
+        def qt_exception_handler(exc_type, exc_value, exc_traceback):
+            """PyQt6 signal/slot hatalarını yakala"""
+            if issubclass(exc_type, KeyboardInterrupt):
+                return
+            
+            import traceback
+            error_msg = f"PyQt6 Signal/Slot Hatası: {exc_type.__name__}: {exc_value}"
+            error_trace = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            print(f"\n❌ {error_msg}")
+            print(error_trace)
+            try:
+                log_error_to_file(error_msg, error_trace)
+            except:
+                pass
+        
+        # PyQt6 için exception handler (signal/slot hataları için)
+        # Not: PyQt6'da signal hataları otomatik olarak exception_handler'a düşer
+        # Ancak bazı durumlarda yakalanmayabilir, bu yüzden ekstra kontrol ekliyoruz
+        
         # Splash screen oluştur (görsel arka plan ile)
         splash_path = Path(__file__).parent / "assets" / "splash.jpg"
         splash = None
@@ -227,18 +265,34 @@ def gui_uygulamasi():
                 from app.ui.taseron_window import TaseronWindow
                 window = TaseronWindow(db=db, splash=splash)
             else:
-                window = MainWindow(db=db, splash=splash, user_type=user_type)
+                window = MainWindow(splash=splash, user_type=user_type)
             
             # Splash screen'i kapat
             splash.finish(window)
             window.show()
+            window.showMaximized()  # Tam ekran aç
         except Exception as e:
             error_msg = f"Pencere oluşturma hatası: {e}"
             print(f"❌ {error_msg}")
             import traceback
             error_trace = traceback.format_exc()
             print(error_trace)
-            log_error_to_file(error_msg, error_trace)
+            try:
+                log_error_to_file(error_msg, error_trace)
+            except Exception as log_err:
+                print(f"⚠️ Log yazma hatası: {log_err}")
+                # Alternatif yazma
+                try:
+                    error_log_path = Path(__file__).parent / "error_log.txt"
+                    with open(error_log_path, 'a', encoding='utf-8') as f:
+                        from datetime import datetime
+                        f.write(f"\n{'='*60}\n")
+                        f.write(f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write(f"{error_msg}\n")
+                        f.write(f"{error_trace}\n")
+                        f.write(f"{'='*60}\n")
+                except:
+                    pass
             QMessageBox.critical(None, "Kritik Hata", 
                               f"Uygulama başlatılamadı:\n{str(e)}\n\n"
                               f"Detaylar 'error_log.txt' dosyasına kaydedildi.")
@@ -254,7 +308,22 @@ def gui_uygulamasi():
         import traceback
         error_trace = traceback.format_exc()
         print(error_trace)
-        log_error_to_file(error_msg, error_trace)
+        try:
+            log_error_to_file(error_msg, error_trace)
+        except Exception as log_err:
+            print(f"⚠️ Log yazma hatası: {log_err}")
+            # Alternatif yazma
+            try:
+                error_log_path = Path(__file__).parent / "error_log.txt"
+                with open(error_log_path, 'a', encoding='utf-8') as f:
+                    from datetime import datetime
+                    f.write(f"\n{'='*60}\n")
+                    f.write(f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"{error_msg}\n")
+                    f.write(f"{error_trace}\n")
+                    f.write(f"{'='*60}\n")
+            except:
+                pass
         sys.exit(1)
 
 
