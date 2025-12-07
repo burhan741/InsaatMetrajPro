@@ -1905,13 +1905,12 @@ class DatabaseManager:
             return cursor.lastrowid
     
     def get_taseron_personel(self, is_id: int) -> List[Dict[str, Any]]:
-        """Taşeron personel listesini getir"""
+        """Taşeron personel listesini getir (sıralama UI'da yapılacak)"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM taseron_personel
                 WHERE is_id = ?
-                ORDER BY ad_soyad
             """, (is_id,))
             return [dict(row) for row in cursor.fetchall()]
     
@@ -1958,6 +1957,33 @@ class DatabaseManager:
             cursor.execute("SELECT * FROM taseron_personel WHERE id = ?", (personel_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
+    
+    def update_taseron_personel(self, personel_id: int, ad_soyad: str,
+                                gunluk_ucret: float = 0, saatlik_ucret: float = 0) -> bool:
+        """Taşeron personel bilgilerini güncelle"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE taseron_personel
+                    SET ad_soyad = ?, gunluk_ucret = ?, saatlik_ucret = ?
+                    WHERE id = ?
+                """, (ad_soyad, gunluk_ucret, saatlik_ucret, personel_id))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Personel güncelleme hatası: {e}")
+            return False
+    
+    def delete_taseron_personel(self, personel_id: int) -> bool:
+        """Taşeron personel sil"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM taseron_personel WHERE id = ?", (personel_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Personel silme hatası: {e}")
+            return False
     
     def add_taseron_is_birim_fiyat(self, is_id: int, is_adi: str, birim: str,
                                    birim_fiyat: float, miktar: float = 0) -> int:

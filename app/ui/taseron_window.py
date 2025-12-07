@@ -101,6 +101,15 @@ class TaseronWindow(QMainWindow):
         btn_add_personel.clicked.connect(self.add_personel)
         btn_layout.addWidget(btn_add_personel)
         
+        btn_edit_personel = QPushButton("Personel Düzenle")
+        btn_edit_personel.clicked.connect(self.edit_personel)
+        btn_layout.addWidget(btn_edit_personel)
+        
+        btn_delete_personel = QPushButton("Personel Sil")
+        btn_delete_personel.setStyleSheet("background-color: #c9184a;")
+        btn_delete_personel.clicked.connect(self.delete_personel)
+        btn_layout.addWidget(btn_delete_personel)
+        
         btn_add_puantaj = QPushButton("Puantaj Ekle")
         btn_add_puantaj.clicked.connect(self.add_puantaj)
         btn_layout.addWidget(btn_add_puantaj)
@@ -431,6 +440,13 @@ class TaseronWindow(QMainWindow):
         saatlik_spin.setDecimals(2)
         layout.addRow("Saatlik Ücret (₺):", saatlik_spin)
         
+        # Günlük ücret değiştiğinde saatlik ücreti otomatik hesapla (8'e böl)
+        def on_gunluk_changed(value):
+            if value > 0:
+                saatlik_spin.setValue(value / 8.0)
+        
+        gunluk_spin.valueChanged.connect(on_gunluk_changed)
+        
         btn_layout = QHBoxLayout()
         btn_ok = QPushButton("Ekle")
         btn_ok.clicked.connect(dialog.accept)
@@ -457,13 +473,138 @@ class TaseronWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Hata", f"Personel eklenirken hata oluştu:\n{str(e)}")
     
+    def edit_personel(self):
+        """Personel bilgilerini düzenle"""
+        if not self.current_is_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir iş seçin")
+            return
+        
+        current_row = self.personel_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen düzenlemek istediğiniz bir personeli seçin")
+            return
+        
+        personel_id_item = self.personel_table.item(current_row, 0)
+        if not personel_id_item:
+            return
+        
+        personel_id = int(personel_id_item.text())
+        personel = self.db.get_taseron_personel_by_id(personel_id)
+        
+        if not personel:
+            QMessageBox.warning(self, "Uyarı", "Personel bulunamadı")
+            return
+        
+        from PyQt6.QtWidgets import QDialog, QFormLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Personel Düzenle")
+        dialog.setGeometry(400, 400, 400, 200)
+        
+        layout = QFormLayout(dialog)
+        
+        ad_input = QLineEdit()
+        ad_input.setText(personel['ad_soyad'])
+        layout.addRow("Ad Soyad:", ad_input)
+        
+        gunluk_spin = QDoubleSpinBox()
+        gunluk_spin.setRange(0, 999999)
+        gunluk_spin.setDecimals(2)
+        gunluk_spin.setValue(personel.get('gunluk_ucret', 0))
+        layout.addRow("Günlük Ücret (₺):", gunluk_spin)
+        
+        saatlik_spin = QDoubleSpinBox()
+        saatlik_spin.setRange(0, 999999)
+        saatlik_spin.setDecimals(2)
+        saatlik_spin.setValue(personel.get('saatlik_ucret', 0))
+        layout.addRow("Saatlik Ücret (₺):", saatlik_spin)
+        
+        # Günlük ücret değiştiğinde saatlik ücreti otomatik hesapla (8'e böl)
+        def on_gunluk_changed(value):
+            if value > 0:
+                saatlik_spin.setValue(value / 8.0)
+        
+        gunluk_spin.valueChanged.connect(on_gunluk_changed)
+        
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("Kaydet")
+        btn_ok.clicked.connect(dialog.accept)
+        btn_cancel = QPushButton("İptal")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addRow(btn_layout)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            if not ad_input.text().strip():
+                QMessageBox.warning(self, "Uyarı", "Ad soyad gereklidir")
+                return
+            
+            try:
+                if self.db.update_taseron_personel(
+                    personel_id,
+                    ad_input.text().strip(),
+                    gunluk_spin.value(),
+                    saatlik_spin.value()
+                ):
+                    QMessageBox.information(self, "Başarılı", "Personel bilgileri güncellendi")
+                    self.load_personel()
+                    self.load_puantaj()  # Puantaj kayıtlarını da yeniden yükle (ücret değişmiş olabilir)
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Personel güncellenirken bir hata oluştu")
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Personel güncellenirken hata oluştu:\n{str(e)}")
+    
+    def delete_personel(self):
+        """Personel sil"""
+        if not self.current_is_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir iş seçin")
+            return
+        
+        current_row = self.personel_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek istediğiniz bir personeli seçin")
+            return
+        
+        personel_id_item = self.personel_table.item(current_row, 0)
+        if not personel_id_item:
+            return
+        
+        personel_id = int(personel_id_item.text())
+        personel = self.db.get_taseron_personel_by_id(personel_id)
+        
+        if not personel:
+            QMessageBox.warning(self, "Uyarı", "Personel bulunamadı")
+            return
+        
+        reply = QMessageBox.question(
+            self, "Onay",
+            f"'{personel['ad_soyad']}' personelini silmek istediğinize emin misiniz?\n\n"
+            "Bu işlem geri alınamaz ve tüm puantaj kayıtları da silinecektir.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                if self.db.delete_taseron_personel(personel_id):
+                    QMessageBox.information(self, "Başarılı", "Personel silindi")
+                    self.load_personel()
+                    self.load_puantaj()  # Puantaj listesini de güncelle
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Personel silinirken bir hata oluştu")
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Personel silinirken hata oluştu:\n{str(e)}")
+    
     def load_personel(self):
-        """Personel listesini yükle"""
+        """Personel listesini yükle (günlük ücrete göre yüksekten düşüğe sıralı)"""
         if not self.current_is_id:
             self.personel_table.setRowCount(0)
             return
         
         personel_list = self.db.get_taseron_personel(self.current_is_id)
+        # Günlük ücrete göre yüksekten düşüğe sırala
+        personel_list.sort(key=lambda x: x.get('gunluk_ucret', 0), reverse=True)
+        
         self.personel_table.setRowCount(len(personel_list))
         
         for row, personel in enumerate(personel_list):

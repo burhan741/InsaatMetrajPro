@@ -5,8 +5,8 @@ Başlangıç Ekranı - Müteahhit/Taşeron Seçimi
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QFont, QPixmap, QIcon
 from pathlib import Path
 
 
@@ -37,7 +37,11 @@ class StartupDialog(QDialog):
                 padding: 20px;
                 font-size: 16pt;
                 font-weight: bold;
-                min-height: 80px;
+                min-height: 100px;
+                text-align: center;
+            }
+            QPushButton::icon {
+                margin-right: 10px;
             }
             QPushButton:hover {
                 background-color: #00BFFF;
@@ -67,13 +71,30 @@ class StartupDialog(QDialog):
         btn_layout = QVBoxLayout()
         btn_layout.setSpacing(20)
         
-        # Müteahhit butonu
-        btn_muteahhit = QPushButton("👷 MÜTEAHHİT")
+        # İkon yolları
+        assets_dir = Path(__file__).parent.parent.parent / "assets"
+        muteahhit_icon_path = assets_dir / "muteahhit_icon.png"
+        taseron_icon_path = assets_dir / "taseron_icon.png"
+        
+        # Müteahhit butonu (Beyaz baret + takım elbise)
+        btn_muteahhit = QPushButton("MÜTEAHHİT")
+        if muteahhit_icon_path.exists():
+            icon = QIcon(str(muteahhit_icon_path))
+            btn_muteahhit.setIcon(icon)
+            btn_muteahhit.setIconSize(QSize(64, 64))
+        else:
+            btn_muteahhit.setText("👔👷 MÜTEAHHİT")  # Fallback emoji
         btn_muteahhit.clicked.connect(lambda: self.select_user_type('muteahhit'))
         btn_layout.addWidget(btn_muteahhit)
         
-        # Taşeron butonu
-        btn_taseron = QPushButton("🔧 TAŞERON")
+        # Taşeron butonu (Sarı baret + turuncu yelek)
+        btn_taseron = QPushButton("TAŞERON")
+        if taseron_icon_path.exists():
+            icon = QIcon(str(taseron_icon_path))
+            btn_taseron.setIcon(icon)
+            btn_taseron.setIconSize(QSize(64, 64))
+        else:
+            btn_taseron.setText("👷🦺 TAŞERON")  # Fallback emoji
         btn_taseron.clicked.connect(lambda: self.select_user_type('taseron'))
         btn_layout.addWidget(btn_taseron)
         
