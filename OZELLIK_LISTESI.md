@@ -268,3 +268,4 @@
 4. Hangi özellikler rakiplerden fark yaratır?
 5. Kullanıcı geri bildirimlerine göre en çok istenen özellikler nelerdir?
 
+

@@ -321,27 +321,39 @@ class TaseronWindow(QMainWindow):
     # Veritabanı işlemleri
     def load_isler(self):
         """İşleri yükle"""
-        self.is_combo.clear()
-        isler = self.db.get_taseron_isleri()
-        for is_item in isler:
-            self.is_combo.addItem(is_item['is_adi'], is_item['id'])
-        
-        if isler and not self.current_is_id:
-            self.current_is_id = isler[0]['id']
-            self.is_combo.setCurrentIndex(0)
-            self.on_is_changed()
+        try:
+            self.is_combo.clear()
+            isler = self.db.get_taseron_isleri()
+            for is_item in isler:
+                self.is_combo.addItem(is_item['is_adi'], is_item['id'])
+            
+            if isler and not self.current_is_id:
+                self.current_is_id = isler[0]['id']
+                self.is_combo.setCurrentIndex(0)
+                self.on_is_changed()
+        except Exception as e:
+            print(f"İş yükleme hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Hata", f"İşler yüklenirken hata oluştu:\n{str(e)}")
     
     def on_is_changed(self):
         """İş değiştiğinde"""
-        is_id = self.is_combo.currentData()
-        self.current_is_id = is_id
-        
-        if is_id:
-            self.load_personel()
-            self.load_puantaj()
-            self.load_is_birim_fiyat()
-            self.load_gelir_gider()
-            self.update_raporlar()
+        try:
+            is_id = self.is_combo.currentData()
+            self.current_is_id = is_id
+            
+            if is_id:
+                self.load_personel()
+                self.load_puantaj()
+                self.load_is_birim_fiyat()
+                self.load_gelir_gider()
+                self.update_raporlar()
+        except Exception as e:
+            print(f"İş değiştirme hatası: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Hata", f"İş değiştirilirken hata oluştu:\n{str(e)}")
     
     def new_is(self):
         """Yeni iş ekle"""

@@ -189,36 +189,60 @@ def gui_uygulamasi():
         app.processEvents()
         
         # Başlangıç ekranı - Kullanıcı tipi seçimi
-        from app.ui.startup_dialog import StartupDialog
-        
-        startup = StartupDialog()
-        if not startup.exec():
-            # Kullanıcı iptal etti
-            sys.exit(0)
-        
-        user_type = startup.user_type
-        
-        # Splash mesajını güncelle
-        if user_type == 'muteahhit':
-            splash.showMessage(
-                "Müteahhit modu yükleniyor...",
-                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
-                Qt.GlobalColor.white
-            )
-        else:
-            splash.showMessage(
-                "Taşeron modu yükleniyor...",
-                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
-                Qt.GlobalColor.white
-            )
-        app.processEvents()
-        
-        # Ana pencereyi oluştur (kullanıcı tipi ile)
-        window = MainWindow(splash=splash, user_type=user_type)
-        
-        # Splash screen'i kapat
-        splash.finish(window)
-        window.show()
+        try:
+            from app.ui.startup_dialog import StartupDialog
+            
+            startup = StartupDialog()
+            if not startup.exec():
+                # Kullanıcı iptal etti
+                sys.exit(0)
+            
+            user_type = startup.user_type
+            
+            if not user_type:
+                QMessageBox.critical(None, "Hata", "Kullanıcı tipi seçilmedi!")
+                sys.exit(1)
+            
+            # Splash mesajını güncelle
+            if user_type == 'muteahhit':
+                splash.showMessage(
+                    "Müteahhit modu yükleniyor...",
+                    Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+                    Qt.GlobalColor.white
+                )
+            else:
+                splash.showMessage(
+                    "Taşeron modu yükleniyor...",
+                    Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+                    Qt.GlobalColor.white
+                )
+            app.processEvents()
+            
+            # Veritabanı bağlantısını oluştur
+            from app.core.database import DatabaseManager
+            db = DatabaseManager()
+            
+            # Ana pencereyi oluştur (kullanıcı tipi ile)
+            if user_type == 'taseron':
+                from app.ui.taseron_window import TaseronWindow
+                window = TaseronWindow(db=db, splash=splash)
+            else:
+                window = MainWindow(splash=splash, user_type=user_type)
+            
+            # Splash screen'i kapat
+            splash.finish(window)
+            window.show()
+        except Exception as e:
+            error_msg = f"Pencere oluşturma hatası: {e}"
+            print(f"❌ {error_msg}")
+            import traceback
+            error_trace = traceback.format_exc()
+            print(error_trace)
+            log_error_to_file(error_msg, error_trace)
+            QMessageBox.critical(None, "Kritik Hata", 
+                              f"Uygulama başlatılamadı:\n{str(e)}\n\n"
+                              f"Detaylar 'error_log.txt' dosyasına kaydedildi.")
+            sys.exit(1)
         
         # Hot reload özelliğini aktif et (development modunda)
         setup_hot_reload(app)

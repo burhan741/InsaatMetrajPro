@@ -148,9 +148,9 @@ class MainWindow(QMainWindow):
             self.hide()  # Müteahhit penceresini gizle
         else:
             self.init_ui()
-        
-        # Veritabanı yüklemelerini async yap (UI'ı bloklamadan)
-        self.load_data_async()
+            
+            # Veritabanı yüklemelerini async yap (UI'ı bloklamadan)
+            self.load_data_async()
         
         # İlk açılışta pozları kontrol et ve yükle (async - arka planda)
         self.check_and_load_pozlar_async()
@@ -2593,18 +2593,18 @@ class MainWindow(QMainWindow):
             # Lazy loading: Sekmeyi ilk kez açıldığında oluştur
             if index == 1 and not self._tabs_created['ozet']:
                 try:
-                # Proje Özeti sekmesi
-                placeholder = self.tabs.widget(1)
-                self.create_proje_ozet_tab(add_to_tabs=False)
+                    # Proje Özeti sekmesi
+                    placeholder = self.tabs.widget(1)
+                    self.create_proje_ozet_tab(add_to_tabs=False)
                     # Signal'ı geçici olarak blokla (sonsuz döngüyü önlemek için)
                     self.tabs.blockSignals(True)
-                self.tabs.removeTab(1)
-                self.tabs.insertTab(1, self.ozet_widget, "📈 Proje Özeti")
-                self.tabs.setCurrentIndex(1)
+                    self.tabs.removeTab(1)
+                    self.tabs.insertTab(1, self.ozet_widget, "📈 Proje Özeti")
+                    self.tabs.setCurrentIndex(1)
                     self.tabs.blockSignals(False)
-                self._tabs_created['ozet'] = True
-                if placeholder:
-                    placeholder.deleteLater()
+                    self._tabs_created['ozet'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)  # Hata durumunda da bloklamayı kaldır
                     print(f"Proje Özeti sekmesi oluşturma hatası: {e}")
@@ -2613,17 +2613,17 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 2 and not self._tabs_created['taseron']:
                 try:
-                # Taşeron Analizi sekmesi
-                placeholder = self.tabs.widget(2)
-                self.create_taseron_tab(add_to_tabs=False)
+                    # Taşeron Analizi sekmesi
+                    placeholder = self.tabs.widget(2)
+                    self.create_taseron_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                self.tabs.removeTab(2)
-                self.tabs.insertTab(2, self.taseron_widget, "💼 Taşeron Analizi")
-                self.tabs.setCurrentIndex(2)
+                    self.tabs.removeTab(2)
+                    self.tabs.insertTab(2, self.taseron_widget, "💼 Taşeron Analizi")
+                    self.tabs.setCurrentIndex(2)
                     self.tabs.blockSignals(False)
-                self._tabs_created['taseron'] = True
-                if placeholder:
-                    placeholder.deleteLater()
+                    self._tabs_created['taseron'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Taşeron Analizi sekmesi oluşturma hatası: {e}")
@@ -2632,17 +2632,17 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 3 and not self._tabs_created['malzeme']:
                 try:
-                # Malzeme Listesi sekmesi
-                placeholder = self.tabs.widget(3)
-                self.create_malzeme_tab(add_to_tabs=False)
+                    # Malzeme Listesi sekmesi
+                    placeholder = self.tabs.widget(3)
+                    self.create_malzeme_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                self.tabs.removeTab(3)
-                self.tabs.insertTab(3, self.malzeme_widget, "📦 Malzeme Listesi")
-                self.tabs.setCurrentIndex(3)
+                    self.tabs.removeTab(3)
+                    self.tabs.insertTab(3, self.malzeme_widget, "📦 Malzeme Listesi")
+                    self.tabs.setCurrentIndex(3)
                     self.tabs.blockSignals(False)
-                self._tabs_created['malzeme'] = True
-                if placeholder:
-                    placeholder.deleteLater()
+                    self._tabs_created['malzeme'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Malzeme Listesi sekmesi oluşturma hatası: {e}")
@@ -2651,18 +2651,18 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 4 and not self._tabs_created['sablonlar']:
                 try:
-                # Şablonlar sekmesi
-                placeholder = self.tabs.widget(4)
-                self.create_sablonlar_tab(add_to_tabs=False)
+                    # Şablonlar sekmesi
+                    placeholder = self.tabs.widget(4)
+                    self.create_sablonlar_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                self.tabs.removeTab(4)
-                self.tabs.insertTab(4, self.sablonlar_widget, "📋 Şablonlar")
-                self.tabs.setCurrentIndex(4)
+                    self.tabs.removeTab(4)
+                    self.tabs.insertTab(4, self.sablonlar_widget, "📋 Şablonlar")
+                    self.tabs.setCurrentIndex(4)
                     self.tabs.blockSignals(False)
-                self._tabs_created['sablonlar'] = True
-                self.load_templates()  # İlk açılışta yükle
-                if placeholder:
-                    placeholder.deleteLater()
+                    self._tabs_created['sablonlar'] = True
+                    self.load_templates()  # İlk açılışta yükle
+                    if placeholder:
+                        placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Şablonlar sekmesi oluşturma hatası: {e}")
@@ -2671,18 +2671,18 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 5 and not self._tabs_created['birim_fiyat']:
                 try:
-                # Birim Fiyat Yönetimi sekmesi
-                placeholder = self.tabs.widget(5)
-                self.create_birim_fiyat_tab(add_to_tabs=False)
+                    # Birim Fiyat Yönetimi sekmesi
+                    placeholder = self.tabs.widget(5)
+                    self.create_birim_fiyat_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                self.tabs.removeTab(5)
-                self.tabs.insertTab(5, self.birim_fiyat_widget, "💰 Birim Fiyatlar")
-                self.tabs.setCurrentIndex(5)
+                    self.tabs.removeTab(5)
+                    self.tabs.insertTab(5, self.birim_fiyat_widget, "💰 Birim Fiyatlar")
+                    self.tabs.setCurrentIndex(5)
                     self.tabs.blockSignals(False)
-                self._tabs_created['birim_fiyat'] = True
-                self.load_birim_fiyatlar()  # İlk açılışta yükle
-                if placeholder:
-                    placeholder.deleteLater()
+                    self._tabs_created['birim_fiyat'] = True
+                    self.load_birim_fiyatlar()  # İlk açılışta yükle
+                    if placeholder:
+                        placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Birim Fiyat sekmesi oluşturma hatası: {e}")
@@ -2691,18 +2691,18 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 6 and not self._tabs_created['ihale']:
                 try:
-                # İhale Dosyası Hazırlama sekmesi
-                placeholder = self.tabs.widget(6)
-                self.create_ihale_tab(add_to_tabs=False)
+                    # İhale Dosyası Hazırlama sekmesi
+                    placeholder = self.tabs.widget(6)
+                    self.create_ihale_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                self.tabs.removeTab(6)
-                self.tabs.insertTab(6, self.ihale_widget, "📄 İhale Dosyası")
-                self.tabs.setCurrentIndex(6)
+                    self.tabs.removeTab(6)
+                    self.tabs.insertTab(6, self.ihale_widget, "📄 İhale Dosyası")
+                    self.tabs.setCurrentIndex(6)
                     self.tabs.blockSignals(False)
-                self._tabs_created['ihale'] = True
-                self.load_ihaleler()  # İlk açılışta yükle
-                if placeholder:
-                    placeholder.deleteLater()
+                    self._tabs_created['ihale'] = True
+                    self.load_ihaleler()  # İlk açılışta yükle
+                    if placeholder:
+                        placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"İhale Dosyası sekmesi oluşturma hatası: {e}")
@@ -2713,11 +2713,11 @@ class MainWindow(QMainWindow):
             # Proje Özeti sekmesine geçildiğinde güncelle (sadece sekme zaten oluşturulmuşsa)
             if index == 1 and self._tabs_created['ozet']:
                 try:
-                self.update_proje_ozet()
-        except Exception as e:
+                    self.update_proje_ozet()
+                except Exception as e:
                     print(f"Proje özeti güncelleme hatası: {e}")
-            import traceback
-            traceback.print_exc()
+                    import traceback
+                    traceback.print_exc()
         except Exception as e:
             # Hata durumunda logla ve dosyaya yaz
             error_msg = f"Sekme değiştirme hatası (index: {index}): {e}"
@@ -2744,12 +2744,12 @@ class MainWindow(QMainWindow):
             
             # Kullanıcıya bilgi ver (ama uygulamayı kapatma)
             try:
-            QMessageBox.critical(
-                self, "Hata",
+                QMessageBox.critical(
+                    self, "Hata",
                     f"Sekme değiştirilirken bir hata oluştu:\n{str(e)}\n\n"
                     f"Hata detayları 'error_log.txt' dosyasına kaydedildi.\n\n"
                     f"Lütfen programı yeniden başlatın."
-            )
+                )
             except Exception as msg_error:
                 print(f"QMessageBox hatası: {msg_error}")
                 # Uygulamayı kapatma, sadece logla
@@ -4183,7 +4183,7 @@ class MainWindow(QMainWindow):
             self.load_projects()
             if self.current_project_id:
                 if hasattr(self, 'metraj_table') and self._tabs_created.get('metraj', False):
-                self.load_metraj_data()
+                    self.load_metraj_data()
                 if hasattr(self, 'taseron_table') and self._tabs_created.get('taseron', False):
                     self.load_taseron_data()
             if hasattr(self, 'ihale_kalem_table') and self._tabs_created.get('ihale', False):
@@ -4212,9 +4212,9 @@ class MainWindow(QMainWindow):
         # Kalem araması (seçili projede - Metraj)
         if search_type in ["Tümü", "Kalemler"] and self.current_project_id:
             if hasattr(self, 'metraj_table') and self._tabs_created.get('metraj', False):
-            metraj_items = self.db.get_project_metraj(self.current_project_id)
-            filtered_items = []
-            for item in metraj_items:
+                metraj_items = self.db.get_project_metraj(self.current_project_id)
+                filtered_items = []
+                for item in metraj_items:
                     tanim = (item.get('tanim', '') or '').lower()
                     poz_no = (item.get('poz_no', '') or '').lower()
                     kategori = (item.get('kategori', '') or '').lower()
@@ -4224,21 +4224,21 @@ class MainWindow(QMainWindow):
                         search_lower in poz_no or
                         search_lower in kategori or
                         search_lower in notlar):
-                    filtered_items.append(item)
+                        filtered_items.append(item)
             
-            # Metraj tablosunu filtrele
-            self.metraj_table.setRowCount(len(filtered_items))
-            for row, item in enumerate(filtered_items):
+                # Metraj tablosunu filtrele
+                self.metraj_table.setRowCount(len(filtered_items))
+                for row, item in enumerate(filtered_items):
                     self.metraj_table.setItem(row, 0, QTableWidgetItem(str(item.get('id', ''))))
                     self.metraj_table.setItem(row, 1, QTableWidgetItem(item.get('poz_no', '')))
                     self.metraj_table.setItem(row, 2, QTableWidgetItem(item.get('tanim', '')))
-                self.metraj_table.setItem(row, 3, QTableWidgetItem(f"{item.get('miktar', 0):,.2f}"))
-                self.metraj_table.setItem(row, 4, QTableWidgetItem(item.get('birim', '')))
-                self.metraj_table.setItem(row, 5, QTableWidgetItem(f"{item.get('birim_fiyat', 0):,.2f}"))
-                self.metraj_table.setItem(row, 6, QTableWidgetItem(f"{item.get('toplam', 0):,.2f}"))
-            
+                    self.metraj_table.setItem(row, 3, QTableWidgetItem(f"{item.get('miktar', 0):,.2f}"))
+                    self.metraj_table.setItem(row, 4, QTableWidgetItem(item.get('birim', '')))
+                    self.metraj_table.setItem(row, 5, QTableWidgetItem(f"{item.get('birim_fiyat', 0):,.2f}"))
+                    self.metraj_table.setItem(row, 6, QTableWidgetItem(f"{item.get('toplam', 0):,.2f}"))
+                
                 # Toplamı güncelle (KDV ile)
-            toplam = sum(item.get('toplam', 0) for item in filtered_items)
+                toplam = sum(item.get('toplam', 0) for item in filtered_items)
                 kdv_rate_text = self.metraj_kdv_rate.currentText().replace("%", "")
                 kdv_rate = float(kdv_rate_text)
                 kdv_hesap = self.calculator.calculate_with_kdv(toplam, kdv_rate)
@@ -4844,8 +4844,8 @@ class MainWindow(QMainWindow):
             return
         
         if not self.current_ihale_id:
-            try:
-            self.ihale_kalem_table.setRowCount(0)
+                try:
+                    self.ihale_kalem_table.setRowCount(0)
             except:
                 pass
             return

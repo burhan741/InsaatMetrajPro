@@ -93,3 +93,4 @@ class StartupDialog(QDialog):
         self.user_type = user_type
         self.accept()
 
+
