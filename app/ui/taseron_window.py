@@ -197,6 +197,13 @@ class TaseronWindow(QMainWindow):
         self.puantaj_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.puantaj_table)
         
+        # Günlük toplam personel gideri
+        self.gunluk_toplam_label = QLabel("Günlük Toplam Personel Gideri: 0.00 ₺")
+        self.gunluk_toplam_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        self.gunluk_toplam_label.setStyleSheet("color: #4CAF50; padding: 10px; background-color: #1a1a2e; border-radius: 5px;")
+        self.gunluk_toplam_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.gunluk_toplam_label)
+        
         self.tabs.addTab(tab, "👥 Puantaj")
     
     def create_is_birim_fiyat_tab(self):
@@ -705,6 +712,7 @@ class TaseronWindow(QMainWindow):
         saat_spin = QDoubleSpinBox()
         saat_spin.setRange(0, 24)
         saat_spin.setDecimals(2)
+        saat_spin.setValue(8.0)  # Varsayılan 8 saat
         layout.addRow("Çalışma Saati:", saat_spin)
         
         gun_spin = QSpinBox()
@@ -1056,7 +1064,9 @@ class TaseronWindow(QMainWindow):
         saat_spin = QDoubleSpinBox()
         saat_spin.setRange(0, 24)
         saat_spin.setDecimals(2)
-        saat_spin.setValue(puantaj.get('calisma_saati', 0))
+        # Mevcut değer varsa onu kullan, yoksa varsayılan 8
+        mevcut_saat = puantaj.get('calisma_saati', 0)
+        saat_spin.setValue(mevcut_saat if mevcut_saat > 0 else 8.0)
         layout.addRow("Çalışma Saati:", saat_spin)
         
         gun_spin = QSpinBox()
@@ -1177,6 +1187,20 @@ class TaseronWindow(QMainWindow):
             self.puantaj_table.setItem(row, 3, QTableWidgetItem(f"{puantaj['calisma_saati']:,.2f}"))
             self.puantaj_table.setItem(row, 4, QTableWidgetItem(str(puantaj['calisma_gunu'])))
             self.puantaj_table.setItem(row, 5, QTableWidgetItem(f"{puantaj['toplam_ucret']:,.2f}"))
+        
+        # Günlük toplam personel giderini hesapla ve göster
+        if hasattr(self, 'gunluk_toplam_label'):
+            gunluk_toplam = sum(p.get('toplam_ucret', 0) for p in puantaj_list)
+            
+            # Filtre aktifse filtrelenmiş tarih için, değilse tüm kayıtlar için toplam
+            if hasattr(self, 'puantaj_filter_enabled') and self.puantaj_filter_enabled and hasattr(self, 'puantaj_tarih_filter'):
+                # Filtre aktif - filtrelenmiş tarih için toplam
+                filter_date = self.puantaj_tarih_filter.date()
+                tarih_text = filter_date.toString("dd.MM.yyyy")
+                self.gunluk_toplam_label.setText(f"Günlük Toplam Personel Gideri ({tarih_text}): {gunluk_toplam:,.2f} ₺")
+            else:
+                # Filtre yok - tüm kayıtların toplamını göster
+                self.gunluk_toplam_label.setText(f"Toplam Personel Gideri: {gunluk_toplam:,.2f} ₺")
     
     def add_is_birim_fiyat(self):
         """İş ve birim fiyat ekle"""
