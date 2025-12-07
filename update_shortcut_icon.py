@@ -69,3 +69,4 @@ Write-Host "Kısayol ikonu güncellendi"
 if __name__ == '__main__':
     update_shortcut_icon()
 
+

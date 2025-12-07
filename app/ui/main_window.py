@@ -99,11 +99,12 @@ class InitialDataLoaderThread(QThread):
 class MainWindow(QMainWindow):
     """Ana uygulama penceresi"""
     
-    def __init__(self, splash: Optional[Any] = None) -> None:
+    def __init__(self, splash: Optional[Any] = None, user_type: str = 'muteahhit') -> None:
         """Ana pencereyi başlat"""
         super().__init__()
         
         self.splash = splash
+        self.user_type = user_type  # 'muteahhit' veya 'taseron'
         
         # Core modüller (hafif olanlar hemen yükle)
         self.db = DatabaseManager()
@@ -138,7 +139,15 @@ class MainWindow(QMainWindow):
             from PyQt6.QtWidgets import QApplication
             QApplication.processEvents()
         
-        self.init_ui()
+        # Kullanıcı tipine göre arayüz oluştur
+        if self.user_type == 'taseron':
+            from app.ui.taseron_window import TaseronWindow
+            # Taşeron penceresini göster, müteahhit penceresini gizle
+            self.taseron_window = TaseronWindow(self.db, self.splash)
+            self.taseron_window.show()
+            self.hide()  # Müteahhit penceresini gizle
+        else:
+            self.init_ui()
         
         # Veritabanı yüklemelerini async yap (UI'ı bloklamadan)
         self.load_data_async()
@@ -344,10 +353,25 @@ class MainWindow(QMainWindow):
         
         btn_layout.addStretch()
         
-        # Toplam etiketi
-        self.total_label = QLabel("Toplam: 0.00 ₺")
+        # KDV oranı seçimi
+        kdv_label = QLabel("KDV:")
+        btn_layout.addWidget(kdv_label)
+        self.metraj_kdv_rate = QComboBox()
+        self.metraj_kdv_rate.addItems(["%1", "%10", "%20"])
+        self.metraj_kdv_rate.setCurrentText("%20")
+        self.metraj_kdv_rate.currentTextChanged.connect(self.update_malzeme_total)
+        btn_layout.addWidget(self.metraj_kdv_rate)
+        
+        # Toplam etiketi (KDV hariç)
+        self.total_label = QLabel("Toplam (KDV Hariç): 0.00 ₺")
         self.total_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         btn_layout.addWidget(self.total_label)
+        
+        # KDV dahil toplam
+        self.total_kdv_label = QLabel("Toplam (KDV Dahil): 0.00 ₺")
+        self.total_kdv_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        self.total_kdv_label.setStyleSheet("color: #00BFFF;")
+        btn_layout.addWidget(self.total_kdv_label)
         
         main_layout.addLayout(btn_layout)
         
@@ -503,10 +527,10 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(cards_layout)
         
-        # Orta panel: Splitter (Kategori dağılımı ve En pahalı kalemler)
+        # Orta panel: Splitter (Grafikler ve Tablolar)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # Sol: Kategori Dağılımı
+        # Sol: Kategori Dağılımı (Grafik + Tablo)
         kategori_widget = QWidget()
         kategori_layout = QVBoxLayout(kategori_widget)
         kategori_layout.setContentsMargins(0, 0, 0, 0)
@@ -515,6 +539,25 @@ class MainWindow(QMainWindow):
         kategori_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         kategori_layout.addWidget(kategori_title)
         
+        # Pie Chart için matplotlib widget
+        try:
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+            from matplotlib.figure import Figure
+            import matplotlib.pyplot as plt
+            
+            self.kategori_figure = Figure(figsize=(5, 4))
+            self.kategori_canvas = FigureCanvasQTAgg(self.kategori_figure)
+            self.kategori_ax = self.kategori_figure.add_subplot(111)
+            self.kategori_canvas.setMinimumHeight(250)
+            kategori_layout.addWidget(self.kategori_canvas)
+        except ImportError:
+            # Matplotlib yoksa placeholder
+            placeholder = QLabel("Matplotlib yüklenmedi. Grafik gösterilemiyor.")
+            placeholder.setStyleSheet("color: #666; padding: 20px;")
+            kategori_layout.addWidget(placeholder)
+            self.kategori_canvas = None
+        
+        # Kategori tablosu
         self.ozet_kategori_table = QTableWidget()
         self.ozet_kategori_table.setColumnCount(3)
         self.ozet_kategori_table.setHorizontalHeaderLabels([
@@ -526,11 +569,12 @@ class MainWindow(QMainWindow):
         self.ozet_kategori_table.horizontalHeader().setStretchLastSection(True)
         self.ozet_kategori_table.setColumnWidth(0, 200)
         self.ozet_kategori_table.setColumnWidth(1, 120)
+        self.ozet_kategori_table.setMaximumHeight(150)
         kategori_layout.addWidget(self.ozet_kategori_table)
         
         splitter.addWidget(kategori_widget)
         
-        # Sağ: En Pahalı Kalemler
+        # Sağ: En Pahalı Kalemler (Bar Chart + Tablo)
         pahali_widget = QWidget()
         pahali_layout = QVBoxLayout(pahali_widget)
         pahali_layout.setContentsMargins(0, 0, 0, 0)
@@ -539,6 +583,23 @@ class MainWindow(QMainWindow):
         pahali_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         pahali_layout.addWidget(pahali_title)
         
+        # Bar Chart için matplotlib widget
+        try:
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+            from matplotlib.figure import Figure
+            
+            self.pahali_figure = Figure(figsize=(5, 4))
+            self.pahali_canvas = FigureCanvasQTAgg(self.pahali_figure)
+            self.pahali_ax = self.pahali_figure.add_subplot(111)
+            self.pahali_canvas.setMinimumHeight(250)
+            pahali_layout.addWidget(self.pahali_canvas)
+        except ImportError:
+            placeholder = QLabel("Matplotlib yüklenmedi. Grafik gösterilemiyor.")
+            placeholder.setStyleSheet("color: #666; padding: 20px;")
+            pahali_layout.addWidget(placeholder)
+            self.pahali_canvas = None
+        
+        # En pahalı kalemler tablosu
         self.ozet_pahali_table = QTableWidget()
         self.ozet_pahali_table.setColumnCount(3)
         self.ozet_pahali_table.setHorizontalHeaderLabels([
@@ -550,12 +611,32 @@ class MainWindow(QMainWindow):
         self.ozet_pahali_table.horizontalHeader().setStretchLastSection(True)
         self.ozet_pahali_table.setColumnWidth(0, 250)
         self.ozet_pahali_table.setColumnWidth(1, 100)
+        self.ozet_pahali_table.setMaximumHeight(150)
         pahali_layout.addWidget(self.ozet_pahali_table)
         
         splitter.addWidget(pahali_widget)
         
         splitter.setSizes([400, 400])
         layout.addWidget(splitter)
+        
+        # Alt panel: İstatistikler ve Detaylı Analiz
+        stats_group = QGroupBox("📊 Detaylı İstatistikler ve Analiz")
+        stats_layout = QVBoxLayout()
+        
+        # İstatistik tablosu
+        self.stats_table = QTableWidget()
+        self.stats_table.setColumnCount(2)
+        self.stats_table.setHorizontalHeaderLabels(["İstatistik", "Değer"])
+        self.stats_table.setAlternatingRowColors(True)
+        self.stats_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.stats_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.stats_table.horizontalHeader().setStretchLastSection(True)
+        self.stats_table.setColumnWidth(0, 300)
+        self.stats_table.setMaximumHeight(200)
+        stats_layout.addWidget(self.stats_table)
+        
+        stats_group.setLayout(stats_layout)
+        layout.addWidget(stats_group)
         
         # Alt panel: Malzeme ve Taşeron Özeti
         alt_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -636,6 +717,25 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(btn_delete)
         
         btn_layout.addStretch()
+        
+        # KDV oranı seçimi
+        kdv_label = QLabel("KDV:")
+        btn_layout.addWidget(kdv_label)
+        self.taseron_kdv_rate = QComboBox()
+        self.taseron_kdv_rate.addItems(["%1", "%10", "%20"])
+        self.taseron_kdv_rate.setCurrentText("%20")
+        self.taseron_kdv_rate.currentTextChanged.connect(self.load_taseron_data)
+        btn_layout.addWidget(self.taseron_kdv_rate)
+        
+        # Toplam etiketleri
+        self.taseron_total_label = QLabel("Toplam (KDV Hariç): 0.00 ₺")
+        self.taseron_total_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        btn_layout.addWidget(self.taseron_total_label)
+        
+        self.taseron_total_kdv_label = QLabel("Toplam (KDV Dahil): 0.00 ₺")
+        self.taseron_total_kdv_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        self.taseron_total_kdv_label.setStyleSheet("color: #00BFFF;")
+        btn_layout.addWidget(self.taseron_total_kdv_label)
         
         btn_compare = QPushButton("Karşılaştır")
         btn_compare.clicked.connect(self.compare_offers)
@@ -1441,10 +1541,24 @@ class MainWindow(QMainWindow):
         
         kalem_btn_layout.addStretch()
         
-        # Toplam etiketi
-        self.ihale_total_label = QLabel("Toplam: 0.00 ₺")
+        # KDV oranı seçimi
+        kdv_label = QLabel("KDV:")
+        kalem_btn_layout.addWidget(kdv_label)
+        self.ihale_kdv_rate = QComboBox()
+        self.ihale_kdv_rate.addItems(["%1", "%10", "%20"])
+        self.ihale_kdv_rate.setCurrentText("%20")
+        self.ihale_kdv_rate.currentTextChanged.connect(self.load_ihale_kalemleri)
+        kalem_btn_layout.addWidget(self.ihale_kdv_rate)
+        
+        # Toplam etiketleri
+        self.ihale_total_label = QLabel("Toplam (KDV Hariç): 0.00 ₺")
         self.ihale_total_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         kalem_btn_layout.addWidget(self.ihale_total_label)
+        
+        self.ihale_total_kdv_label = QLabel("Toplam (KDV Dahil): 0.00 ₺")
+        self.ihale_total_kdv_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        self.ihale_total_kdv_label.setStyleSheet("color: #00BFFF;")
+        kalem_btn_layout.addWidget(self.ihale_total_kdv_label)
         
         right_layout.addLayout(kalem_btn_layout)
         
@@ -1518,6 +1632,21 @@ class MainWindow(QMainWindow):
         restore_action = backup_menu.addAction("Yedekten Geri Yükle")
         restore_action.triggered.connect(self.restore_project)
         
+        # Versiyonlama menüsü
+        version_menu = file_menu.addMenu("Versiyonlama")
+        
+        # Versiyon oluştur
+        create_version_action = version_menu.addAction("Versiyon Oluştur")
+        create_version_action.triggered.connect(self.create_project_version)
+        
+        # Versiyonları görüntüle
+        view_versions_action = version_menu.addAction("Versiyonları Görüntüle")
+        view_versions_action.triggered.connect(self.view_project_versions)
+        
+        # Versiyondan geri yükle
+        restore_version_action = version_menu.addAction("Versiyondan Geri Yükle")
+        restore_version_action.triggered.connect(self.restore_from_version)
+        
         file_menu.addSeparator()
         
         # Çıkış
@@ -1546,6 +1675,19 @@ class MainWindow(QMainWindow):
         data_menu.addSeparator()
         check_pozlar_action = data_menu.addAction("Poz Durumunu Kontrol Et")
         check_pozlar_action.triggered.connect(self.check_pozlar_status)
+        
+        # Araçlar menüsü
+        tools_menu = menubar.addMenu("Araçlar")
+        
+        # Birim dönüştürücü
+        unit_converter_action = tools_menu.addAction("Birim Dönüştürücü")
+        unit_converter_action.triggered.connect(self.show_unit_converter)
+        
+        tools_menu.addSeparator()
+        
+        # Otomatik fire oranı hesaplama
+        auto_fire_action = tools_menu.addAction("Otomatik Fire Oranı Hesapla")
+        auto_fire_action.triggered.connect(self.calculate_auto_fire_rates)
         
         # Yardım menüsü
         help_menu = menubar.addMenu("Yardım")
@@ -1736,7 +1878,13 @@ class MainWindow(QMainWindow):
             if row % 50 == 0:
                 QApplication.processEvents()
             
-        self.total_label.setText(f"Toplam: {total:.2f} ₺")
+        # KDV hesaplama
+        kdv_rate_text = self.metraj_kdv_rate.currentText().replace("%", "")
+        kdv_rate = float(kdv_rate_text)
+        kdv_hesap = self.calculator.calculate_with_kdv(total, kdv_rate)
+        
+        self.total_label.setText(f"Toplam (KDV Hariç): {total:,.2f} ₺")
+        self.total_kdv_label.setText(f"Toplam (KDV %{kdv_rate_text} Dahil): {kdv_hesap['kdv_dahil']:,.2f} ₺")
         
         # Seçili satır yoksa malzeme tablosunu temizle
         if self.metraj_table.currentRow() < 0:
@@ -2050,6 +2198,15 @@ class MainWindow(QMainWindow):
             # Her 50 satırda bir UI'ı güncelle
             if row % 50 == 0:
                 QApplication.processEvents()
+        
+        # Toplam hesaplama (KDV ile)
+        total = sum(offer.get('toplam', 0) for offer in offers)
+        kdv_rate_text = self.taseron_kdv_rate.currentText().replace("%", "")
+        kdv_rate = float(kdv_rate_text)
+        kdv_hesap = self.calculator.calculate_with_kdv(total, kdv_rate)
+        
+        self.taseron_total_label.setText(f"Toplam (KDV Hariç): {total:,.2f} ₺")
+        self.taseron_total_kdv_label.setText(f"Toplam (KDV %{kdv_rate_text} Dahil): {kdv_hesap['kdv_dahil']:,.2f} ₺")
             
     def add_taseron_offer(self) -> None:
         """Taşeron teklifi ekle"""
@@ -2436,18 +2593,18 @@ class MainWindow(QMainWindow):
             # Lazy loading: Sekmeyi ilk kez açıldığında oluştur
             if index == 1 and not self._tabs_created['ozet']:
                 try:
-                    # Proje Özeti sekmesi
-                    placeholder = self.tabs.widget(1)
-                    self.create_proje_ozet_tab(add_to_tabs=False)
+                # Proje Özeti sekmesi
+                placeholder = self.tabs.widget(1)
+                self.create_proje_ozet_tab(add_to_tabs=False)
                     # Signal'ı geçici olarak blokla (sonsuz döngüyü önlemek için)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(1)
-                    self.tabs.insertTab(1, self.ozet_widget, "📈 Proje Özeti")
-                    self.tabs.setCurrentIndex(1)
+                self.tabs.removeTab(1)
+                self.tabs.insertTab(1, self.ozet_widget, "📈 Proje Özeti")
+                self.tabs.setCurrentIndex(1)
                     self.tabs.blockSignals(False)
-                    self._tabs_created['ozet'] = True
-                    if placeholder:
-                        placeholder.deleteLater()
+                self._tabs_created['ozet'] = True
+                if placeholder:
+                    placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)  # Hata durumunda da bloklamayı kaldır
                     print(f"Proje Özeti sekmesi oluşturma hatası: {e}")
@@ -2456,17 +2613,17 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 2 and not self._tabs_created['taseron']:
                 try:
-                    # Taşeron Analizi sekmesi
-                    placeholder = self.tabs.widget(2)
-                    self.create_taseron_tab(add_to_tabs=False)
+                # Taşeron Analizi sekmesi
+                placeholder = self.tabs.widget(2)
+                self.create_taseron_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(2)
-                    self.tabs.insertTab(2, self.taseron_widget, "💼 Taşeron Analizi")
-                    self.tabs.setCurrentIndex(2)
+                self.tabs.removeTab(2)
+                self.tabs.insertTab(2, self.taseron_widget, "💼 Taşeron Analizi")
+                self.tabs.setCurrentIndex(2)
                     self.tabs.blockSignals(False)
-                    self._tabs_created['taseron'] = True
-                    if placeholder:
-                        placeholder.deleteLater()
+                self._tabs_created['taseron'] = True
+                if placeholder:
+                    placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Taşeron Analizi sekmesi oluşturma hatası: {e}")
@@ -2475,17 +2632,17 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 3 and not self._tabs_created['malzeme']:
                 try:
-                    # Malzeme Listesi sekmesi
-                    placeholder = self.tabs.widget(3)
-                    self.create_malzeme_tab(add_to_tabs=False)
+                # Malzeme Listesi sekmesi
+                placeholder = self.tabs.widget(3)
+                self.create_malzeme_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(3)
-                    self.tabs.insertTab(3, self.malzeme_widget, "📦 Malzeme Listesi")
-                    self.tabs.setCurrentIndex(3)
+                self.tabs.removeTab(3)
+                self.tabs.insertTab(3, self.malzeme_widget, "📦 Malzeme Listesi")
+                self.tabs.setCurrentIndex(3)
                     self.tabs.blockSignals(False)
-                    self._tabs_created['malzeme'] = True
-                    if placeholder:
-                        placeholder.deleteLater()
+                self._tabs_created['malzeme'] = True
+                if placeholder:
+                    placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Malzeme Listesi sekmesi oluşturma hatası: {e}")
@@ -2494,18 +2651,18 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 4 and not self._tabs_created['sablonlar']:
                 try:
-                    # Şablonlar sekmesi
-                    placeholder = self.tabs.widget(4)
-                    self.create_sablonlar_tab(add_to_tabs=False)
+                # Şablonlar sekmesi
+                placeholder = self.tabs.widget(4)
+                self.create_sablonlar_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(4)
-                    self.tabs.insertTab(4, self.sablonlar_widget, "📋 Şablonlar")
-                    self.tabs.setCurrentIndex(4)
+                self.tabs.removeTab(4)
+                self.tabs.insertTab(4, self.sablonlar_widget, "📋 Şablonlar")
+                self.tabs.setCurrentIndex(4)
                     self.tabs.blockSignals(False)
-                    self._tabs_created['sablonlar'] = True
-                    self.load_templates()  # İlk açılışta yükle
-                    if placeholder:
-                        placeholder.deleteLater()
+                self._tabs_created['sablonlar'] = True
+                self.load_templates()  # İlk açılışta yükle
+                if placeholder:
+                    placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Şablonlar sekmesi oluşturma hatası: {e}")
@@ -2514,18 +2671,18 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 5 and not self._tabs_created['birim_fiyat']:
                 try:
-                    # Birim Fiyat Yönetimi sekmesi
-                    placeholder = self.tabs.widget(5)
-                    self.create_birim_fiyat_tab(add_to_tabs=False)
+                # Birim Fiyat Yönetimi sekmesi
+                placeholder = self.tabs.widget(5)
+                self.create_birim_fiyat_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(5)
-                    self.tabs.insertTab(5, self.birim_fiyat_widget, "💰 Birim Fiyatlar")
-                    self.tabs.setCurrentIndex(5)
+                self.tabs.removeTab(5)
+                self.tabs.insertTab(5, self.birim_fiyat_widget, "💰 Birim Fiyatlar")
+                self.tabs.setCurrentIndex(5)
                     self.tabs.blockSignals(False)
-                    self._tabs_created['birim_fiyat'] = True
-                    self.load_birim_fiyatlar()  # İlk açılışta yükle
-                    if placeholder:
-                        placeholder.deleteLater()
+                self._tabs_created['birim_fiyat'] = True
+                self.load_birim_fiyatlar()  # İlk açılışta yükle
+                if placeholder:
+                    placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Birim Fiyat sekmesi oluşturma hatası: {e}")
@@ -2534,18 +2691,18 @@ class MainWindow(QMainWindow):
                     raise
             elif index == 6 and not self._tabs_created['ihale']:
                 try:
-                    # İhale Dosyası Hazırlama sekmesi
-                    placeholder = self.tabs.widget(6)
-                    self.create_ihale_tab(add_to_tabs=False)
+                # İhale Dosyası Hazırlama sekmesi
+                placeholder = self.tabs.widget(6)
+                self.create_ihale_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(6)
-                    self.tabs.insertTab(6, self.ihale_widget, "📄 İhale Dosyası")
-                    self.tabs.setCurrentIndex(6)
+                self.tabs.removeTab(6)
+                self.tabs.insertTab(6, self.ihale_widget, "📄 İhale Dosyası")
+                self.tabs.setCurrentIndex(6)
                     self.tabs.blockSignals(False)
-                    self._tabs_created['ihale'] = True
-                    self.load_ihaleler()  # İlk açılışta yükle
-                    if placeholder:
-                        placeholder.deleteLater()
+                self._tabs_created['ihale'] = True
+                self.load_ihaleler()  # İlk açılışta yükle
+                if placeholder:
+                    placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"İhale Dosyası sekmesi oluşturma hatası: {e}")
@@ -2556,11 +2713,11 @@ class MainWindow(QMainWindow):
             # Proje Özeti sekmesine geçildiğinde güncelle (sadece sekme zaten oluşturulmuşsa)
             if index == 1 and self._tabs_created['ozet']:
                 try:
-                    self.update_proje_ozet()
-                except Exception as e:
+                self.update_proje_ozet()
+        except Exception as e:
                     print(f"Proje özeti güncelleme hatası: {e}")
-                    import traceback
-                    traceback.print_exc()
+            import traceback
+            traceback.print_exc()
         except Exception as e:
             # Hata durumunda logla ve dosyaya yaz
             error_msg = f"Sekme değiştirme hatası (index: {index}): {e}"
@@ -2587,12 +2744,12 @@ class MainWindow(QMainWindow):
             
             # Kullanıcıya bilgi ver (ama uygulamayı kapatma)
             try:
-                QMessageBox.critical(
-                    self, "Hata",
+            QMessageBox.critical(
+                self, "Hata",
                     f"Sekme değiştirilirken bir hata oluştu:\n{str(e)}\n\n"
                     f"Hata detayları 'error_log.txt' dosyasına kaydedildi.\n\n"
                     f"Lütfen programı yeniden başlatın."
-                )
+            )
             except Exception as msg_error:
                 print(f"QMessageBox hatası: {msg_error}")
                 # Uygulamayı kapatma, sadece logla
@@ -2613,6 +2770,26 @@ class MainWindow(QMainWindow):
             self.ozet_pahali_table.setRowCount(0)
             self.ozet_malzeme_label.setText("Malzeme listesi hesaplanmadı.\n'Malzeme Listesi' sekmesinden hesaplayınız.")
             self.ozet_taseron_detay_label.setText("Taşeron teklif bilgisi yok.")
+            self.stats_table.setRowCount(0)
+            
+            # Grafikleri temizle
+            if hasattr(self, 'kategori_canvas') and self.kategori_canvas:
+                try:
+                    self.kategori_ax.clear()
+                    self.kategori_ax.text(0.5, 0.5, 'Veri yok', ha='center', va='center', 
+                                         transform=self.kategori_ax.transAxes, fontsize=12)
+                    self.kategori_canvas.draw()
+                except:
+                    pass
+            
+            if hasattr(self, 'pahali_canvas') and self.pahali_canvas:
+                try:
+                    self.pahali_ax.clear()
+                    self.pahali_ax.text(0.5, 0.5, 'Veri yok', ha='center', va='center',
+                                       transform=self.pahali_ax.transAxes, fontsize=12)
+                    self.pahali_canvas.draw()
+                except:
+                    pass
             return
         
         try:
@@ -2649,12 +2826,41 @@ class MainWindow(QMainWindow):
                 kategori_dict[kategori]['toplam'] += item.get('toplam', 0)
             
             self.ozet_kategori_table.setRowCount(len(kategori_dict))
-            for row, (kategori, data) in enumerate(sorted(kategori_dict.items(), key=lambda x: x[1]['toplam'], reverse=True)):
+            sorted_kategoriler = sorted(kategori_dict.items(), key=lambda x: x[1]['toplam'], reverse=True)
+            for row, (kategori, data) in enumerate(sorted_kategoriler):
                 self.ozet_kategori_table.setItem(row, 0, QTableWidgetItem(kategori))
                 self.ozet_kategori_table.setItem(row, 1, QTableWidgetItem(str(data['sayi'])))
                 toplam_item = QTableWidgetItem(f"{data['toplam']:,.2f} ₺")
                 toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.ozet_kategori_table.setItem(row, 2, toplam_item)
+            
+            # Kategori Pie Chart
+            if self.kategori_canvas and kategori_dict:
+                try:
+                    self.kategori_ax.clear()
+                    kategoriler = [k for k, _ in sorted_kategoriler]
+                    toplamlar = [d['toplam'] for _, d in sorted_kategoriler]
+                    
+                    # Renk paleti
+                    colors = ['#c9184a', '#00BFFF', '#4CAF50', '#FF9800', '#9C27B0', '#F44336', '#2196F3', '#FFC107']
+                    colors = colors[:len(kategoriler)] if len(kategoriler) <= len(colors) else colors * (len(kategoriler) // len(colors) + 1)
+                    
+                    wedges, texts, autotexts = self.kategori_ax.pie(
+                        toplamlar, labels=kategoriler, autopct='%1.1f%%',
+                        colors=colors[:len(kategoriler)], startangle=90
+                    )
+                    
+                    # Yüzde metinlerini daha okunabilir yap
+                    for autotext in autotexts:
+                        autotext.set_color('white')
+                        autotext.set_fontweight('bold')
+                        autotext.set_fontsize(9)
+                    
+                    self.kategori_ax.set_title('Kategori Bazında Maliyet Dağılımı', fontsize=11, fontweight='bold')
+                    self.kategori_figure.tight_layout()
+                    self.kategori_canvas.draw()
+                except Exception as e:
+                    print(f"Pie chart çizme hatası: {e}")
             
             # En pahalı 5 kalem
             sorted_items = sorted(metraj_items, key=lambda x: x.get('toplam', 0), reverse=True)[:5]
@@ -2669,6 +2875,31 @@ class MainWindow(QMainWindow):
                 toplam_item = QTableWidgetItem(f"{item.get('toplam', 0):,.2f} ₺")
                 toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.ozet_pahali_table.setItem(row, 2, toplam_item)
+            
+            # En Pahalı Kalemler Bar Chart
+            if self.pahali_canvas and sorted_items:
+                try:
+                    self.pahali_ax.clear()
+                    kalem_isimleri = [item.get('tanim', '')[:30] + ('...' if len(item.get('tanim', '')) > 30 else '') 
+                                     for item in sorted_items]
+                    toplamlar = [item.get('toplam', 0) for item in sorted_items]
+                    
+                    bars = self.pahali_ax.barh(kalem_isimleri, toplamlar, color='#c9184a', alpha=0.8)
+                    
+                    # Değerleri çubukların üzerine yaz
+                    for i, (bar, toplam) in enumerate(zip(bars, toplamlar)):
+                        width = bar.get_width()
+                        self.pahali_ax.text(width, bar.get_y() + bar.get_height()/2, 
+                                          f'{toplam:,.0f} ₺',
+                                          ha='left', va='center', fontweight='bold', fontsize=9)
+                    
+                    self.pahali_ax.set_xlabel('Toplam Maliyet (₺)', fontsize=10)
+                    self.pahali_ax.set_title('En Pahalı 5 Kalem', fontsize=11, fontweight='bold')
+                    self.pahali_ax.grid(axis='x', alpha=0.3)
+                    self.pahali_figure.tight_layout()
+                    self.pahali_canvas.draw()
+                except Exception as e:
+                    print(f"Bar chart çizme hatası: {e}")
             
             # Malzeme özeti
             if self.current_materials:
@@ -2742,12 +2973,26 @@ class MainWindow(QMainWindow):
                 from reportlab.lib import colors
                 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
                 from reportlab.lib.units import cm
-                from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
                 from datetime import datetime
+                
+                # Logo yolu kontrolü
+                logo_path = Path(__file__).parent.parent.parent / "assets" / "logo.png"
+                has_logo = logo_path.exists()
                 
                 doc = SimpleDocTemplate(str(file_path), pagesize=A4)
                 story = []
                 styles = getSampleStyleSheet()
+                
+                # Logo ekle
+                if has_logo:
+                    try:
+                        logo = Image(str(logo_path), width=2*inch, height=0.8*inch)
+                        logo.hAlign = 'CENTER'
+                        story.append(logo)
+                        story.append(Spacer(1, 0.2*inch))
+                    except Exception as e:
+                        print(f"Logo yükleme hatası: {e}")
                 
                 # Başlık
                 title_style = ParagraphStyle(
@@ -3020,6 +3265,169 @@ class MainWindow(QMainWindow):
                         self, "Hata",
                         "Geri yükleme sırasında bir hata oluştu."
                     )
+    
+    def create_project_version(self) -> None:
+        """Proje versiyonu oluştur"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        from PyQt6.QtWidgets import QInputDialog
+        
+        # Versiyon adı al
+        version_name, ok = QInputDialog.getText(
+            self, "Versiyon Oluştur",
+            "Versiyon adı:",
+            text=f"Versiyon {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+        
+        if not ok or not version_name.strip():
+            return
+        
+        # Açıklama al
+        description, ok = QInputDialog.getText(
+            self, "Versiyon Açıklaması",
+            "Versiyon açıklaması (isteğe bağlı):"
+        )
+        
+        if not ok:
+            return
+        
+        # Versiyon oluştur
+        try:
+            version_id = self.db.create_project_version(
+                project_id=self.current_project_id,
+                version_name=version_name.strip(),
+                description=description.strip(),
+                created_by="Kullanıcı"
+            )
+            
+            QMessageBox.information(
+                self, "Başarılı",
+                f"Versiyon başarıyla oluşturuldu!\nVersiyon ID: {version_id}"
+            )
+            self.statusBar().showMessage(f"Versiyon oluşturuldu: {version_name}")
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Hata",
+                f"Versiyon oluşturulurken hata oluştu:\n{str(e)}"
+            )
+    
+    def view_project_versions(self) -> None:
+        """Proje versiyonlarını görüntüle"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        versions = self.db.get_project_versions(self.current_project_id)
+        
+        if not versions:
+            QMessageBox.information(
+                self, "Bilgi",
+                "Bu proje için henüz versiyon oluşturulmamış."
+            )
+            return
+        
+        # Versiyon listesi dialogu
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QHeaderView
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Proje Versiyonları")
+        dialog.setGeometry(200, 200, 800, 500)
+        
+        layout = QVBoxLayout(dialog)
+        
+        table = QTableWidget()
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels([
+            "Versiyon No", "Versiyon Adı", "Oluşturulma Tarihi", "Açıklama", "Oluşturan"
+        ])
+        table.setRowCount(len(versions))
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        
+        for row, version in enumerate(versions):
+            table.setItem(row, 0, QTableWidgetItem(str(version.get('version_number', ''))))
+            table.setItem(row, 1, QTableWidgetItem(version.get('version_name', '')))
+            table.setItem(row, 2, QTableWidgetItem(version.get('created_at', '')))
+            table.setItem(row, 3, QTableWidgetItem(version.get('description', '')))
+            table.setItem(row, 4, QTableWidgetItem(version.get('created_by', '')))
+        
+        layout.addWidget(table)
+        
+        btn_layout = QHBoxLayout()
+        btn_restore = QPushButton("Seçili Versiyondan Geri Yükle")
+        btn_restore.clicked.connect(lambda: self.restore_selected_version(dialog, table))
+        btn_layout.addWidget(btn_restore)
+        
+        btn_close = QPushButton("Kapat")
+        btn_close.clicked.connect(dialog.close)
+        btn_layout.addWidget(btn_close)
+        
+        layout.addLayout(btn_layout)
+        
+        dialog.exec()
+    
+    def restore_selected_version(self, dialog: QDialog, table: QTableWidget) -> None:
+        """Seçili versiyondan geri yükle"""
+        current_row = table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(dialog, "Uyarı", "Lütfen bir versiyon seçin")
+            return
+        
+        version_id_item = table.item(current_row, 0)
+        if not version_id_item:
+            return
+        
+        # Versiyon ID'yi bul
+        version_number = int(version_id_item.text())
+        versions = self.db.get_project_versions(self.current_project_id)
+        selected_version = next((v for v in versions if v['version_number'] == version_number), None)
+        
+        if not selected_version:
+            QMessageBox.warning(dialog, "Uyarı", "Versiyon bulunamadı")
+            return
+        
+        from PyQt6.QtWidgets import QInputDialog
+        
+        # Yeni proje adı al
+        project_name, ok = QInputDialog.getText(
+            dialog, "Yeni Proje Adı",
+            "Yeni proje adı (boş bırakırsanız versiyon adı kullanılır):",
+            text=f"{selected_version['version_name']} (Geri Yüklenen)"
+        )
+        
+        if not ok:
+            return
+        
+        new_name = project_name.strip() if project_name.strip() else None
+        
+        # Geri yükle
+        try:
+            new_project_id = self.db.restore_project_version(selected_version['id'], new_name)
+            
+            if new_project_id:
+                QMessageBox.information(
+                    dialog, "Başarılı",
+                    f"Versiyon başarıyla geri yüklendi!\nYeni proje ID: {new_project_id}"
+                )
+                dialog.close()
+                self.load_projects()
+                self.statusBar().showMessage("Versiyon geri yüklendi")
+            else:
+                QMessageBox.critical(
+                    dialog, "Hata",
+                    "Geri yükleme sırasında bir hata oluştu."
+                )
+        except Exception as e:
+            QMessageBox.critical(
+                dialog, "Hata",
+                f"Geri yükleme sırasında hata oluştu:\n{str(e)}"
+            )
+    
+    def restore_from_version(self) -> None:
+        """Versiyondan geri yükle (kısayol)"""
+        self.view_project_versions()
     
     def load_project_notes(self) -> None:
         """Proje notlarını yükle"""
@@ -3324,9 +3732,9 @@ class MainWindow(QMainWindow):
                         fiyat_id = self.db.add_birim_fiyat(
                             poz_id=poz_id,
                             poz_no=poz_no,
-                            birim_fiyat=birim_fiyat,
+                        birim_fiyat=birim_fiyat,
                             kaynak='Excel Import'
-                        )
+                    )
                         print(f"DEBUG: Poz {poz_no} için birim fiyat eklendi: {birim_fiyat} (ID: {fiyat_id})")
                     else:
                         print(f"DEBUG: Poz {poz_no} için birim fiyat 0, eklenmedi")
@@ -3766,57 +4174,155 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
     
     def on_search_text_changed(self) -> None:
-        """Arama metni değiştiğinde"""
-        search_text = self.search_input.text().strip().lower()
+        """Gelişmiş arama ve filtreleme - Tüm modüllerde arama"""
+        search_text = self.search_input.text().strip()
         search_type = self.search_type_combo.currentText()
         
         if not search_text:
             # Arama boşsa normal listeyi göster
             self.load_projects()
             if self.current_project_id:
+                if hasattr(self, 'metraj_table') and self._tabs_created.get('metraj', False):
                 self.load_metraj_data()
+                if hasattr(self, 'taseron_table') and self._tabs_created.get('taseron', False):
+                    self.load_taseron_data()
+            if hasattr(self, 'ihale_kalem_table') and self._tabs_created.get('ihale', False):
+                if hasattr(self, 'current_ihale_id') and self.current_ihale_id:
+                    self.load_ihale_kalemleri()
             return
+        
+        search_lower = search_text.lower()
         
         # Proje araması
         if search_type in ["Tümü", "Projeler"]:
             projects = self.db.get_all_projects()
             self.project_tree.clear()
             for project in projects:
-                if search_text in project['ad'].lower() or (project.get('aciklama', '') and search_text in project['aciklama'].lower()):
+                project_name = project['ad'].lower()
+                project_desc = (project.get('aciklama', '') or '').lower()
+                project_notes = (project.get('notlar', '') or '').lower()
+                
+                if (search_lower in project_name or 
+                    search_lower in project_desc or 
+                    search_lower in project_notes):
                     item = QTreeWidgetItem(self.project_tree)
                     item.setText(0, project['ad'])
                     item.setData(0, Qt.ItemDataRole.UserRole, project['id'])
         
-        # Kalem araması (seçili projede)
+        # Kalem araması (seçili projede - Metraj)
         if search_type in ["Tümü", "Kalemler"] and self.current_project_id:
+            if hasattr(self, 'metraj_table') and self._tabs_created.get('metraj', False):
             metraj_items = self.db.get_project_metraj(self.current_project_id)
             filtered_items = []
             for item in metraj_items:
-                if (search_text in item.get('tanim', '').lower() or
-                    search_text in item.get('poz_no', '').lower() or
-                    search_text in item.get('kategori', '').lower()):
+                    tanim = (item.get('tanim', '') or '').lower()
+                    poz_no = (item.get('poz_no', '') or '').lower()
+                    kategori = (item.get('kategori', '') or '').lower()
+                    notlar = (item.get('notlar', '') or '').lower()
+                    
+                    if (search_lower in tanim or
+                        search_lower in poz_no or
+                        search_lower in kategori or
+                        search_lower in notlar):
                     filtered_items.append(item)
             
             # Metraj tablosunu filtrele
             self.metraj_table.setRowCount(len(filtered_items))
             for row, item in enumerate(filtered_items):
-                self.metraj_table.setItem(row, 0, QTableWidgetItem(item.get('poz_no', '')))
-                self.metraj_table.setItem(row, 1, QTableWidgetItem(item.get('tanim', '')))
-                self.metraj_table.setItem(row, 2, QTableWidgetItem(item.get('kategori', '')))
+                    self.metraj_table.setItem(row, 0, QTableWidgetItem(str(item.get('id', ''))))
+                    self.metraj_table.setItem(row, 1, QTableWidgetItem(item.get('poz_no', '')))
+                    self.metraj_table.setItem(row, 2, QTableWidgetItem(item.get('tanim', '')))
                 self.metraj_table.setItem(row, 3, QTableWidgetItem(f"{item.get('miktar', 0):,.2f}"))
                 self.metraj_table.setItem(row, 4, QTableWidgetItem(item.get('birim', '')))
                 self.metraj_table.setItem(row, 5, QTableWidgetItem(f"{item.get('birim_fiyat', 0):,.2f}"))
                 self.metraj_table.setItem(row, 6, QTableWidgetItem(f"{item.get('toplam', 0):,.2f}"))
             
-            # Toplamı güncelle
+                # Toplamı güncelle (KDV ile)
             toplam = sum(item.get('toplam', 0) for item in filtered_items)
-            self.total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+                kdv_rate_text = self.metraj_kdv_rate.currentText().replace("%", "")
+                kdv_rate = float(kdv_rate_text)
+                kdv_hesap = self.calculator.calculate_with_kdv(toplam, kdv_rate)
+                self.total_label.setText(f"Toplam (KDV Hariç): {toplam:,.2f} ₺ (Filtrelenmiş: {len(filtered_items)} kalem)")
+                self.total_kdv_label.setText(f"Toplam (KDV %{kdv_rate_text} Dahil): {kdv_hesap['kdv_dahil']:,.2f} ₺")
         
         # Poz araması (tüm pozlar)
         if search_type in ["Tümü", "Pozlar"]:
-            # Poz araması için bir dialog veya sonuç gösterimi eklenebilir
-            # Şimdilik sadece proje ve kalem araması yapıyoruz
-            pass
+            if hasattr(self, 'birim_fiyat_table') and self._tabs_created.get('birim_fiyat', False):
+                pozlar = self.db.search_pozlar(search_text, limit=100)
+                self.birim_fiyat_table.setRowCount(len(pozlar))
+                for row, poz in enumerate(pozlar):
+                    self.birim_fiyat_table.setItem(row, 0, QTableWidgetItem(poz.get('poz_no', '')))
+                    self.birim_fiyat_table.setItem(row, 1, QTableWidgetItem(poz.get('tanim', '')))
+                    self.birim_fiyat_table.setItem(row, 2, QTableWidgetItem(poz.get('birim', '')))
+                    self.birim_fiyat_table.setItem(row, 3, QTableWidgetItem(f"{poz.get('resmi_fiyat', 0):,.2f}"))
+                    self.birim_fiyat_table.setItem(row, 4, QTableWidgetItem(poz.get('kategori', '')))
+        
+        # İhale kalemleri araması
+        if search_type in ["Tümü", "Kalemler"]:
+            if hasattr(self, 'ihale_kalem_table') and self._tabs_created.get('ihale', False):
+                if hasattr(self, 'current_ihale_id') and self.current_ihale_id:
+                    kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
+                    filtered_kalemler = []
+                    for kalem in kalemler:
+                        poz_no = (kalem.get('poz_no', '') or '').lower()
+                        tanim = (kalem.get('poz_tanim', '') or '').lower()
+                        kategori = (kalem.get('kategori', '') or '').lower()
+                        
+                        if (search_lower in poz_no or
+                            search_lower in tanim or
+                            search_lower in kategori):
+                            filtered_kalemler.append(kalem)
+                    
+                    # İhale tablosunu filtrele
+                    self.ihale_kalem_table.setRowCount(len(filtered_kalemler))
+                    for row, kalem in enumerate(filtered_kalemler):
+                        self.ihale_kalem_table.setItem(row, 0, QTableWidgetItem(str(kalem.get('sira_no', ''))))
+                        self.ihale_kalem_table.setItem(row, 1, QTableWidgetItem(kalem.get('poz_no', '')))
+                        self.ihale_kalem_table.setItem(row, 2, QTableWidgetItem(kalem.get('poz_tanim', '')))
+                        self.ihale_kalem_table.setItem(row, 3, QTableWidgetItem(f"{kalem.get('birim_miktar', 0):,.2f}"))
+                        self.ihale_kalem_table.setItem(row, 4, QTableWidgetItem(kalem.get('birim', '')))
+                        self.ihale_kalem_table.setItem(row, 5, QTableWidgetItem(f"{kalem.get('birim_fiyat', 0):,.2f}"))
+                        self.ihale_kalem_table.setItem(row, 6, QTableWidgetItem(f"{kalem.get('toplam', 0):,.2f}"))
+                    
+                    # Toplamı güncelle
+                    toplam = sum(kalem.get('toplam', 0) for kalem in filtered_kalemler)
+                    if hasattr(self, 'ihale_total_label'):
+                        # KDV hesaplama
+                        kdv_rate_text = self.ihale_kdv_rate.currentText().replace("%", "")
+                        kdv_rate = float(kdv_rate_text)
+                        kdv_hesap = self.calculator.calculate_with_kdv(toplam, kdv_rate)
+                        
+                        self.ihale_total_label.setText(f"Toplam (KDV Hariç): {toplam:,.2f} ₺ (Filtrelenmiş: {len(filtered_kalemler)} kalem)")
+                        self.ihale_total_kdv_label.setText(f"Toplam (KDV %{kdv_rate_text} Dahil): {kdv_hesap['kdv_dahil']:,.2f} ₺")
+        
+        # Taşeron araması
+        if search_type in ["Tümü", "Kalemler"]:
+            if hasattr(self, 'taseron_table') and self._tabs_created.get('taseron', False):
+                if self.current_project_id:
+                    teklifler = self.db.get_taseron_teklifleri(self.current_project_id)
+                    filtered_teklifler = []
+                    for teklif in teklifler:
+                        firma = (teklif.get('firma_adi', '') or '').lower()
+                        poz_no = (teklif.get('poz_no', '') or '').lower()
+                        tanim = (teklif.get('tanim', '') or '').lower()
+                        notlar = (teklif.get('notlar', '') or '').lower()
+                        
+                        if (search_lower in firma or
+                            search_lower in poz_no or
+                            search_lower in tanim or
+                            search_lower in notlar):
+                            filtered_teklifler.append(teklif)
+                    
+                    # Taşeron tablosunu filtrele
+                    self.taseron_table.setRowCount(len(filtered_teklifler))
+                    for row, teklif in enumerate(filtered_teklifler):
+                        self.taseron_table.setItem(row, 0, QTableWidgetItem(teklif.get('firma_adi', '')))
+                        self.taseron_table.setItem(row, 1, QTableWidgetItem(teklif.get('poz_no', '')))
+                        self.taseron_table.setItem(row, 2, QTableWidgetItem(teklif.get('tanim', '')))
+                        self.taseron_table.setItem(row, 3, QTableWidgetItem(f"{teklif.get('miktar', 0):,.2f}"))
+                        self.taseron_table.setItem(row, 4, QTableWidgetItem(teklif.get('birim', '')))
+                        self.taseron_table.setItem(row, 5, QTableWidgetItem(f"{teklif.get('fiyat', 0):,.2f}"))
+                        self.taseron_table.setItem(row, 6, QTableWidgetItem(f"{teklif.get('toplam', 0):,.2f}"))
     
     def load_templates(self) -> None:
         """Şablonları yükle"""
@@ -4033,6 +4539,10 @@ class MainWindow(QMainWindow):
         ihale_id = self.ihale_combo.currentData()
         self.current_ihale_id = ihale_id
         if ihale_id:
+            if hasattr(self, 'ihale_total_label'):
+                self.ihale_total_label.setText("Toplam (KDV Hariç): 0.00 ₺")
+                if hasattr(self, 'ihale_total_kdv_label'):
+                    self.ihale_total_kdv_label.setText("Toplam (KDV Dahil): 0.00 ₺")
             self.load_ihale_kalemleri()
         else:
             self.ihale_kalem_table.setRowCount(0)
@@ -4335,7 +4845,7 @@ class MainWindow(QMainWindow):
         
         if not self.current_ihale_id:
             try:
-                self.ihale_kalem_table.setRowCount(0)
+            self.ihale_kalem_table.setRowCount(0)
             except:
                 pass
             return
@@ -4345,12 +4855,12 @@ class MainWindow(QMainWindow):
             # itemChanged sinyalini blokla (tablo yüklenirken sinyal tetiklenmesin)
             self.ihale_kalem_table.blockSignals(True)
             try:
-                kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
-                self.ihale_kalem_table.setRowCount(len(kalemler))
-                
-                toplam = 0.0
-                
-                for row, kalem in enumerate(kalemler):
+        kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
+        self.ihale_kalem_table.setRowCount(len(kalemler))
+        
+        toplam = 0.0
+        
+        for row, kalem in enumerate(kalemler):
                     # Sıra (düzenlenemez)
                     sira_item = QTableWidgetItem(str(kalem.get('sira_no', row + 1)))
                     sira_item.setFlags(sira_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -4395,20 +4905,20 @@ class MainWindow(QMainWindow):
                                 pass
                     miktar_text = f"{birim_miktar:,.2f}" if birim_miktar > 0 else ""
                     miktar_item = QTableWidgetItem(miktar_text)
-                    miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     # Font'u büyüt ve kalın yap
                     font = miktar_item.font()
                     font.setPointSize(font.pointSize() + 2)  # 2 punto büyüt
                     font.setBold(True)  # Kalın yap
                     miktar_item.setFont(font)
-                    self.ihale_kalem_table.setItem(row, 3, miktar_item)
-                    
+            self.ihale_kalem_table.setItem(row, 3, miktar_item)
+            
                     # Birim (düzenlenebilir)
                     birim_item = QTableWidgetItem(kalem.get('birim', ''))
                     birim_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
                     self.ihale_kalem_table.setItem(row, 4, birim_item)
-                    
-                    # Birim Fiyat (düzenlenebilir)
+            
+            # Birim Fiyat (düzenlenebilir)
                     birim_fiyat = kalem.get('birim_fiyat', 0) or 0
                     # Eğer ihale_kalemleri tablosunda birim_fiyat 0 ise, birim_fiyatlar tablosundan al
                     if birim_fiyat == 0:
@@ -4431,9 +4941,9 @@ class MainWindow(QMainWindow):
                                         self.db.update_ihale_kalem(kalem_id, birim_fiyat=birim_fiyat)
                     
                     fiyat_item = QTableWidgetItem(f"{birim_fiyat:,.2f}")
-                    fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    self.ihale_kalem_table.setItem(row, 5, fiyat_item)
-                    
+            fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.ihale_kalem_table.setItem(row, 5, fiyat_item)
+            
                     # Toplam (hesaplanır, düzenlenemez) - HER ZAMAN birim miktar ve birim fiyattan hesapla
                     # ÖNEMLİ: Tabloda görünen değerleri kullan (kullanıcı yazmış olabilir)
                     # Tablodan birim miktar ve birim fiyatı oku
@@ -4493,19 +5003,25 @@ class MainWindow(QMainWindow):
                         if abs(db_toplam - toplam_deger) > 0.01:
                             self.db.update_ihale_kalem(kalem_id, birim_miktar=birim_miktar_hesap, birim_fiyat=birim_fiyat_hesap, toplam=toplam_deger)
                     
-                    toplam += toplam_deger
-                    toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
-                    toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    self.ihale_kalem_table.setItem(row, 6, toplam_item)
-                    
-                    # ID'yi sakla
-                    item = self.ihale_kalem_table.item(row, 0)
-                    if item:
-                        item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
-                
+            toplam += toplam_deger
+            toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
+            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.ihale_kalem_table.setItem(row, 6, toplam_item)
+            
+            # ID'yi sakla
+            item = self.ihale_kalem_table.item(row, 0)
+            if item:
+                item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
+        
                 if hasattr(self, 'ihale_total_label'):
-                    self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+                    # KDV hesaplama
+                    kdv_rate_text = self.ihale_kdv_rate.currentText().replace("%", "")
+                    kdv_rate = float(kdv_rate_text)
+                    kdv_hesap = self.calculator.calculate_with_kdv(toplam, kdv_rate)
+                    
+                    self.ihale_total_label.setText(f"Toplam (KDV Hariç): {toplam:,.2f} ₺")
+                    self.ihale_total_kdv_label.setText(f"Toplam (KDV %{kdv_rate_text} Dahil): {kdv_hesap['kdv_dahil']:,.2f} ₺")
             finally:
                 # Sinyali tekrar aç
                 self.ihale_kalem_table.blockSignals(False)
@@ -4562,15 +5078,15 @@ class MainWindow(QMainWindow):
         
         # Tanım değiştiyse sadece tanımı güncelle
         if item.column() == 2:
-            row = item.row()
-            kalem_id_item = self.ihale_kalem_table.item(row, 0)
-            if not kalem_id_item:
-                return
-            
-            kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
-            if not kalem_id:
-                return
-            
+        row = item.row()
+        kalem_id_item = self.ihale_kalem_table.item(row, 0)
+        if not kalem_id_item:
+            return
+        
+        kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
+        if not kalem_id:
+            return
+        
             yeni_tanim = item.text().strip()
             if yeni_tanim:
                 self.db.update_ihale_kalem(kalem_id, poz_tanim=yeni_tanim)
@@ -4712,13 +5228,13 @@ class MainWindow(QMainWindow):
                     # Birim miktar, birim ve birim fiyat sütunları kullanıcının yazdığı gibi kalacak
                     
                     # Sadece toplam sütununu güncelle
-                    toplam_item = QTableWidgetItem(f"{toplam:,.2f} ₺")
-                    toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    self.ihale_kalem_table.setItem(row, 6, toplam_item)
-                    
-                    # Genel toplamı güncelle
-                    self.update_ihale_total()
+            toplam_item = QTableWidgetItem(f"{toplam:,.2f} ₺")
+            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.ihale_kalem_table.setItem(row, 6, toplam_item)
+            
+            # Genel toplamı güncelle
+            self.update_ihale_total()
                 finally:
                     # Sinyali tekrar aç
                     self.ihale_kalem_table.blockSignals(False)
@@ -4738,11 +5254,11 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            toplam = 0.0
-            for row in range(self.ihale_kalem_table.rowCount()):
+        toplam = 0.0
+        for row in range(self.ihale_kalem_table.rowCount()):
                 # Toplam sütunundan oku (6. sütun)
-                toplam_item = self.ihale_kalem_table.item(row, 6)
-                if toplam_item:
+            toplam_item = self.ihale_kalem_table.item(row, 6)
+            if toplam_item:
                     toplam_text = toplam_item.text().replace("₺", "").strip()
                     try:
                         # Türkçe ve İngilizce format desteği
@@ -4771,7 +5287,7 @@ class MainWindow(QMainWindow):
                                 toplam += float(before_last + after_last)
                             else:
                                 # Tek nokta - ondalık ayırıcı
-                                toplam += float(toplam_text)
+                    toplam += float(toplam_text)
                         else:
                             # Sadece sayı
                             toplam += float(toplam_text)
@@ -4820,9 +5336,15 @@ class MainWindow(QMainWindow):
                                 # Çarp ve ekle
                                 toplam += miktar_val * fiyat_val
                         except:
-                            pass
-            
-            self.ihale_total_label.setText(f"Toplam: {toplam:,.2f} ₺")
+                    pass
+        
+        # KDV hesaplama
+        kdv_rate_text = self.ihale_kdv_rate.currentText().replace("%", "")
+        kdv_rate = float(kdv_rate_text)
+        kdv_hesap = self.calculator.calculate_with_kdv(toplam, kdv_rate)
+        
+        self.ihale_total_label.setText(f"Toplam (KDV Hariç): {toplam:,.2f} ₺")
+        self.ihale_total_kdv_label.setText(f"Toplam (KDV %{kdv_rate_text} Dahil): {kdv_hesap['kdv_dahil']:,.2f} ₺")
         except Exception as e:
             print(f"İhale toplam güncelleme hatası: {e}")
             import traceback
@@ -4958,9 +5480,25 @@ class MainWindow(QMainWindow):
                     font_name = 'Helvetica'
                     font_bold_name = 'Helvetica-Bold'
                 
+                # Logo yolu kontrolü
+                logo_path = Path(__file__).parent.parent.parent / "assets" / "logo.png"
+                has_logo = logo_path.exists()
+                
                 doc = SimpleDocTemplate(str(file_path), pagesize=A4)
                 story = []
                 styles = getSampleStyleSheet()
+                
+                # Logo ekle
+                if has_logo:
+                    try:
+                        from reportlab.platypus import Image
+                        from reportlab.lib.units import inch
+                        logo = Image(str(logo_path), width=2*inch, height=0.8*inch)
+                        logo.hAlign = 'CENTER'
+                        story.append(logo)
+                        story.append(Spacer(1, 0.2*inch))
+                    except Exception as e:
+                        print(f"Logo yükleme hatası: {e}")
                 
                 # Başlık
                 title_style = ParagraphStyle(
@@ -5136,6 +5674,117 @@ class MainWindow(QMainWindow):
                 
             except Exception as e:
                 QMessageBox.critical(self, "Hata", f"Excel oluşturulurken hata oluştu:\n{str(e)}")
+    
+    def show_unit_converter(self) -> None:
+        """Birim dönüştürücü dialogu göster"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QDoubleSpinBox, QComboBox, QLabel
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Birim Dönüştürücü")
+        dialog.setGeometry(300, 300, 400, 200)
+        
+        layout = QVBoxLayout(dialog)
+        
+        form_layout = QFormLayout()
+        
+        # Değer girişi
+        value_input = QDoubleSpinBox()
+        value_input.setRange(0, 999999999)
+        value_input.setDecimals(4)
+        value_input.setValue(1.0)
+        form_layout.addRow("Değer:", value_input)
+        
+        # Kaynak birim
+        from_unit_combo = QComboBox()
+        from_unit_combo.setEditable(True)
+        from_unit_combo.addItems(['m', 'm²', 'm³', 'kg', 't', 'cm', 'cm²', 'cm³', 'mm', 'km', 'l', 'ml'])
+        form_layout.addRow("Kaynak Birim:", from_unit_combo)
+        
+        # Hedef birim
+        to_unit_combo = QComboBox()
+        to_unit_combo.setEditable(True)
+        to_unit_combo.addItems(['m', 'm²', 'm³', 'kg', 't', 'cm', 'cm²', 'cm³', 'mm', 'km', 'l', 'ml'])
+        form_layout.addRow("Hedef Birim:", to_unit_combo)
+        
+        # Sonuç
+        result_label = QLabel("0.0000")
+        result_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        result_label.setStyleSheet("color: #00BFFF; padding: 10px;")
+        form_layout.addRow("Sonuç:", result_label)
+        
+        layout.addLayout(form_layout)
+        
+        def calculate():
+            try:
+                value = value_input.value()
+                from_unit = from_unit_combo.currentText().strip()
+                to_unit = to_unit_combo.currentText().strip()
+                
+                result = self.calculator.convert_unit(value, from_unit, to_unit)
+                result_label.setText(f"{result:,.4f}")
+            except Exception as e:
+                result_label.setText(f"Hata: {str(e)}")
+                result_label.setStyleSheet("color: #c9184a; padding: 10px;")
+        
+        value_input.valueChanged.connect(calculate)
+        from_unit_combo.currentTextChanged.connect(calculate)
+        to_unit_combo.currentTextChanged.connect(calculate)
+        
+        btn_layout = QHBoxLayout()
+        btn_close = QPushButton("Kapat")
+        btn_close.clicked.connect(dialog.close)
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+        
+        calculate()  # İlk hesaplama
+        dialog.exec()
+    
+    def calculate_auto_fire_rates(self) -> None:
+        """Tüm pozlar için otomatik fire oranı hesapla"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        reply = QMessageBox.question(
+            self, "Onay",
+            "Tüm metraj kalemleri için kategori bazlı otomatik fire oranı hesaplanacak.\n"
+            "Mevcut fire oranları güncellenecek. Devam etmek istiyor musunuz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            metraj_items = self.db.get_project_metraj(self.current_project_id)
+            updated_count = 0
+            
+            for item in metraj_items:
+                kategori = item.get('kategori', '')
+                auto_fire = self.calculator.get_auto_fire_rate(kategori)
+                
+                # Poz varsa fire oranını güncelle
+                poz_no = item.get('poz_no', '')
+                if poz_no:
+                    poz = self.db.get_poz(poz_no)
+                    if poz and poz.get('fire_orani', 0.05) != auto_fire:
+                        self.db.update_poz(
+                            poz_no=poz_no,
+                            fire_orani=auto_fire
+                        )
+                        updated_count += 1
+            
+            QMessageBox.information(
+                self, "Başarılı",
+                f"{updated_count} poz için fire oranı otomatik olarak güncellendi.\n"
+                f"Kategori bazlı fire oranları uygulandı."
+            )
+            self.statusBar().showMessage(f"{updated_count} poz için fire oranı güncellendi")
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Hata",
+                f"Fire oranı hesaplama sırasında hata oluştu:\n{str(e)}"
+            )
     
     def show_about(self) -> None:
         """Hakkında dialogu"""

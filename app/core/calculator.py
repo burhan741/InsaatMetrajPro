@@ -260,4 +260,115 @@ class Calculator:
         result.sort(key=lambda x: (x.get('malzeme_adi', ''), x.get('birim', '')))
         
         return result
+    
+    @staticmethod
+    def convert_unit(value: float, from_unit: str, to_unit: str, 
+                    conversion_factor: Optional[float] = None) -> float:
+        """
+        Birim dönüştür.
+        
+        Args:
+            value: Dönüştürülecek değer
+            from_unit: Kaynak birim
+            to_unit: Hedef birim
+            conversion_factor: Dönüşüm katsayısı (None ise standart dönüşümler kullanılır)
+            
+        Returns:
+            float: Dönüştürülmüş değer
+        """
+        if conversion_factor is not None:
+            return float(Decimal(str(value)) * Decimal(str(conversion_factor)))
+        
+        # Standart birim dönüşümleri
+        from_unit = from_unit.lower().strip()
+        to_unit = to_unit.lower().strip()
+        
+        # Aynı birimse dönüştürme yapma
+        if from_unit == to_unit:
+            return value
+        
+        # Uzunluk dönüşümleri
+        length_units = {
+            'mm': 0.001, 'cm': 0.01, 'dm': 0.1, 'm': 1.0, 'km': 1000.0,
+            'in': 0.0254, 'ft': 0.3048, 'yd': 0.9144, 'mi': 1609.344
+        }
+        
+        # Alan dönüşümleri
+        area_units = {
+            'mm²': 0.000001, 'cm²': 0.0001, 'dm²': 0.01, 'm²': 1.0, 'km²': 1000000.0,
+            'ha': 10000.0, 'acre': 4046.856, 'in²': 0.00064516, 'ft²': 0.092903, 'yd²': 0.836127
+        }
+        
+        # Hacim dönüşümleri
+        volume_units = {
+            'mm³': 0.000000001, 'cm³': 0.000001, 'dm³': 0.001, 'm³': 1.0, 'l': 0.001, 'ml': 0.000001,
+            'in³': 0.000016387, 'ft³': 0.0283168, 'yd³': 0.764555, 'gal': 0.00378541
+        }
+        
+        # Ağırlık dönüşümleri
+        weight_units = {
+            'mg': 0.000001, 'g': 0.001, 'kg': 1.0, 't': 1000.0, 'ton': 1000.0,
+            'oz': 0.0283495, 'lb': 0.453592, 'st': 6.35029
+        }
+        
+        # Birim tipini belirle ve dönüştür
+        if from_unit in length_units and to_unit in length_units:
+            base_value = value * length_units[from_unit]
+            return base_value / length_units[to_unit]
+        elif from_unit in area_units and to_unit in area_units:
+            base_value = value * area_units[from_unit]
+            return base_value / area_units[to_unit]
+        elif from_unit in volume_units and to_unit in volume_units:
+            base_value = value * volume_units[from_unit]
+            return base_value / volume_units[to_unit]
+        elif from_unit in weight_units and to_unit in weight_units:
+            base_value = value * weight_units[from_unit]
+            return base_value / weight_units[to_unit]
+        else:
+            # Bilinmeyen birimler için hata
+            raise ValueError(f"Birim dönüşümü desteklenmiyor: {from_unit} -> {to_unit}")
+    
+    @staticmethod
+    def get_auto_fire_rate(kategori: str) -> float:
+        """
+        Kategori bazlı otomatik fire oranı hesapla.
+        
+        Args:
+            kategori: Poz kategorisi
+            
+        Returns:
+            float: Fire oranı (0.05 = %5)
+        """
+        if not kategori:
+            return 0.05  # Varsayılan %5
+        
+        kategori_lower = kategori.lower()
+        
+        # Kategori bazlı fire oranları
+        fire_rates = {
+            'beton': 0.03,  # %3
+            'demir': 0.05,  # %5
+            'kalıp': 0.10,  # %10
+            'sıva': 0.08,   # %8
+            'boya': 0.05,   # %5
+            'fayans': 0.03, # %3
+            'seramik': 0.03, # %3
+            'tuğla': 0.05,  # %5
+            'çimento': 0.05, # %5
+            'kum': 0.10,    # %10
+            'çakıl': 0.10,  # %10
+            'izolasyon': 0.05, # %5
+            'elektrik': 0.05,  # %5
+            'tesisat': 0.05,   # %5
+            'kapı': 0.02,      # %2
+            'pencere': 0.02,   # %2
+        }
+        
+        # Kategori içinde anahtar kelime ara
+        for key, rate in fire_rates.items():
+            if key in kategori_lower:
+                return rate
+        
+        # Varsayılan
+        return 0.05
 

@@ -268,6 +268,22 @@ class DatabaseManager:
                 )
             """)
             
+            # Proje versiyonları tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS project_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL,
+                    version_name TEXT NOT NULL,
+                    version_number INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    created_by TEXT,
+                    description TEXT,
+                    snapshot_data TEXT NOT NULL,
+                    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    UNIQUE(project_id, version_number)
+                )
+            """)
+            
             # İndeksler
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_projects_durum 
@@ -312,6 +328,98 @@ class DatabaseManager:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_ihale_kalem_ihale 
                 ON ihale_kalemleri(ihale_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_project_versions_project 
+                ON project_versions(project_id)
+            """)
+            
+            # Taşeron işleri tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS taseron_isleri (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    is_adi TEXT NOT NULL,
+                    aciklama TEXT,
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    durum TEXT DEFAULT 'aktif'
+                )
+            """)
+            
+            # Taşeron personel tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS taseron_personel (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    is_id INTEGER NOT NULL,
+                    ad_soyad TEXT NOT NULL,
+                    gunluk_ucret REAL DEFAULT 0,
+                    saatlik_ucret REAL DEFAULT 0,
+                    olusturma_tarihi TEXT NOT NULL,
+                    FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Taşeron puantaj tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS taseron_puantaj (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    personel_id INTEGER NOT NULL,
+                    tarih TEXT NOT NULL,
+                    calisma_saati REAL DEFAULT 0,
+                    calisma_gunu INTEGER DEFAULT 0,
+                    toplam_ucret REAL DEFAULT 0,
+                    FOREIGN KEY (personel_id) REFERENCES taseron_personel(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Taşeron gelir/gider tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS taseron_gelir_gider (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    is_id INTEGER NOT NULL,
+                    tip TEXT NOT NULL,  -- 'gelir' veya 'gider'
+                    kategori TEXT NOT NULL,  -- 'yemek', 'malzeme', 'personel', 'is', vb.
+                    aciklama TEXT,
+                    tutar REAL NOT NULL,
+                    tarih TEXT NOT NULL,
+                    FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Taşeron iş birim fiyatları tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS taseron_is_birim_fiyat (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    is_id INTEGER NOT NULL,
+                    is_adi TEXT NOT NULL,
+                    birim TEXT NOT NULL,
+                    birim_fiyat REAL NOT NULL,
+                    miktar REAL DEFAULT 0,
+                    toplam REAL DEFAULT 0,
+                    FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # İndeksler
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_taseron_personel_is 
+                ON taseron_personel(is_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_taseron_puantaj_personel 
+                ON taseron_puantaj(personel_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_taseron_gelir_gider_is 
+                ON taseron_gelir_gider(is_id)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_taseron_gelir_gider_tarih 
+                ON taseron_gelir_gider(tarih)
             """)
             
             conn.commit()
@@ -1737,4 +1845,333 @@ class DatabaseManager:
                     LIMIT ?
                 """, (search_pattern, search_pattern, limit))
                 return [dict(row) for row in cursor.fetchall()]
+    
+    # Taşeron İşlemleri
+    def create_taseron_is(self, is_adi: str, aciklama: str = "") -> int:
+        """Yeni taşeron işi oluştur"""
+        now = datetime.now().isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO taseron_isleri (is_adi, aciklama, olusturma_tarihi, guncelleme_tarihi)
+                VALUES (?, ?, ?, ?)
+            """, (is_adi, aciklama, now, now))
+            return cursor.lastrowid
+    
+    def get_taseron_isleri(self) -> List[Dict[str, Any]]:
+        """Tüm taşeron işlerini getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM taseron_isleri
+                WHERE durum = 'aktif'
+                ORDER BY olusturma_tarihi DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_taseron_is(self, is_id: int) -> Optional[Dict[str, Any]]:
+        """Taşeron iş bilgilerini getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM taseron_isleri WHERE id = ?", (is_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def delete_taseron_is(self, is_id: int) -> bool:
+        """Taşeron işini sil (durumunu pasif yap)"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE taseron_isleri SET durum = 'pasif', guncelleme_tarihi = ?
+                    WHERE id = ?
+                """, (datetime.now().isoformat(), is_id))
+                return True
+        except Exception as e:
+            print(f"İş silme hatası: {e}")
+            return False
+    
+    def add_taseron_personel(self, is_id: int, ad_soyad: str, 
+                             gunluk_ucret: float = 0, saatlik_ucret: float = 0) -> int:
+        """Taşeron personel ekle"""
+        now = datetime.now().isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO taseron_personel 
+                (is_id, ad_soyad, gunluk_ucret, saatlik_ucret, olusturma_tarihi)
+                VALUES (?, ?, ?, ?, ?)
+            """, (is_id, ad_soyad, gunluk_ucret, saatlik_ucret, now))
+            return cursor.lastrowid
+    
+    def get_taseron_personel(self, is_id: int) -> List[Dict[str, Any]]:
+        """Taşeron personel listesini getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM taseron_personel
+                WHERE is_id = ?
+                ORDER BY ad_soyad
+            """, (is_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def add_taseron_puantaj(self, personel_id: int, tarih: str, 
+                            calisma_saati: float = 0, calisma_gunu: int = 0) -> int:
+        """Puantaj kaydı ekle"""
+        # Ücreti hesapla
+        personel = self.get_taseron_personel_by_id(personel_id)
+        if not personel:
+            return 0
+        
+        toplam_ucret = 0.0
+        if calisma_gunu > 0 and personel.get('gunluk_ucret', 0) > 0:
+            toplam_ucret = calisma_gunu * personel['gunluk_ucret']
+        elif calisma_saati > 0 and personel.get('saatlik_ucret', 0) > 0:
+            toplam_ucret = calisma_saati * personel['saatlik_ucret']
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO taseron_puantaj 
+                (personel_id, tarih, calisma_saati, calisma_gunu, toplam_ucret)
+                VALUES (?, ?, ?, ?, ?)
+            """, (personel_id, tarih, calisma_saati, calisma_gunu, toplam_ucret))
+            return cursor.lastrowid
+    
+    def get_taseron_puantaj(self, is_id: int) -> List[Dict[str, Any]]:
+        """Puantaj kayıtlarını getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.*, per.ad_soyad
+                FROM taseron_puantaj p
+                JOIN taseron_personel per ON p.personel_id = per.id
+                WHERE per.is_id = ?
+                ORDER BY p.tarih DESC
+            """, (is_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_taseron_personel_by_id(self, personel_id: int) -> Optional[Dict[str, Any]]:
+        """Personel bilgilerini ID ile getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM taseron_personel WHERE id = ?", (personel_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def add_taseron_is_birim_fiyat(self, is_id: int, is_adi: str, birim: str,
+                                   birim_fiyat: float, miktar: float = 0) -> int:
+        """İş birim fiyat ekle"""
+        toplam = birim_fiyat * miktar
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO taseron_is_birim_fiyat 
+                (is_id, is_adi, birim, birim_fiyat, miktar, toplam)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (is_id, is_adi, birim, birim_fiyat, miktar, toplam))
+            return cursor.lastrowid
+    
+    def get_taseron_is_birim_fiyat(self, is_id: int) -> List[Dict[str, Any]]:
+        """İş birim fiyat listesini getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM taseron_is_birim_fiyat
+                WHERE is_id = ?
+                ORDER BY id
+            """, (is_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def add_taseron_gelir_gider(self, is_id: int, tip: str, kategori: str,
+                                aciklama: str, tutar: float, tarih: str) -> int:
+        """Gelir/Gider ekle"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO taseron_gelir_gider 
+                (is_id, tip, kategori, aciklama, tutar, tarih)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (is_id, tip, kategori, aciklama, tutar, tarih))
+            return cursor.lastrowid
+    
+    def get_taseron_gelir_gider(self, is_id: int, start_date: str = None, 
+                                end_date: str = None) -> List[Dict[str, Any]]:
+        """Gelir/Gider listesini getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT * FROM taseron_gelir_gider
+                WHERE is_id = ?
+            """
+            params = [is_id]
+            
+            if start_date:
+                query += " AND tarih >= ?"
+                params.append(start_date)
+            if end_date:
+                query += " AND tarih <= ?"
+                params.append(end_date)
+            
+            query += " ORDER BY tarih DESC"
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    # Versiyonlama İşlemleri
+    def create_project_version(self, project_id: int, version_name: str, 
+                               description: str = "", created_by: str = "") -> int:
+        """
+        Proje versiyonu oluştur (snapshot).
+        
+        Args:
+            project_id: Proje ID'si
+            version_name: Versiyon adı
+            description: Versiyon açıklaması
+            created_by: Oluşturan kullanıcı
+            
+        Returns:
+            int: Oluşturulan versiyonun ID'si
+        """
+        # Mevcut versiyon numarasını al
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT MAX(version_number) as max_version 
+                FROM project_versions 
+                WHERE project_id = ?
+            """, (project_id,))
+            result = cursor.fetchone()
+            next_version = (result['max_version'] or 0) + 1
+            
+            # Proje snapshot'ını al
+            project = self.get_project(project_id)
+            metraj_items = self.get_project_metraj(project_id)
+            taseron_offers = self.get_taseron_teklifleri(project_id)
+            
+            snapshot_data = {
+                'project': dict(project) if project else {},
+                'metraj_items': [dict(item) for item in metraj_items],
+                'taseron_offers': [dict(offer) for offer in taseron_offers]
+            }
+            
+            # Versiyonu kaydet
+            now = datetime.now().isoformat()
+            cursor.execute("""
+                INSERT INTO project_versions 
+                (project_id, version_name, version_number, created_at, created_by, description, snapshot_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (project_id, version_name, next_version, now, created_by, description, 
+                  json.dumps(snapshot_data, ensure_ascii=False)))
+            
+            return cursor.lastrowid
+    
+    def get_project_versions(self, project_id: int) -> List[Dict[str, Any]]:
+        """
+        Projenin tüm versiyonlarını getir.
+        
+        Args:
+            project_id: Proje ID'si
+            
+        Returns:
+            List[Dict]: Versiyon listesi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM project_versions
+                WHERE project_id = ?
+                ORDER BY version_number DESC
+            """, (project_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_project_version(self, version_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Versiyon bilgilerini getir.
+        
+        Args:
+            version_id: Versiyon ID'si
+            
+        Returns:
+            Optional[Dict]: Versiyon bilgileri
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM project_versions WHERE id = ?", (version_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def restore_project_version(self, version_id: int, new_project_name: str = None) -> Optional[int]:
+        """
+        Versiyondan projeyi geri yükle.
+        
+        Args:
+            version_id: Versiyon ID'si
+            new_project_name: Yeni proje adı (None ise versiyondaki ad kullanılır)
+            
+        Returns:
+            Optional[int]: Geri yüklenen projenin ID'si
+        """
+        version = self.get_project_version(version_id)
+        if not version:
+            return None
+        
+        snapshot_data = json.loads(version['snapshot_data'])
+        project_data = snapshot_data.get('project', {})
+        metraj_items = snapshot_data.get('metraj_items', [])
+        taseron_offers = snapshot_data.get('taseron_offers', [])
+        
+        # Yeni proje oluştur
+        project_name = new_project_name or f"{project_data.get('ad', 'Geri Yüklenen Proje')} (v{version['version_number']})"
+        project_id = self.create_project(
+            ad=project_name,
+            aciklama=project_data.get('aciklama', ''),
+            notlar=f"Versiyon {version['version_number']} geri yüklendi: {version.get('description', '')}"
+        )
+        
+        # Metraj kalemlerini geri yükle
+        for item in metraj_items:
+            self.add_metraj_item(
+                proje_id=project_id,
+                poz_no=item.get('poz_no', ''),
+                tanim=item.get('tanim', ''),
+                miktar=item.get('miktar', 0),
+                birim=item.get('birim', ''),
+                birim_fiyat=item.get('birim_fiyat', 0),
+                kategori=item.get('kategori', ''),
+                notlar=item.get('notlar', '')
+            )
+        
+        # Taşeron tekliflerini geri yükle
+        for offer in taseron_offers:
+            self.add_taseron_teklif(
+                proje_id=project_id,
+                firma_adi=offer.get('firma_adi', ''),
+                fiyat=offer.get('fiyat', 0),
+                poz_no=offer.get('poz_no', ''),
+                tanim=offer.get('tanim', ''),
+                miktar=offer.get('miktar', 0),
+                birim=offer.get('birim', ''),
+                notlar=offer.get('notlar', '')
+            )
+        
+        return project_id
+    
+    def delete_project_version(self, version_id: int) -> bool:
+        """
+        Versiyonu sil.
+        
+        Args:
+            version_id: Versiyon ID'si
+            
+        Returns:
+            bool: Başarılı ise True
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM project_versions WHERE id = ?", (version_id,))
+                return True
+        except Exception as e:
+            print(f"Versiyon silme hatası: {e}")
+            return False
 

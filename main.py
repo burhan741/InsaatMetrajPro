@@ -188,8 +188,33 @@ def gui_uygulamasi():
         )
         app.processEvents()
         
-        # Ana pencereyi oluştur (optimizasyonlar sayesinde hızlı)
-        window = MainWindow(splash=splash)
+        # Başlangıç ekranı - Kullanıcı tipi seçimi
+        from app.ui.startup_dialog import StartupDialog
+        
+        startup = StartupDialog()
+        if not startup.exec():
+            # Kullanıcı iptal etti
+            sys.exit(0)
+        
+        user_type = startup.user_type
+        
+        # Splash mesajını güncelle
+        if user_type == 'muteahhit':
+            splash.showMessage(
+                "Müteahhit modu yükleniyor...",
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+                Qt.GlobalColor.white
+            )
+        else:
+            splash.showMessage(
+                "Taşeron modu yükleniyor...",
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom,
+                Qt.GlobalColor.white
+            )
+        app.processEvents()
+        
+        # Ana pencereyi oluştur (kullanıcı tipi ile)
+        window = MainWindow(splash=splash, user_type=user_type)
         
         # Splash screen'i kapat
         splash.finish(window)
