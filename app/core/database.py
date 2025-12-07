@@ -1950,6 +1950,62 @@ class DatabaseManager:
             """, (is_id,))
             return [dict(row) for row in cursor.fetchall()]
     
+    def get_taseron_puantaj_by_id(self, puantaj_id: int) -> Optional[Dict[str, Any]]:
+        """Puantaj kaydını ID ile getir"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.*, per.ad_soyad
+                FROM taseron_puantaj p
+                JOIN taseron_personel per ON p.personel_id = per.id
+                WHERE p.id = ?
+            """, (puantaj_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def update_taseron_puantaj(self, puantaj_id: int, tarih: str,
+                               calisma_saati: float = 0, calisma_gunu: int = 0) -> bool:
+        """Puantaj kaydını güncelle"""
+        try:
+            # Personel bilgilerini al (ücret hesaplama için)
+            puantaj = self.get_taseron_puantaj_by_id(puantaj_id)
+            if not puantaj:
+                return False
+            
+            personel = self.get_taseron_personel_by_id(puantaj['personel_id'])
+            if not personel:
+                return False
+            
+            # Ücreti hesapla
+            toplam_ucret = 0.0
+            if calisma_gunu > 0 and personel.get('gunluk_ucret', 0) > 0:
+                toplam_ucret = calisma_gunu * personel['gunluk_ucret']
+            elif calisma_saati > 0 and personel.get('saatlik_ucret', 0) > 0:
+                toplam_ucret = calisma_saati * personel['saatlik_ucret']
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE taseron_puantaj
+                    SET tarih = ?, calisma_saati = ?, calisma_gunu = ?, toplam_ucret = ?
+                    WHERE id = ?
+                """, (tarih, calisma_saati, calisma_gunu, toplam_ucret, puantaj_id))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Puantaj güncelleme hatası: {e}")
+            return False
+    
+    def delete_taseron_puantaj(self, puantaj_id: int) -> bool:
+        """Puantaj kaydını sil"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM taseron_puantaj WHERE id = ?", (puantaj_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Puantaj silme hatası: {e}")
+            return False
+    
     def get_taseron_personel_by_id(self, personel_id: int) -> Optional[Dict[str, Any]]:
         """Personel bilgilerini ID ile getir"""
         with self.get_connection() as conn:

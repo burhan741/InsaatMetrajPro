@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QPushButton, QFileDialog, QMessageBox,
     QLabel, QLineEdit, QDoubleSpinBox, QDateEdit, QComboBox, QTextEdit,
-    QGroupBox, QFormLayout, QHeaderView, QSpinBox
+    QGroupBox, QFormLayout, QHeaderView, QSpinBox, QCheckBox, QScrollArea
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QIcon, QFont
@@ -114,6 +114,11 @@ class TaseronWindow(QMainWindow):
         btn_add_puantaj.clicked.connect(self.add_puantaj)
         btn_layout.addWidget(btn_add_puantaj)
         
+        btn_bulk_puantaj = QPushButton("Toplu Puantaj Ekle")
+        btn_bulk_puantaj.setStyleSheet("background-color: #4CAF50;")
+        btn_bulk_puantaj.clicked.connect(self.bulk_add_puantaj)
+        btn_layout.addWidget(btn_bulk_puantaj)
+        
         btn_layout.addStretch()
         
         # Toplam etiketleri
@@ -134,6 +139,8 @@ class TaseronWindow(QMainWindow):
         self.personel_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.personel_table.horizontalHeader().setStretchLastSection(True)
         self.personel_table.setColumnHidden(0, True)
+        # Satır yüksekliğini otomatik ayarla (isim soyisim sığsın)
+        self.personel_table.verticalHeader().setDefaultSectionSize(35)  # Minimum satır yüksekliği
         layout.addWidget(self.personel_table)
         
         # Puantaj tablosu
@@ -141,11 +148,49 @@ class TaseronWindow(QMainWindow):
         puantaj_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
         layout.addWidget(puantaj_title)
         
+        # Puantaj işlem butonları
+        puantaj_btn_layout = QHBoxLayout()
+        
+        btn_edit_puantaj = QPushButton("Düzenle")
+        btn_edit_puantaj.clicked.connect(self.edit_puantaj)
+        puantaj_btn_layout.addWidget(btn_edit_puantaj)
+        
+        btn_delete_puantaj = QPushButton("Sil")
+        btn_delete_puantaj.setStyleSheet("background-color: #c9184a;")
+        btn_delete_puantaj.clicked.connect(self.delete_puantaj)
+        puantaj_btn_layout.addWidget(btn_delete_puantaj)
+        
+        puantaj_btn_layout.addStretch()
+        layout.addLayout(puantaj_btn_layout)
+        
+        # Tarih filtresi
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Tarih Filtresi:"))
+        
+        self.puantaj_filter_enabled = True  # Filtre aktif mi?
+        
+        self.puantaj_tarih_filter = QDateEdit()
+        self.puantaj_tarih_filter.setDate(QDate.currentDate())
+        self.puantaj_tarih_filter.setCalendarPopup(True)
+        self.puantaj_tarih_filter.setDisplayFormat("dd.MM.yyyy")
+        self.puantaj_tarih_filter.setMinimumDate(QDate(2020, 1, 1))
+        self.puantaj_tarih_filter.setMaximumDate(QDate(2100, 12, 31))
+        self.puantaj_tarih_filter.dateChanged.connect(self.load_puantaj)
+        filter_layout.addWidget(self.puantaj_tarih_filter)
+        
+        btn_clear_filter = QPushButton("Tümünü Göster")
+        btn_clear_filter.clicked.connect(self.clear_puantaj_filter)
+        filter_layout.addWidget(btn_clear_filter)
+        
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+        
         self.puantaj_table = QTableWidget()
-        self.puantaj_table.setColumnCount(5)
+        self.puantaj_table.setColumnCount(6)
         self.puantaj_table.setHorizontalHeaderLabels([
-            "Tarih", "Personel", "Çalışma Saati", "Çalışma Günü", "Toplam Ücret (₺)"
+            "ID", "Tarih", "Personel", "Çalışma Saati", "Çalışma Günü", "Toplam Ücret (₺)"
         ])
+        self.puantaj_table.setColumnHidden(0, True)  # ID sütununu gizle
         self.puantaj_table.setAlternatingRowColors(True)
         self.puantaj_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.puantaj_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -612,6 +657,16 @@ class TaseronWindow(QMainWindow):
             self.personel_table.setItem(row, 1, QTableWidgetItem(personel['ad_soyad']))
             self.personel_table.setItem(row, 2, QTableWidgetItem(f"{personel['gunluk_ucret']:,.2f}"))
             self.personel_table.setItem(row, 3, QTableWidgetItem(f"{personel['saatlik_ucret']:,.2f}"))
+            
+            # Satır yüksekliğini isim soyisim uzunluğuna göre ayarla
+            ad_soyad = personel['ad_soyad']
+            # Uzun isimler için satır yüksekliğini artır
+            if len(ad_soyad) > 25:
+                # Çok uzun isimler için daha yüksek satır
+                self.personel_table.setRowHeight(row, max(35, min(60, len(ad_soyad) // 2 + 20)))
+            else:
+                # Normal isimler için varsayılan yükseklik
+                self.personel_table.setRowHeight(row, 35)
         
         self.puantaj_total_label.setText(f"Toplam Personel: {len(personel_list)}")
     
@@ -642,7 +697,10 @@ class TaseronWindow(QMainWindow):
         tarih_input = QDateEdit()
         tarih_input.setDate(QDate.currentDate())
         tarih_input.setCalendarPopup(True)
-        layout.addRow("Tarih:", tarih_input)
+        tarih_input.setDisplayFormat("dd.MM.yyyy")
+        tarih_input.setMinimumDate(QDate(2020, 1, 1))
+        tarih_input.setMaximumDate(QDate(2100, 12, 31))
+        layout.addRow("Tarih Seçin:", tarih_input)
         
         saat_spin = QDoubleSpinBox()
         saat_spin.setRange(0, 24)
@@ -675,21 +733,450 @@ class TaseronWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Hata", f"Puantaj eklenirken hata oluştu:\n{str(e)}")
     
+    def bulk_add_puantaj(self):
+        """Toplu puantaj ekle - Bir tarih seçip birden fazla personeli tek seferde ekle"""
+        if not self.current_is_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir iş seçin")
+            return
+        
+        personel_list = self.db.get_taseron_personel(self.current_is_id)
+        if not personel_list:
+            QMessageBox.warning(self, "Uyarı", "Önce personel eklemelisiniz")
+            return
+        
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QScrollArea
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Toplu Puantaj Ekle")
+        dialog.setGeometry(300, 100, 600, 700)
+        
+        main_layout = QVBoxLayout(dialog)
+        
+        # Tarih seçici
+        tarih_layout = QHBoxLayout()
+        tarih_layout.addWidget(QLabel("Tarih Seçin:"))
+        tarih_input = QDateEdit()
+        tarih_input.setDate(QDate.currentDate())
+        tarih_input.setCalendarPopup(True)
+        tarih_input.setDisplayFormat("dd.MM.yyyy")
+        tarih_input.setMinimumDate(QDate(2020, 1, 1))
+        tarih_input.setMaximumDate(QDate(2100, 12, 31))
+        tarih_layout.addWidget(tarih_input)
+        tarih_layout.addStretch()
+        main_layout.addLayout(tarih_layout)
+        
+        # Varsayılan değerler
+        default_layout = QHBoxLayout()
+        default_layout.addWidget(QLabel("Varsayılan Değerler:"))
+        
+        default_saat = QDoubleSpinBox()
+        default_saat.setRange(0, 24)
+        default_saat.setDecimals(2)
+        default_saat.setValue(8.0)
+        default_layout.addWidget(QLabel("Saat:"))
+        default_layout.addWidget(default_saat)
+        
+        default_gun = QSpinBox()
+        default_gun.setRange(0, 31)
+        default_gun.setValue(1)
+        default_layout.addWidget(QLabel("Gün:"))
+        default_layout.addWidget(default_gun)
+        default_layout.addStretch()
+        main_layout.addLayout(default_layout)
+        
+        # Personel listesi (scroll area)
+        scroll = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        # Personel checkbox'ları ve input'ları
+        personel_widgets = {}
+        personel_frames = {}  # Frame referanslarını sakla (silme için)
+        
+        # Toplam tutar gösterimi (önce tanımla - calculate_total için gerekli)
+        total_label = QLabel("Toplam Bedel: 0.00 ₺")
+        total_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        total_label.setStyleSheet("color: #4CAF50; padding: 10px; background-color: #1a1a2e; border-radius: 5px;")
+        total_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        def calculate_total():
+            """Seçili personellerin toplam bedelini hesapla"""
+            toplam = 0.0
+            for personel_id, widgets in personel_widgets.items():
+                if widgets['checkbox'].isChecked():
+                    # Personel bilgilerini al
+                    personel = next((p for p in personel_list if p['id'] == personel_id), None)
+                    if personel:
+                        calisma_gunu = widgets['gun'].value()
+                        calisma_saati = widgets['saat'].value()
+                        
+                        # Ücreti hesapla (günlük ücret öncelikli)
+                        if calisma_gunu > 0 and personel.get('gunluk_ucret', 0) > 0:
+                            toplam += calisma_gunu * personel['gunluk_ucret']
+                        elif calisma_saati > 0 and personel.get('saatlik_ucret', 0) > 0:
+                            toplam += calisma_saati * personel['saatlik_ucret']
+            
+            total_label.setText(f"Toplam Bedel: {toplam:,.2f} ₺")
+        
+        def add_personel_row(personel):
+            """Personel satırı ekle"""
+            personel_frame = QGroupBox(f"{personel['ad_soyad']} (Günlük: {personel.get('gunluk_ucret', 0):,.2f} ₺)")
+            personel_layout = QHBoxLayout()
+            
+            checkbox = QCheckBox()
+            checkbox.setChecked(True)  # Varsayılan olarak seçili
+            personel_layout.addWidget(checkbox)
+            
+            personel_layout.addWidget(QLabel("Saat:"))
+            saat_spin = QDoubleSpinBox()
+            saat_spin.setRange(0, 24)
+            saat_spin.setDecimals(2)
+            saat_spin.setValue(8.0)
+            personel_layout.addWidget(saat_spin)
+            
+            personel_layout.addWidget(QLabel("Gün:"))
+            gun_spin = QSpinBox()
+            gun_spin.setRange(0, 31)
+            gun_spin.setValue(1)  # Varsayılan olarak 1 (gelmeyenler için manuel 0 yazılacak)
+            personel_layout.addWidget(gun_spin)
+            
+            # Silme butonu
+            btn_remove = QPushButton("✖")
+            btn_remove.setMaximumWidth(30)
+            btn_remove.setStyleSheet("background-color: #c9184a; color: white; font-weight: bold;")
+            btn_remove.clicked.connect(lambda checked, pid=personel['id']: remove_personel_row(pid))
+            personel_layout.addWidget(btn_remove)
+            
+            personel_layout.addStretch()
+            personel_frame.setLayout(personel_layout)
+            scroll_layout.addWidget(personel_frame)
+            
+            personel_widgets[personel['id']] = {
+                'checkbox': checkbox,
+                'saat': saat_spin,
+                'gun': gun_spin,
+                'ad_soyad': personel['ad_soyad'],
+                'frame': personel_frame
+            }
+            personel_frames[personel['id']] = personel_frame
+            
+            # Signal'ları bağla
+            checkbox.toggled.connect(calculate_total)
+            saat_spin.valueChanged.connect(calculate_total)
+            gun_spin.valueChanged.connect(calculate_total)
+        
+        def remove_personel_row(personel_id):
+            """Personel satırını kaldır"""
+            if personel_id in personel_frames:
+                personel_frames[personel_id].setParent(None)
+                personel_frames[personel_id].deleteLater()
+                del personel_frames[personel_id]
+                if personel_id in personel_widgets:
+                    del personel_widgets[personel_id]
+                calculate_total()
+        
+        # Mevcut personelleri ekle
+        for personel in personel_list:
+            add_personel_row(personel)
+        
+        # Yeni personel ekleme butonu
+        btn_add_personel = QPushButton("➕ Yeni Personel Ekle")
+        btn_add_personel.setStyleSheet("background-color: #4CAF50; font-weight: bold;")
+        scroll_layout.addWidget(btn_add_personel)
+        
+        def add_new_personel():
+            """Yeni personel ekle dialog'u"""
+            from PyQt6.QtWidgets import QInputDialog
+            ad_soyad, ok = QInputDialog.getText(
+                dialog, "Yeni Personel",
+                "Ad Soyad:"
+            )
+            if not ok or not ad_soyad.strip():
+                return
+            
+            gunluk_ucret, ok = QInputDialog.getDouble(
+                dialog, "Günlük Ücret",
+                "Günlük Ücret (₺):", 0, 0, 999999, 2
+            )
+            if not ok:
+                return
+            
+            saatlik_ucret = gunluk_ucret / 8.0 if gunluk_ucret > 0 else 0
+            
+            try:
+                # Veritabanına ekle
+                new_personel_id = self.db.add_taseron_personel(
+                    self.current_is_id,
+                    ad_soyad.strip(),
+                    gunluk_ucret,
+                    saatlik_ucret
+                )
+                
+                # Listeye ekle
+                new_personel = {
+                    'id': new_personel_id,
+                    'ad_soyad': ad_soyad.strip(),
+                    'gunluk_ucret': gunluk_ucret,
+                    'saatlik_ucret': saatlik_ucret
+                }
+                personel_list.append(new_personel)
+                
+                # Personel listesini tekrar sırala
+                personel_list.sort(key=lambda x: x.get('gunluk_ucret', 0), reverse=True)
+                
+                # Yeni personeli ekle (sıralı konuma)
+                add_personel_row(new_personel)
+                
+                QMessageBox.information(dialog, "Başarılı", "Personel eklendi")
+            except Exception as e:
+                QMessageBox.critical(dialog, "Hata", f"Personel eklenirken hata oluştu:\n{str(e)}")
+        
+        btn_add_personel.clicked.connect(add_new_personel)
+        
+        scroll_widget.setLayout(scroll_layout)
+        scroll.setWidget(scroll_widget)
+        scroll.setWidgetResizable(True)
+        main_layout.addWidget(scroll)
+        
+        # Toplam tutar gösterimini ekle
+        main_layout.addWidget(total_label)
+        
+        # Varsayılan değerleri uygula butonu
+        def apply_defaults():
+            for widgets in personel_widgets.values():
+                widgets['saat'].setValue(default_saat.value())
+                widgets['gun'].setValue(1)  # Her zaman 1 olarak ayarla
+            calculate_total()  # Toplamı güncelle
+        
+        btn_apply_defaults = QPushButton("Varsayılanları Uygula")
+        btn_apply_defaults.clicked.connect(apply_defaults)
+        main_layout.addWidget(btn_apply_defaults)
+        
+        # Varsayılan değerler değiştiğinde de toplamı güncelle
+        default_saat.valueChanged.connect(calculate_total)
+        default_gun.valueChanged.connect(calculate_total)
+        
+        # İlk toplam hesaplama
+        calculate_total()
+        
+        # Butonlar
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("Seçilenleri Ekle")
+        btn_ok.setStyleSheet("background-color: #4CAF50; font-weight: bold;")
+        btn_ok.clicked.connect(dialog.accept)
+        btn_cancel = QPushButton("İptal")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        main_layout.addLayout(btn_layout)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            tarih_str = tarih_input.date().toString("yyyy-MM-dd")
+            eklenen_sayisi = 0
+            hata_sayisi = 0
+            
+            for personel_id, widgets in personel_widgets.items():
+                if widgets['checkbox'].isChecked():
+                    try:
+                        self.db.add_taseron_puantaj(
+                            personel_id,
+                            tarih_str,
+                            widgets['saat'].value(),
+                            widgets['gun'].value()
+                        )
+                        eklenen_sayisi += 1
+                    except Exception as e:
+                        hata_sayisi += 1
+                        print(f"Puantaj ekleme hatası ({widgets['ad_soyad']}): {e}")
+            
+            if eklenen_sayisi > 0:
+                QMessageBox.information(
+                    self, "Başarılı",
+                    f"{eklenen_sayisi} personel için puantaj eklendi!\n"
+                    f"Tarih: {tarih_input.date().toString('dd.MM.yyyy')}"
+                )
+                self.load_puantaj()
+            else:
+                QMessageBox.warning(self, "Uyarı", "Hiçbir personel seçilmedi veya ekleme başarısız oldu")
+            
+            if hata_sayisi > 0:
+                QMessageBox.warning(self, "Uyarı", f"{hata_sayisi} personel için hata oluştu")
+    
+    def edit_puantaj(self):
+        """Puantaj kaydını düzenle"""
+        if not self.current_is_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir iş seçin")
+            return
+        
+        current_row = self.puantaj_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen düzenlemek istediğiniz bir kaydı seçin")
+            return
+        
+        # ID'yi al
+        id_item = self.puantaj_table.item(current_row, 0)
+        if not id_item:
+            return
+        
+        puantaj_id = id_item.data(Qt.ItemDataRole.UserRole)
+        if not puantaj_id:
+            return
+        
+        puantaj = self.db.get_taseron_puantaj_by_id(puantaj_id)
+        if not puantaj:
+            QMessageBox.warning(self, "Uyarı", "Puantaj kaydı bulunamadı")
+            return
+        
+        from PyQt6.QtWidgets import QDialog, QFormLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Puantaj Düzenle")
+        dialog.setGeometry(400, 400, 400, 250)
+        
+        layout = QFormLayout(dialog)
+        
+        # Personel (sadece göster, değiştirilemez)
+        personel_label = QLabel(puantaj.get('ad_soyad', ''))
+        personel_label.setStyleSheet("font-weight: bold;")
+        layout.addRow("Personel:", personel_label)
+        
+        tarih_input = QDateEdit()
+        try:
+            from datetime import datetime
+            tarih_obj = datetime.strptime(puantaj['tarih'], "%Y-%m-%d")
+            tarih_input.setDate(QDate(tarih_obj.year, tarih_obj.month, tarih_obj.day))
+        except:
+            tarih_input.setDate(QDate.currentDate())
+        tarih_input.setCalendarPopup(True)
+        tarih_input.setDisplayFormat("dd.MM.yyyy")
+        tarih_input.setMinimumDate(QDate(2020, 1, 1))
+        tarih_input.setMaximumDate(QDate(2100, 12, 31))
+        layout.addRow("Tarih:", tarih_input)
+        
+        saat_spin = QDoubleSpinBox()
+        saat_spin.setRange(0, 24)
+        saat_spin.setDecimals(2)
+        saat_spin.setValue(puantaj.get('calisma_saati', 0))
+        layout.addRow("Çalışma Saati:", saat_spin)
+        
+        gun_spin = QSpinBox()
+        gun_spin.setRange(0, 31)
+        gun_spin.setValue(puantaj.get('calisma_gunu', 0))
+        layout.addRow("Çalışma Günü:", gun_spin)
+        
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("Kaydet")
+        btn_ok.clicked.connect(dialog.accept)
+        btn_cancel = QPushButton("İptal")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addRow(btn_layout)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                if self.db.update_taseron_puantaj(
+                    puantaj_id,
+                    tarih_input.date().toString("yyyy-MM-dd"),
+                    saat_spin.value(),
+                    gun_spin.value()
+                ):
+                    QMessageBox.information(self, "Başarılı", "Puantaj kaydı güncellendi")
+                    self.load_puantaj()
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Puantaj güncellenirken bir hata oluştu")
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Puantaj güncellenirken hata oluştu:\n{str(e)}")
+    
+    def delete_puantaj(self):
+        """Puantaj kaydını sil"""
+        if not self.current_is_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir iş seçin")
+            return
+        
+        current_row = self.puantaj_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek istediğiniz bir kaydı seçin")
+            return
+        
+        # ID'yi al
+        id_item = self.puantaj_table.item(current_row, 0)
+        if not id_item:
+            return
+        
+        puantaj_id = id_item.data(Qt.ItemDataRole.UserRole)
+        if not puantaj_id:
+            return
+        
+        # Personel adını al (onay mesajı için)
+        personel_item = self.puantaj_table.item(current_row, 2)
+        personel_adi = personel_item.text() if personel_item else "bilinmeyen"
+        
+        tarih_item = self.puantaj_table.item(current_row, 1)
+        tarih = tarih_item.text() if tarih_item else "bilinmeyen"
+        
+        reply = QMessageBox.question(
+            self, "Onay",
+            f"'{personel_adi}' personelinin '{tarih}' tarihli puantaj kaydını silmek istediğinize emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                if self.db.delete_taseron_puantaj(puantaj_id):
+                    QMessageBox.information(self, "Başarılı", "Puantaj kaydı silindi")
+                    self.load_puantaj()
+                else:
+                    QMessageBox.warning(self, "Uyarı", "Puantaj silinirken bir hata oluştu")
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Puantaj silinirken hata oluştu:\n{str(e)}")
+    
+    def clear_puantaj_filter(self):
+        """Puantaj tarih filtresini temizle - tüm kayıtları göster"""
+        if hasattr(self, 'puantaj_filter_enabled'):
+            self.puantaj_filter_enabled = False
+            self.load_puantaj()
+            self.puantaj_filter_enabled = True
+    
     def load_puantaj(self):
-        """Puantaj listesini yükle"""
+        """Puantaj listesini yükle (tarih filtresi ile)"""
         if not self.current_is_id:
             self.puantaj_table.setRowCount(0)
             return
         
         puantaj_list = self.db.get_taseron_puantaj(self.current_is_id)
+        
+        # Tarih filtresi uygula
+        if hasattr(self, 'puantaj_tarih_filter') and hasattr(self, 'puantaj_filter_enabled') and self.puantaj_filter_enabled:
+            filter_date = self.puantaj_tarih_filter.date()
+            filter_date_str = filter_date.toString("yyyy-MM-dd")
+            puantaj_list = [p for p in puantaj_list if p['tarih'] == filter_date_str]
+        
+        # Tarihe göre sırala (en yeni önce)
+        puantaj_list.sort(key=lambda x: x.get('tarih', ''), reverse=True)
+        
         self.puantaj_table.setRowCount(len(puantaj_list))
         
         for row, puantaj in enumerate(puantaj_list):
-            self.puantaj_table.setItem(row, 0, QTableWidgetItem(puantaj['tarih']))
-            self.puantaj_table.setItem(row, 1, QTableWidgetItem(puantaj.get('ad_soyad', '')))
-            self.puantaj_table.setItem(row, 2, QTableWidgetItem(f"{puantaj['calisma_saati']:,.2f}"))
-            self.puantaj_table.setItem(row, 3, QTableWidgetItem(str(puantaj['calisma_gunu'])))
-            self.puantaj_table.setItem(row, 4, QTableWidgetItem(f"{puantaj['toplam_ucret']:,.2f}"))
+            # Tarihi Türkçe formatında göster
+            tarih_str = puantaj['tarih']
+            try:
+                from datetime import datetime
+                tarih_obj = datetime.strptime(tarih_str, "%Y-%m-%d")
+                tarih_formatted = tarih_obj.strftime("%d.%m.%Y")
+            except:
+                tarih_formatted = tarih_str
+            
+            # ID'yi sakla (ilk sütuna)
+            id_item = QTableWidgetItem(str(puantaj.get('id', '')))
+            id_item.setData(Qt.ItemDataRole.UserRole, puantaj.get('id'))
+            self.puantaj_table.setItem(row, 0, id_item)
+            
+            self.puantaj_table.setItem(row, 1, QTableWidgetItem(tarih_formatted))
+            self.puantaj_table.setItem(row, 2, QTableWidgetItem(puantaj.get('ad_soyad', '')))
+            self.puantaj_table.setItem(row, 3, QTableWidgetItem(f"{puantaj['calisma_saati']:,.2f}"))
+            self.puantaj_table.setItem(row, 4, QTableWidgetItem(str(puantaj['calisma_gunu'])))
+            self.puantaj_table.setItem(row, 5, QTableWidgetItem(f"{puantaj['toplam_ucret']:,.2f}"))
     
     def add_is_birim_fiyat(self):
         """İş ve birim fiyat ekle"""
