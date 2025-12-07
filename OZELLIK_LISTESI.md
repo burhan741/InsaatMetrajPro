@@ -269,3 +269,4 @@
 5. Kullanıcı geri bildirimlerine göre en çok istenen özellikler nelerdir?
 
 
+

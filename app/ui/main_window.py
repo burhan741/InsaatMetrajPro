@@ -4844,8 +4844,8 @@ class MainWindow(QMainWindow):
             return
         
         if not self.current_ihale_id:
-                try:
-                    self.ihale_kalem_table.setRowCount(0)
+            try:
+                self.ihale_kalem_table.setRowCount(0)
             except:
                 pass
             return
@@ -4855,12 +4855,12 @@ class MainWindow(QMainWindow):
             # itemChanged sinyalini blokla (tablo yüklenirken sinyal tetiklenmesin)
             self.ihale_kalem_table.blockSignals(True)
             try:
-        kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
-        self.ihale_kalem_table.setRowCount(len(kalemler))
-        
-        toplam = 0.0
-        
-        for row, kalem in enumerate(kalemler):
+                kalemler = self.db.get_ihale_kalemleri(self.current_ihale_id)
+                self.ihale_kalem_table.setRowCount(len(kalemler))
+                
+                toplam = 0.0
+                
+                for row, kalem in enumerate(kalemler):
                     # Sıra (düzenlenemez)
                     sira_item = QTableWidgetItem(str(kalem.get('sira_no', row + 1)))
                     sira_item.setFlags(sira_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -4905,20 +4905,20 @@ class MainWindow(QMainWindow):
                                 pass
                     miktar_text = f"{birim_miktar:,.2f}" if birim_miktar > 0 else ""
                     miktar_item = QTableWidgetItem(miktar_text)
-            miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    miktar_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     # Font'u büyüt ve kalın yap
                     font = miktar_item.font()
                     font.setPointSize(font.pointSize() + 2)  # 2 punto büyüt
                     font.setBold(True)  # Kalın yap
                     miktar_item.setFont(font)
-            self.ihale_kalem_table.setItem(row, 3, miktar_item)
-            
+                    self.ihale_kalem_table.setItem(row, 3, miktar_item)
+                    
                     # Birim (düzenlenebilir)
                     birim_item = QTableWidgetItem(kalem.get('birim', ''))
                     birim_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
                     self.ihale_kalem_table.setItem(row, 4, birim_item)
-            
-            # Birim Fiyat (düzenlenebilir)
+                    
+                    # Birim Fiyat (düzenlenebilir)
                     birim_fiyat = kalem.get('birim_fiyat', 0) or 0
                     # Eğer ihale_kalemleri tablosunda birim_fiyat 0 ise, birim_fiyatlar tablosundan al
                     if birim_fiyat == 0:
@@ -4941,9 +4941,9 @@ class MainWindow(QMainWindow):
                                         self.db.update_ihale_kalem(kalem_id, birim_fiyat=birim_fiyat)
                     
                     fiyat_item = QTableWidgetItem(f"{birim_fiyat:,.2f}")
-            fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.ihale_kalem_table.setItem(row, 5, fiyat_item)
-            
+                    fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.ihale_kalem_table.setItem(row, 5, fiyat_item)
+                    
                     # Toplam (hesaplanır, düzenlenemez) - HER ZAMAN birim miktar ve birim fiyattan hesapla
                     # ÖNEMLİ: Tabloda görünen değerleri kullan (kullanıcı yazmış olabilir)
                     # Tablodan birim miktar ve birim fiyatı oku
@@ -5003,17 +5003,17 @@ class MainWindow(QMainWindow):
                         if abs(db_toplam - toplam_deger) > 0.01:
                             self.db.update_ihale_kalem(kalem_id, birim_miktar=birim_miktar_hesap, birim_fiyat=birim_fiyat_hesap, toplam=toplam_deger)
                     
-            toplam += toplam_deger
-            toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
-            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.ihale_kalem_table.setItem(row, 6, toplam_item)
-            
-            # ID'yi sakla
-            item = self.ihale_kalem_table.item(row, 0)
-            if item:
-                item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
-        
+                    toplam += toplam_deger
+                    toplam_item = QTableWidgetItem(f"{toplam_deger:,.2f} ₺")
+                    toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.ihale_kalem_table.setItem(row, 6, toplam_item)
+                    
+                    # ID'yi sakla
+                    item = self.ihale_kalem_table.item(row, 0)
+                    if item:
+                        item.setData(Qt.ItemDataRole.UserRole, kalem.get('id'))
+                
                 if hasattr(self, 'ihale_total_label'):
                     # KDV hesaplama
                     kdv_rate_text = self.ihale_kdv_rate.currentText().replace("%", "")
@@ -5078,15 +5078,15 @@ class MainWindow(QMainWindow):
         
         # Tanım değiştiyse sadece tanımı güncelle
         if item.column() == 2:
-        row = item.row()
-        kalem_id_item = self.ihale_kalem_table.item(row, 0)
-        if not kalem_id_item:
-            return
-        
-        kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
-        if not kalem_id:
-            return
-        
+            row = item.row()
+            kalem_id_item = self.ihale_kalem_table.item(row, 0)
+            if not kalem_id_item:
+                return
+            
+            kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
+            if not kalem_id:
+                return
+            
             yeni_tanim = item.text().strip()
             if yeni_tanim:
                 self.db.update_ihale_kalem(kalem_id, poz_tanim=yeni_tanim)
@@ -5228,13 +5228,13 @@ class MainWindow(QMainWindow):
                     # Birim miktar, birim ve birim fiyat sütunları kullanıcının yazdığı gibi kalacak
                     
                     # Sadece toplam sütununu güncelle
-            toplam_item = QTableWidgetItem(f"{toplam:,.2f} ₺")
-            toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.ihale_kalem_table.setItem(row, 6, toplam_item)
-            
-            # Genel toplamı güncelle
-            self.update_ihale_total()
+                    toplam_item = QTableWidgetItem(f"{toplam:,.2f} ₺")
+                    toplam_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    toplam_item.setFlags(toplam_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.ihale_kalem_table.setItem(row, 6, toplam_item)
+                    
+                    # Genel toplamı güncelle
+                    self.update_ihale_total()
                 finally:
                     # Sinyali tekrar aç
                     self.ihale_kalem_table.blockSignals(False)
@@ -5254,11 +5254,11 @@ class MainWindow(QMainWindow):
             return
         
         try:
-        toplam = 0.0
-        for row in range(self.ihale_kalem_table.rowCount()):
+            toplam = 0.0
+            for row in range(self.ihale_kalem_table.rowCount()):
                 # Toplam sütunundan oku (6. sütun)
-            toplam_item = self.ihale_kalem_table.item(row, 6)
-            if toplam_item:
+                toplam_item = self.ihale_kalem_table.item(row, 6)
+                if toplam_item:
                     toplam_text = toplam_item.text().replace("₺", "").strip()
                     try:
                         # Türkçe ve İngilizce format desteği
@@ -5287,7 +5287,7 @@ class MainWindow(QMainWindow):
                                 toplam += float(before_last + after_last)
                             else:
                                 # Tek nokta - ondalık ayırıcı
-                    toplam += float(toplam_text)
+                                toplam += float(toplam_text)
                         else:
                             # Sadece sayı
                             toplam += float(toplam_text)
@@ -5336,15 +5336,15 @@ class MainWindow(QMainWindow):
                                 # Çarp ve ekle
                                 toplam += miktar_val * fiyat_val
                         except:
-                    pass
-        
-        # KDV hesaplama
-        kdv_rate_text = self.ihale_kdv_rate.currentText().replace("%", "")
-        kdv_rate = float(kdv_rate_text)
-        kdv_hesap = self.calculator.calculate_with_kdv(toplam, kdv_rate)
-        
-        self.ihale_total_label.setText(f"Toplam (KDV Hariç): {toplam:,.2f} ₺")
-        self.ihale_total_kdv_label.setText(f"Toplam (KDV %{kdv_rate_text} Dahil): {kdv_hesap['kdv_dahil']:,.2f} ₺")
+                            pass
+            
+            # KDV hesaplama
+            kdv_rate_text = self.ihale_kdv_rate.currentText().replace("%", "")
+            kdv_rate = float(kdv_rate_text)
+            kdv_hesap = self.calculator.calculate_with_kdv(toplam, kdv_rate)
+            
+            self.ihale_total_label.setText(f"Toplam (KDV Hariç): {toplam:,.2f} ₺")
+            self.ihale_total_kdv_label.setText(f"Toplam (KDV %{kdv_rate_text} Dahil): {kdv_hesap['kdv_dahil']:,.2f} ₺")
         except Exception as e:
             print(f"İhale toplam güncelleme hatası: {e}")
             import traceback

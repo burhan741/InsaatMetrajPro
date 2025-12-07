@@ -227,7 +227,7 @@ def gui_uygulamasi():
                 from app.ui.taseron_window import TaseronWindow
                 window = TaseronWindow(db=db, splash=splash)
             else:
-                window = MainWindow(splash=splash, user_type=user_type)
+                window = MainWindow(db=db, splash=splash, user_type=user_type)
             
             # Splash screen'i kapat
             splash.finish(window)
