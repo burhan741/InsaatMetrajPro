@@ -29,11 +29,20 @@ echo.
 
 REM PyInstaller ile EXE olustur (Python modulu olarak - PATH sorunu cozumu)
 REM Windows'ta add-data format: "source;destination" (noktali virgul)
+REM Icon kontrolu
+if exist "assets\app_icon.ico" (
+    set ICON_PARAM=--icon=assets\app_icon.ico
+) else (
+    set ICON_PARAM=
+)
+
 python -m PyInstaller --name="InsaatMetrajPro" ^
     --onefile ^
     --windowed ^
-    --icon=NONE ^
+    %ICON_PARAM% ^
     --add-data "app;app" ^
+    --add-data "assets;assets" ^
+    --add-data "data;data" ^
     --hidden-import=PyQt6 ^
     --hidden-import=PyQt6.QtCore ^
     --hidden-import=PyQt6.QtGui ^
@@ -43,13 +52,25 @@ python -m PyInstaller --name="InsaatMetrajPro" ^
     --hidden-import=reportlab ^
     --hidden-import=ezdxf ^
     --hidden-import=sqlite3 ^
+    --hidden-import=pdfplumber ^
+    --hidden-import=matplotlib ^
     --hidden-import=app.core.database ^
     --hidden-import=app.core.calculator ^
     --hidden-import=app.core.material_calculator ^
+    --hidden-import=app.core.dxf_engine ^
+    --hidden-import=app.core.cad_manager ^
     --hidden-import=app.ui.main_window ^
     --hidden-import=app.ui.dialogs ^
+    --hidden-import=app.ui.startup_dialog ^
+    --hidden-import=app.ui.taseron_window ^
+    --hidden-import=app.ui.styles ^
     --hidden-import=app.utils.data_loader ^
     --hidden-import=app.utils.export_manager ^
+    --hidden-import=app.utils.helpers ^
+    --hidden-import=app.utils.pdf_importer ^
+    --hidden-import=app.data.konut_is_kalemleri ^
+    --hidden-import=app.data.malzeme_formulleri ^
+    --hidden-import=app.data.fire_oranlari ^
     --collect-all=PyQt6 ^
     --noconfirm ^
     --clean ^

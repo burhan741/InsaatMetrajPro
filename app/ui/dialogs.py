@@ -3,6 +3,7 @@ Dialog Pencereleri
 Kalem ekleme/düzenleme dialogları
 """
 
+import re
 from typing import Optional, Dict, Any
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -91,10 +92,28 @@ class MetrajItemDialog(QDialog):
         self.miktar_spin.valueChanged.connect(self.calculate_total)
         form.addRow("Birim Fiyat:", self.birim_fiyat_spin)
         
-        # Toplam (otomatik hesaplanır)
-        self.toplam_label = QLabel("0.00 ₺")
-        self.toplam_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        form.addRow("Toplam:", self.toplam_label)
+        # Yükseklik (duvar metrajları için - opsiyonel)
+        self.yukseklik_spin = QDoubleSpinBox()
+        self.yukseklik_spin.setMinimum(0.0)
+        self.yukseklik_spin.setMaximum(10.0)
+        self.yukseklik_spin.setDecimals(2)
+        self.yukseklik_spin.setValue(0.0)
+        self.yukseklik_spin.setSuffix(" m")
+        self.yukseklik_spin.setSpecialValueText("Yok")  # 0 değeri için "Yok" göster
+        form.addRow("Yükseklik (opsiyonel):", self.yukseklik_spin)
+        
+        # Toplam (düzenlenebilir - otomatik hesaplanır ama manuel değiştirilebilir)
+        self.toplam_spin = QDoubleSpinBox()
+        self.toplam_spin.setMinimum(0.0)
+        self.toplam_spin.setMaximum(999999999.99)
+        self.toplam_spin.setDecimals(2)
+        self.toplam_spin.setValue(0.0)
+        self.toplam_spin.setSuffix(" ₺")
+        self.toplam_spin.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        # Otomatik hesaplama için signal bağla
+        self.birim_fiyat_spin.valueChanged.connect(self.calculate_total)
+        self.miktar_spin.valueChanged.connect(self.calculate_total)
+        form.addRow("Toplam:", self.toplam_spin)
         
         # Notlar
         self.notlar_text = QTextEdit()
@@ -207,7 +226,10 @@ class MetrajItemDialog(QDialog):
         miktar = self.miktar_spin.value()
         birim_fiyat = self.birim_fiyat_spin.value()
         toplam = miktar * birim_fiyat
-        self.toplam_label.setText(f"{toplam:.2f} ₺")
+        # Signal'i geçici olarak kes (sonsuz döngüyü önlemek için)
+        self.toplam_spin.blockSignals(True)
+        self.toplam_spin.setValue(toplam)
+        self.toplam_spin.blockSignals(False)
         
     def load_item_data(self) -> None:
         """Mevcut kalem verilerini yükle (düzenleme modu)"""
@@ -237,6 +259,20 @@ class MetrajItemDialog(QDialog):
         self.birim_combo.setCurrentText(self.item_data.get('birim', 'm'))
         self.birim_fiyat_spin.setValue(self.item_data.get('birim_fiyat', 0))
         self.notlar_text.setPlainText(self.item_data.get('notlar', ''))
+        
+        # Yükseklik (tanımdan çıkar veya notlardan oku)
+        yukseklik = 0.0
+        tanim = self.item_data.get('tanim', '')
+        # Tanımdan "H=2.50m" formatını çıkar
+        yukseklik_match = re.search(r'H=(\d+\.?\d*)\s*m', tanim, re.IGNORECASE)
+        if yukseklik_match:
+            yukseklik = float(yukseklik_match.group(1))
+        self.yukseklik_spin.setValue(yukseklik)
+        
+        # Toplam
+        toplam = self.item_data.get('toplam', 0)
+        self.toplam_spin.setValue(toplam)
+        
         self.calculate_total()
         
     def get_data(self) -> Dict[str, Any]:
@@ -252,12 +288,27 @@ class MetrajItemDialog(QDialog):
             if not poz_no or poz_no.strip() == "":
                 poz_no = None
         
+        # Tanımı güncelle (yükseklik varsa ekle)
+        tanim = self.tanim_input.text().strip()
+        yukseklik = self.yukseklik_spin.value()
+        if yukseklik > 0:
+            # Tanımdan eski yükseklik bilgisini kaldır
+            import re
+            tanim = re.sub(r'\s*\(H=\d+\.?\d*\s*m\)', '', tanim, flags=re.IGNORECASE)
+            # Yeni yükseklik bilgisini ekle
+            if not tanim.endswith(')'):
+                tanim += f" (H={yukseklik:.2f}m)"
+        
+        # Toplam (kullanıcı düzenlediyse onu kullan, yoksa otomatik hesaplanan)
+        toplam = self.toplam_spin.value()
+        
         return {
             'poz_no': poz_no if poz_no else None,
-            'tanim': self.tanim_input.text().strip(),
+            'tanim': tanim,
             'miktar': self.miktar_spin.value(),
             'birim': self.birim_combo.currentText().strip(),
             'birim_fiyat': self.birim_fiyat_spin.value(),
+            'toplam': toplam,  # Düzenlenebilir toplam
             'kategori': self.kategori_combo.currentText().strip(),
             'notlar': self.notlar_text.toPlainText().strip()
         }

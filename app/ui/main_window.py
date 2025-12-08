@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QFileDialog, QMessageBox, QLabel, QLineEdit,
     QHeaderView, QSplitter, QGroupBox, QFormLayout, QDoubleSpinBox,
     QComboBox, QTextEdit, QDialog, QMenu, QCheckBox, QScrollArea,
-    QInputDialog
+    QInputDialog, QListWidget, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
 from PyQt6.QtGui import QIcon, QFont, QColor
@@ -159,9 +159,9 @@ class MainWindow(QMainWindow):
             self.hide()  # Müteahhit penceresini gizle
         else:
             self.init_ui()
-            
-            # Veritabanı yüklemelerini async yap (UI'ı bloklamadan)
-            self.load_data_async()
+        
+        # Veritabanı yüklemelerini async yap (UI'ı bloklamadan)
+        self.load_data_async()
         
         # İlk açılışta pozları kontrol et ve yükle (async - arka planda)
         self.check_and_load_pozlar_async()
@@ -1936,7 +1936,10 @@ class MainWindow(QMainWindow):
             self.metraj_table.setItem(row, 0, QTableWidgetItem(str(item['id'])))
             self.metraj_table.setItem(row, 1, QTableWidgetItem(item.get('poz_no', '')))
             self.metraj_table.setItem(row, 2, QTableWidgetItem(item['tanim']))
-            self.metraj_table.setItem(row, 3, QTableWidgetItem(str(item['miktar'])))
+            # Miktar - virgülden sonra max 2 hane
+            miktar = round(item.get('miktar', 0), 2)
+            miktar_text = f"{miktar:,.2f}"
+            self.metraj_table.setItem(row, 3, QTableWidgetItem(miktar_text))
             self.metraj_table.setItem(row, 4, QTableWidgetItem(item['birim']))
             self.metraj_table.setItem(row, 5, QTableWidgetItem(f"{item['birim_fiyat']:.2f}"))
             self.metraj_table.setItem(row, 6, QTableWidgetItem(f"{item['toplam']:.2f}"))
@@ -2190,6 +2193,7 @@ class MainWindow(QMainWindow):
                     miktar=data['miktar'],
                     birim=data['birim'],
                     birim_fiyat=data['birim_fiyat'],
+                    toplam=data.get('toplam', data['miktar'] * data['birim_fiyat']),  # Düzenlenebilir toplam
                     poz_no=data['poz_no'] if data['poz_no'] else '',
                     kategori=data['kategori'] if data['kategori'] else '',
                     notlar=data['notlar'] if data.get('notlar') else ''
@@ -2314,20 +2318,77 @@ class MainWindow(QMainWindow):
         info.setStyleSheet("color: #666; padding: 5px; font-size: 9pt;")
         layout.addWidget(info)
         
-        # Tablo: Katman, Bulunan Uzunluk, Tahmin Yükseklik, Tahmini Alan, Kaynak, Düzeltme
+        # Açıklık Seçimi Bölümü
+        aciklik_group = QGroupBox("🚪 Açıklık Katmanları (Pencere ve Kapı)")
+        aciklik_layout = QVBoxLayout()
+        
+        # Otomatik tespit edilen açıklıklar
+        tespit_edilen_acikliklar = dxf_analiz.acikliklari_tespit_et()
+        pencere_katmanlari = tespit_edilen_acikliklar.get('pencere', [])
+        kapi_katmanlari = tespit_edilen_acikliklar.get('kapi', [])
+        
+        # Pencere seçimi
+        pencere_label = QLabel("Pencere Katmanları:")
+        aciklik_layout.addWidget(pencere_label)
+        pencere_list = QListWidget()
+        pencere_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        pencere_list.setMaximumHeight(80)
+        for katman in pencere_katmanlari:
+            pencere_list.addItem(katman)
+        # Eğer otomatik tespit edilmediyse, tüm katmanlardan seçim yapılabilir
+        if not pencere_katmanlari:
+            pencere_list.addItem("(Otomatik tespit edilmedi - manuel seçim için tüm katmanları kontrol edin)")
+        aciklik_layout.addWidget(pencere_list)
+        
+        # Kapı seçimi
+        kapi_label = QLabel("Kapı Katmanları:")
+        aciklik_layout.addWidget(kapi_label)
+        kapi_list = QListWidget()
+        kapi_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        kapi_list.setMaximumHeight(80)
+        for katman in kapi_katmanlari:
+            kapi_list.addItem(katman)
+        if not kapi_katmanlari:
+            kapi_list.addItem("(Otomatik tespit edilmedi - manuel seçim için tüm katmanları kontrol edin)")
+        aciklik_layout.addWidget(kapi_list)
+        
+        # Manuel katman ekleme (opsiyonel)
+        manuel_label = QLabel("Manuel Katman Ekleme (opsiyonel):")
+        aciklik_layout.addWidget(manuel_label)
+        manuel_input = QLineEdit()
+        manuel_input.setPlaceholderText("Örn: PENCERE_1, KAPI_1 (virgülle ayırın)")
+        aciklik_layout.addWidget(manuel_input)
+        
+        aciklik_group.setLayout(aciklik_layout)
+        layout.addWidget(aciklik_group)
+        
+        # Açıklık bilgisi sakla (dialog kapanana kadar)
+        dialog.pencere_list = pencere_list
+        dialog.kapi_list = kapi_list
+        dialog.manuel_input = manuel_input
+        
+        # Tablo: Katman, Bulunan Uzunluk, Tahmin Yükseklik, Kalınlık, Cins, Tahmini Alan, Kaynak, Düzeltme
         table = QTableWidget()
-        table.setColumnCount(6)
+        table.setColumnCount(8)
         table.setHorizontalHeaderLabels([
-            "Katman Adı", "Bulunan Uzunluk (m)", "Tahmin Yükseklik (m)", "Tahmini Alan (m²)", "Kaynak", "Düzelt"
+            "Katman Adı", "Bulunan Uzunluk (m)", "Tahmin Yükseklik (m)", "Kalınlık (cm)", "Cins", "Tahmini Alan (m²)", "Kaynak", "Düzelt"
         ])
         table.setRowCount(len(katmanlar))
         table.horizontalHeader().setStretchLastSection(True)
-        table.setColumnWidth(0, 180)
-        table.setColumnWidth(1, 140)
-        table.setColumnWidth(2, 140)
-        table.setColumnWidth(3, 140)
+        table.setColumnWidth(0, 150)
+        table.setColumnWidth(1, 120)
+        table.setColumnWidth(2, 120)
+        table.setColumnWidth(3, 100)
+        table.setColumnWidth(4, 100)
+        table.setColumnWidth(5, 120)
+        table.setColumnWidth(6, 120)
         
         yukseklikler = {}
+        # Tabloyu güncellemek için referans sakla
+        self._dxf_dialog_table = table
+        self._dxf_dialog_katmanlar = katmanlar
+        self._dxf_dialog_dxf_analiz = dxf_analiz
+        
         for row, katman in enumerate(katmanlar):
             # Önce uzunluk hesapla (önizleme için)
             uzunluk_sonuc = dxf_analiz.uzunluk_hesapla(katman)
@@ -2338,6 +2399,8 @@ class MainWindow(QMainWindow):
             # Tahmin et
             tahmin = dxf_analiz.duvar_yuksekligi_tahmin_et(katman, self.db)
             yukseklik = tahmin['yukseklik']
+            kalinlik = tahmin.get('kalinlik')
+            cins = tahmin.get('cins')
             
             # Tahmini alan hesapla
             tahmini_alan = uzunluk_m * yukseklik if uzunluk_m > 0 else 0.0
@@ -2363,6 +2426,24 @@ class MainWindow(QMainWindow):
             
             table.setItem(row, 2, QTableWidgetItem(f"{yukseklik:.2f}"))
             
+            # Kalınlık bilgisi
+            kalinlik_text = f"{kalinlik:.1f}" if kalinlik else "-"
+            kalinlik_item = QTableWidgetItem(kalinlik_text)
+            if kalinlik:
+                kalinlik_item.setForeground(Qt.GlobalColor.green)
+            else:
+                kalinlik_item.setForeground(Qt.GlobalColor.gray)
+            table.setItem(row, 3, kalinlik_item)
+            
+            # Cins bilgisi
+            cins_text = cins if cins else "-"
+            cins_item = QTableWidgetItem(cins_text)
+            if cins:
+                cins_item.setForeground(Qt.GlobalColor.green)
+            else:
+                cins_item.setForeground(Qt.GlobalColor.gray)
+            table.setItem(row, 4, cins_item)
+            
             # Tahmini alan
             alan_item = QTableWidgetItem(f"{tahmini_alan:.2f}")
             if tahmini_alan > 0:
@@ -2371,17 +2452,17 @@ class MainWindow(QMainWindow):
                     alan_item.setToolTip("⚠️ Alan çok büyük! Birim kontrolü gerekebilir.")
             else:
                 alan_item.setForeground(Qt.GlobalColor.red)
-            table.setItem(row, 3, alan_item)
+            table.setItem(row, 5, alan_item)
             
-            table.setItem(row, 4, QTableWidgetItem(tahmin['kaynak']))
+            table.setItem(row, 6, QTableWidgetItem(tahmin['kaynak']))
             
             # Düzeltme butonu
             btn_duzelt = QPushButton("Düzelt")
             btn_duzelt.clicked.connect(
-                lambda checked, k=katman, y=yukseklik: 
-                self.duzelt_duvar_yuksekligi(k, y, dialog)
+                lambda checked, k=katman, y=yukseklik, kal=kalinlik, c=cins: 
+                self.duzelt_duvar_yuksekligi(k, y, dialog, kal, c)
             )
-            table.setCellWidget(row, 5, btn_duzelt)
+            table.setCellWidget(row, 7, btn_duzelt)
             
             yukseklikler[katman] = tahmin
         
@@ -2392,9 +2473,78 @@ class MainWindow(QMainWindow):
         btn_layout.addStretch()
         
         btn_kaydet = QPushButton("Kaydet ve Metraj'a Ekle")
-        btn_kaydet.clicked.connect(
-            lambda: self.kaydet_duvar_metraji(dxf_analiz, yukseklikler, dialog)
-        )
+        def kaydet_ve_metraj_ekle():
+            # Tablodan güncel değerleri oku
+            guncel_yukseklikler = {}
+            for row in range(table.rowCount()):
+                katman = table.item(row, 0).text()
+                yukseklik_text = table.item(row, 2).text()
+                kalinlik_text = table.item(row, 3).text()
+                cins_text = table.item(row, 4).text()
+                kaynak_text = table.item(row, 6).text()
+                
+                try:
+                    yukseklik = float(yukseklik_text)
+                except:
+                    yukseklik = 2.80  # Varsayılan
+                
+                kalinlik = None
+                if kalinlik_text and kalinlik_text != "-":
+                    try:
+                        kalinlik = float(kalinlik_text)
+                    except:
+                        pass
+                
+                cins = None
+                if cins_text and cins_text != "-":
+                    cins = cins_text
+                
+                guncel_yukseklikler[katman] = {
+                    'yukseklik': yukseklik,
+                    'birim': 'm',
+                    'kaynak': kaynak_text,
+                    'katman_adi': katman,
+                    'kalinlik': kalinlik,
+                    'cins': cins
+                }
+            
+            # Seçilen açıklık katmanlarını al
+            secilen_pencere_katmanlari = []
+            for item in pencere_list.selectedItems():
+                katman_text = item.text()
+                if not katman_text.startswith("(Otomatik"):
+                    secilen_pencere_katmanlari.append(katman_text)
+            
+            secilen_kapi_katmanlari = []
+            for item in kapi_list.selectedItems():
+                katman_text = item.text()
+                if not katman_text.startswith("(Otomatik"):
+                    secilen_kapi_katmanlari.append(katman_text)
+            
+            # Manuel eklenen katmanlar
+            manuel_text = manuel_input.text().strip()
+            if manuel_text:
+                manuel_katmanlar = [k.strip() for k in manuel_text.split(',') if k.strip()]
+                # Manuel katmanları pencere veya kapı olarak ayırmak için pattern kontrolü
+                for katman in manuel_katmanlar:
+                    katman_lower = katman.lower()
+                    if any(p in katman_lower for p in ['pencere', 'window', 'win', 'p-', 'w-']):
+                        secilen_pencere_katmanlari.append(katman)
+                    elif any(p in katman_lower for p in ['kapı', 'kapi', 'door', 'd-', 'k-']):
+                        secilen_kapi_katmanlari.append(katman)
+                    else:
+                        # Belirsizse kullanıcıya sor (şimdilik kapı olarak ekle)
+                        secilen_kapi_katmanlari.append(katman)
+            
+            aciklik_katmanlari = {
+                'pencere': secilen_pencere_katmanlari,
+                'kapi': secilen_kapi_katmanlari
+            }
+            
+            # Güncel değerlerle metraj ekle
+            self.kaydet_duvar_metraji(dxf_analiz, guncel_yukseklikler, dialog, aciklik_katmanlari)
+        
+        btn_kaydet.clicked.connect(kaydet_ve_metraj_ekle)
         btn_layout.addWidget(btn_kaydet)
         
         btn_kapat = QPushButton("Kapat")
@@ -2406,12 +2556,16 @@ class MainWindow(QMainWindow):
         dialog.exec()
     
     def duzelt_duvar_yuksekligi(self, katman_adi: str, mevcut_yukseklik: float, 
-                                 parent_dialog: QDialog) -> None:
+                                    parent_dialog: QDialog, mevcut_kalinlik: float = None, 
+                                    mevcut_cins: str = None) -> None:
         """Duvar yüksekliğini, cinsini ve kalınlığını düzelt ve öğrenme veritabanına kaydet"""
         # Önce mevcut öğrenilmiş değerleri al
         mevcut_ogrenme = self.db.get_ai_learning(katman_adi)
-        mevcut_cins = mevcut_ogrenme.get('duvar_cinsi', '') if mevcut_ogrenme else ''
-        mevcut_kalinlik = mevcut_ogrenme.get('duvar_kalinligi', 0.0) if mevcut_ogrenme else 0.0
+        # Parametrelerden gelen değerler varsa onları kullan, yoksa veritabanından al
+        if mevcut_cins is None:
+            mevcut_cins = mevcut_ogrenme.get('duvar_cinsi', '') if mevcut_ogrenme else ''
+        if mevcut_kalinlik is None:
+            mevcut_kalinlik = mevcut_ogrenme.get('duvar_kalinligi', 0.0) if mevcut_ogrenme else 0.0
         
         # Dialog oluştur
         dialog = QDialog(parent_dialog)
@@ -2464,7 +2618,11 @@ class MainWindow(QMainWindow):
         kalinlik_label = QLabel("Duvar Kalınlığı (cm):")
         layout.addWidget(kalinlik_label)
         kalinlik_spin = QDoubleSpinBox()
-        kalinlik_spin.setValue(mevcut_kalinlik if mevcut_kalinlik > 0 else 20.0)  # Varsayılan 20 cm
+        # None kontrolü yap
+        if mevcut_kalinlik is not None and mevcut_kalinlik > 0:
+            kalinlik_spin.setValue(mevcut_kalinlik)
+        else:
+            kalinlik_spin.setValue(20.0)  # Varsayılan 20 cm
         kalinlik_spin.setMinimum(5.0)
         kalinlik_spin.setMaximum(100.0)
         kalinlik_spin.setDecimals(1)
@@ -2488,27 +2646,36 @@ class MainWindow(QMainWindow):
             kalinlik = kalinlik_spin.value() if kalinlik_spin.value() > 0 else None
             
             # Öğrenme veritabanına kaydet
-            self.db.save_ai_learning(
-                katman_adi=katman_adi,
-                duvar_yuksekligi=yukseklik,
-                birim='m',
-                kaynak='kullanici',
-                duvar_cinsi=cins,
-                duvar_kalinligi=kalinlik
-            )
+            try:
+                self.db.save_ai_learning(
+                    katman_adi=katman_adi,
+                    duvar_yuksekligi=yukseklik,
+                    birim='m',
+                    kaynak='kullanici',
+                    duvar_cinsi=cins,
+                    duvar_kalinligi=kalinlik
+                )
+                logger.info(f"✅ AI öğrenme veritabanına kaydedildi: {katman_adi} - Yükseklik: {yukseklik}m, Kalınlık: {kalinlik}cm, Cins: {cins}")
+            except Exception as e:
+                logger.error(f"❌ AI öğrenme veritabanına kaydetme hatası: {e}", exc_info=True)
+                QMessageBox.critical(dialog, "Hata", f"Değerler kaydedilemedi:\n{str(e)}")
+                return
+            
+            # Parent dialog'daki tabloyu güncelle
+            if hasattr(self, '_dxf_dialog_table') and self._dxf_dialog_table:
+                self._guncelle_dxf_dialog_tablo_satiri(katman_adi, yukseklik, kalinlik, cins)
             
             # Başarı mesajı
-            mesaj = f"Duvar bilgileri kaydedildi:\n\nYükseklik: {yukseklik:.2f} m"
+            mesaj = f"✅ Duvar bilgileri kaydedildi:\n\nYükseklik: {yukseklik:.2f} m"
             if cins:
                 mesaj += f"\nCins: {cins}"
             if kalinlik:
                 mesaj += f"\nKalınlık: {kalinlik:.1f} cm"
-            mesaj += "\n\nAI bu değerleri öğrendi ve bir sonraki analizde kullanacak."
+            mesaj += "\n\n✅ AI bu değerleri öğrendi ve bir sonraki analizde kullanacak.\n\nTablo güncellendi!"
             
             QMessageBox.information(dialog, "Başarılı", mesaj)
             dialog.accept()
-            # Parent dialog'u kapat ve yeniden göster
-            parent_dialog.accept()
+            # Parent dialog'u kapatma, sadece tabloyu güncelledik
         
         btn_kaydet.clicked.connect(kaydet)
         btn_iptal.clicked.connect(dialog.reject)
@@ -2519,17 +2686,120 @@ class MainWindow(QMainWindow):
         
         dialog.exec()
     
+    def _guncelle_dxf_dialog_tablo_satiri(self, katman_adi: str, yukseklik: float, 
+                                          kalinlik: float = None, cins: str = None) -> None:
+        """DXF dialog tablosundaki belirli bir satırı güncelle"""
+        if not hasattr(self, '_dxf_dialog_table') or not self._dxf_dialog_table:
+            return
+        
+        table = self._dxf_dialog_table
+        dxf_analiz = getattr(self, '_dxf_dialog_dxf_analiz', None)
+        
+        if not dxf_analiz:
+            return
+        
+        # Katmanın satır numarasını bul
+        katmanlar = getattr(self, '_dxf_dialog_katmanlar', [])
+        try:
+            row = katmanlar.index(katman_adi)
+        except ValueError:
+            logger.warning(f"Katman bulunamadı: {katman_adi}")
+            return
+        
+        # Uzunluk hesapla (yeniden)
+        uzunluk_sonuc = dxf_analiz.uzunluk_hesapla(katman_adi)
+        uzunluk_m = uzunluk_sonuc['toplam_miktar']
+        parca_sayisi = uzunluk_sonuc.get('parca_sayisi', 0)
+        
+        # Tahmini alan hesapla
+        tahmini_alan = uzunluk_m * yukseklik if uzunluk_m > 0 else 0.0
+        
+        # Uzunluk bilgisini güncelle
+        uzunluk_text = f"{uzunluk_m:.2f}"
+        if parca_sayisi > 0:
+            uzunluk_text += f" ({parca_sayisi} parça)"
+        uzunluk_item = QTableWidgetItem(uzunluk_text)
+        if uzunluk_m == 0:
+            uzunluk_item.setForeground(Qt.GlobalColor.red)
+        table.setItem(row, 1, uzunluk_item)
+        
+        # Yüksekliği güncelle
+        table.setItem(row, 2, QTableWidgetItem(f"{yukseklik:.2f}"))
+        
+        # Kalınlık bilgisini güncelle
+        kalinlik_text = f"{kalinlik:.1f}" if kalinlik else "-"
+        kalinlik_item = QTableWidgetItem(kalinlik_text)
+        if kalinlik:
+            kalinlik_item.setForeground(Qt.GlobalColor.green)
+        else:
+            kalinlik_item.setForeground(Qt.GlobalColor.gray)
+        table.setItem(row, 3, kalinlik_item)
+        
+        # Cins bilgisini güncelle
+        cins_text = cins if cins else "-"
+        cins_item = QTableWidgetItem(cins_text)
+        if cins:
+            cins_item.setForeground(Qt.GlobalColor.green)
+        else:
+            cins_item.setForeground(Qt.GlobalColor.gray)
+        table.setItem(row, 4, cins_item)
+        
+        # Tahmini alanı güncelle
+        alan_item = QTableWidgetItem(f"{tahmini_alan:.2f}")
+        if tahmini_alan > 0:
+            if tahmini_alan > 1000:
+                alan_item.setForeground(Qt.GlobalColor.yellow)
+                alan_item.setToolTip("⚠️ Alan çok büyük! Birim kontrolü gerekebilir.")
+        else:
+            alan_item.setForeground(Qt.GlobalColor.red)
+        table.setItem(row, 5, alan_item)
+        
+        # Kaynak bilgisini güncelle (kullanıcı düzeltmesi)
+        table.setItem(row, 6, QTableWidgetItem("kullanici"))
+        
+        logger.info(f"✅ DXF dialog tablosu güncellendi: {katman_adi} - Yükseklik: {yukseklik}m, Kalınlık: {kalinlik}cm, Cins: {cins}")
+    
     def kaydet_duvar_metraji(self, dxf_analiz: DXFAnaliz, 
                              yukseklikler: Dict[str, Dict], 
-                             dialog: QDialog) -> None:
-        """Duvar metrajını hesapla ve metraj tablosuna ekle"""
+                             dialog: QDialog, 
+                             aciklik_katmanlari: Dict[str, List[str]] = None) -> None:
+        """Duvar metrajını hesapla ve metraj tablosuna ekle (açıklık çıkarma ile)"""
         try:
             eklenen_sayisi = 0
             atlanan_katmanlar = []
             
+            # Açıklık alanlarını hesapla (tüm pencere ve kapı katmanları için)
+            toplam_aciklik_alani = 0.0
+            aciklik_detaylari = []
+            
+            if aciklik_katmanlari:
+                # Pencere alanları
+                for pencere_katman in aciklik_katmanlari.get('pencere', []):
+                    try:
+                        pencere_alani = dxf_analiz.aciklik_alani_hesapla(pencere_katman)
+                        if pencere_alani > 0:
+                            toplam_aciklik_alani += pencere_alani
+                            aciklik_detaylari.append(f"Pencere ({pencere_katman}): {pencere_alani:.2f} m²")
+                            logger.info(f"🚪 Pencere alanı: {pencere_katman} = {pencere_alani:.2f} m²")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Pencere alanı hesaplanamadı ({pencere_katman}): {e}")
+                
+                # Kapı alanları
+                for kapi_katman in aciklik_katmanlari.get('kapi', []):
+                    try:
+                        kapi_alani = dxf_analiz.aciklik_alani_hesapla(kapi_katman)
+                        if kapi_alani > 0:
+                            toplam_aciklik_alani += kapi_alani
+                            aciklik_detaylari.append(f"Kapı ({kapi_katman}): {kapi_alani:.2f} m²")
+                            logger.info(f"🚪 Kapı alanı: {kapi_katman} = {kapi_alani:.2f} m²")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Kapı alanı hesaplanamadı ({kapi_katman}): {e}")
+            
+            logger.info(f"📊 Toplam açıklık alanı: {toplam_aciklik_alani:.2f} m²")
+            
             for katman, tahmin in yukseklikler.items():
                 yukseklik = tahmin['yukseklik']
-                duvar_alani_m2 = 0.0
+                brut_duvar_alani_m2 = 0.0
                 
                 # Önce uzunluk hesapla (duvarlar genelde LINE entity'leriyle çizilir)
                 uzunluk_sonuc = dxf_analiz.uzunluk_hesapla(katman)
@@ -2545,14 +2815,14 @@ class MainWindow(QMainWindow):
                 logger.info(f"Detay: {detay}")
                 
                 if uzunluk_m > 0:
-                    # Duvar alanı = uzunluk × yükseklik
-                    duvar_alani_m2 = uzunluk_m * yukseklik
+                    # Brüt duvar alanı = uzunluk × yükseklik
+                    brut_duvar_alani_m2 = uzunluk_m * yukseklik
                     
-                    logger.info(f"Hesaplanan duvar alanı: {uzunluk_m:.4f}m × {yukseklik:.2f}m = {duvar_alani_m2:.4f}m²")
+                    logger.info(f"Hesaplanan brüt duvar alanı: {uzunluk_m:.4f}m × {yukseklik:.2f}m = {brut_duvar_alani_m2:.4f}m²")
                     
                     # Birim kontrolü: Eğer sonuç çok büyükse (örn. 10000 m²), birim yanlış olabilir
-                    if duvar_alani_m2 > 1000:
-                        logger.warning(f"⚠️ UYARI: Duvar alanı çok büyük ({duvar_alani_m2:.2f}m²). Birim kontrolü gerekebilir!")
+                    if brut_duvar_alani_m2 > 1000:
+                        logger.warning(f"⚠️ UYARI: Duvar alanı çok büyük ({brut_duvar_alani_m2:.2f}m²). Birim kontrolü gerekebilir!")
                 else:
                     # Uzunluk bulunamadıysa alan hesaplamayı dene (kapalı poligonlar için)
                     alan_sonuc = dxf_analiz.alan_hesapla(katman)
@@ -2564,7 +2834,7 @@ class MainWindow(QMainWindow):
                         # Eğer alan varsa, bu zaten m² cinsinden duvar alanı olabilir
                         # Ama genelde duvarlar için uzunluk × yükseklik kullanılır
                         # Bu durumda alanı direkt kullan (yükseklik zaten dahil olabilir)
-                        duvar_alani_m2 = alan_m2
+                        brut_duvar_alani_m2 = alan_m2
                         logger.info(f"Katman {katman}: Alan bulundu: {alan_m2:.2f}m²")
                     else:
                         atlanan_katmanlar.append(
@@ -2572,21 +2842,67 @@ class MainWindow(QMainWindow):
                         )
                         continue
                 
-                if duvar_alani_m2 <= 0:
+                if brut_duvar_alani_m2 <= 0:
                     atlanan_katmanlar.append(f"{katman} (hesaplanan değer 0)")
                     continue
                 
-                # Metraj kalemi ekle (duvar alanı m² cinsinden)
+                # Net duvar alanı = Brüt duvar alanı - Açıklık alanları
+                net_duvar_alani_m2 = brut_duvar_alani_m2 - toplam_aciklik_alani
+                if net_duvar_alani_m2 < 0:
+                    logger.warning(f"⚠️ Net duvar alanı negatif! ({net_duvar_alani_m2:.2f} m²) - Açıklık alanı çok büyük olabilir.")
+                    net_duvar_alani_m2 = 0.0
+                
+                logger.info(f"📐 {katman}: Brüt: {brut_duvar_alani_m2:.2f} m² - Açıklık: {toplam_aciklik_alani:.2f} m² = Net: {net_duvar_alani_m2:.2f} m²")
+                
+                # Metraj kalemi ekle (net duvar alanı m² cinsinden)
+                tanim = f"{katman} - Duvar Metrajı (H={yukseklik:.2f}m)"
+                if toplam_aciklik_alani > 0:
+                    tanim += f" [Net: {net_duvar_alani_m2:.2f} m², Açıklık: -{toplam_aciklik_alani:.2f} m²]"
+                
                 self.db.add_metraj_kalem(
                     proje_id=self.current_project_id,
-                    tanim=f"{katman} - Duvar Metrajı (H={yukseklik:.2f}m)",
-                    miktar=duvar_alani_m2,
+                    tanim=tanim,
+                    miktar=net_duvar_alani_m2,
                     birim="m²",  # Duvar metrajı m² cinsinden
                     birim_fiyat=0.0,
                     poz_no="",  # Poz no yoksa boş
                     kategori="Duvar"
                 )
                 eklenen_sayisi += 1
+                
+                # Malzeme adet hesaplama (duvar cinsi ve kalınlığına göre)
+                # NET alan kullanılmalı (açıklık çıkarıldıktan sonra)
+                kalinlik = tahmin.get('kalinlik')  # cm cinsinden
+                cins = tahmin.get('cins')  # Bims, Tuğla, vb.
+                
+                if kalinlik and cins:
+                    # Duvar cinsi ve kalınlığına göre malzeme adet hesapla
+                    malzeme_adi, adet_per_m2 = self._duvar_malzeme_hesapla(cins, kalinlik)
+                    
+                    if malzeme_adi and adet_per_m2:
+                        # Fire oranı %5
+                        fire_orani = 0.05
+                        gerekli_adet = (net_duvar_alani_m2 * adet_per_m2) * (1 + fire_orani)
+                        
+                        logger.info(f"📦 Malzeme hesaplama: {katman}")
+                        logger.info(f"   Cins: {cins}, Kalınlık: {kalinlik}cm")
+                        logger.info(f"   Net Alan: {net_duvar_alani_m2:.2f}m² (Brüt: {brut_duvar_alani_m2:.2f}m² - Açıklık: {toplam_aciklik_alani:.2f}m²)")
+                        logger.info(f"   m² başına adet: {adet_per_m2}")
+                        logger.info(f"   Fire oranı: %{fire_orani*100}")
+                        logger.info(f"   Gerekli adet: {gerekli_adet:.0f} adet")
+                        
+                        # Malzeme kalemi ekle
+                        self.db.add_metraj_kalem(
+                            proje_id=self.current_project_id,
+                            tanim=f"{katman} - {malzeme_adi} (Kalınlık: {kalinlik}cm, Fire: %5)",
+                            miktar=round(gerekli_adet, 0),  # Adet olduğu için yuvarla
+                            birim="adet",
+                            birim_fiyat=0.0,
+                            poz_no="",
+                            kategori="Duvar Malzemeleri"
+                        )
+                        eklenen_sayisi += 1
+                        logger.info(f"✅ Malzeme kalemi eklendi: {malzeme_adi} - {gerekli_adet:.0f} adet")
             
             if eklenen_sayisi > 0:
                 # Toplam hesaplanan alanı göster
@@ -2596,9 +2912,18 @@ class MainWindow(QMainWindow):
                     if dxf_analiz.uzunluk_hesapla(k).get('toplam_miktar', 0) > 0
                 ])
                 
-                mesaj = f"✅ {eklenen_sayisi} duvar metraj kalemi eklendi.\n"
-                mesaj += f"Toplam hesaplanan duvar alanı: {toplam_hesaplanan:.2f} m²\n"
-                mesaj += f"Metraj Cetveli sekmesinde görüntüleyebilirsiniz.\n\n"
+                mesaj = f"✅ {eklenen_sayisi} duvar metraj kalemi eklendi.\n\n"
+                mesaj += f"📊 Toplam brüt duvar alanı: {toplam_hesaplanan:.2f} m²\n"
+                
+                if toplam_aciklik_alani > 0:
+                    mesaj += f"🚪 Çıkarılan açıklık alanı: {toplam_aciklik_alani:.2f} m²\n"
+                    mesaj += f"📐 Net duvar alanı: {toplam_hesaplanan - toplam_aciklik_alani:.2f} m²\n"
+                    if aciklik_detaylari:
+                        mesaj += f"\n📋 Açıklık detayları:\n" + "\n".join([f"  • {d}" for d in aciklik_detaylari])
+                else:
+                    mesaj += f"📐 Net duvar alanı: {toplam_hesaplanan:.2f} m² (açıklık çıkarılmadı)\n"
+                
+                mesaj += f"\nMetraj Cetveli sekmesinde görüntüleyebilirsiniz.\n\n"
                 mesaj += f"💡 İpucu: Eğer sonuç beklenenden farklıysa, birim seçimini kontrol edin.\n"
                 mesaj += f"   (Çizim birimi: {dxf_analiz.birim})"
                 
@@ -2616,10 +2941,91 @@ class MainWindow(QMainWindow):
                     mesaj += "Çizgi veya alan bulunamayan katmanlar atlandı."
                 QMessageBox.warning(dialog, "Uyarı", mesaj)
         except Exception as e:
+            logger.error(f"❌ Metraj kaydetme hatası: {e}", exc_info=True)
             QMessageBox.critical(
                 dialog, "Hata",
                 f"Metraj kaydedilirken hata oluştu:\n{str(e)}"
             )
+    
+    def _duvar_malzeme_hesapla(self, cins: str, kalinlik: float) -> tuple:
+        """
+        Duvar cinsi ve kalınlığına göre malzeme adet hesapla.
+        
+        Args:
+            cins: Duvar cinsi (Bims, Tuğla, Gazbeton, vb.)
+            kalinlik: Duvar kalınlığı (cm)
+            
+        Returns:
+            tuple: (malzeme_adi, adet_per_m2) veya (None, None)
+        """
+        if not cins or not kalinlik:
+            return (None, None)
+        
+        cins_lower = cins.lower()
+        kalinlik = round(kalinlik, 0)  # cm'ye yuvarla
+        
+        # Duvar cinsi ve kalınlığına göre m² başına adet
+        # Kaynak: Standart inşaat formülleri
+        # Bims tuğla boyutları: 20x39x18.5 cm (kalınlık x uzunluk x yükseklik)
+        malzeme_formulleri = {
+            # Bims / Gazbeton
+            ('bims', 20): ('Bims', 12.5),  # 20x39x18.5 cm bims tuğla (standart)
+            ('bims', 25): ('Bims', 10.0),   # 25x39x18.5 cm bims tuğla
+            ('bims', 30): ('Bims', 8.33),   # 30x39x18.5 cm bims tuğla
+            ('gazbeton', 20): ('Gazbeton', 6.25),  # 60x25x20 cm gazbeton blok (standart)
+            ('gazbeton', 25): ('Gazbeton', 5.0),   # 60x25x25 cm gazbeton blok
+            ('gazbeton', 30): ('Gazbeton', 4.17),  # 60x25x30 cm gazbeton blok
+            
+            # Tuğla
+            ('tuğla', 9): ('Tuğla', 55),   # 9cm tuğla duvar
+            ('tuğla', 19): ('Tuğla', 55),  # 19cm tuğla duvar
+            ('tugla', 9): ('Tuğla', 55),
+            ('tugla', 19): ('Tuğla', 55),
+            
+            # Briket
+            ('briket', 20): ('Briket', 12.5),  # 20cm briket
+            ('briket', 25): ('Briket', 10.0),  # 25cm briket
+            
+            # Beton
+            ('beton', 20): ('Beton', 0.0),  # Beton için adet hesaplanmaz (m³)
+            ('beton', 25): ('Beton', 0.0),
+        }
+        
+        # Tam eşleşme ara
+        key = (cins_lower, kalinlik)
+        if key in malzeme_formulleri:
+            return malzeme_formulleri[key]
+        
+        # Yakın kalınlık ara (5cm tolerans)
+        for (c, k), (malzeme, adet) in malzeme_formulleri.items():
+            if c == cins_lower and abs(k - kalinlik) <= 5:
+                logger.info(f"⚠️ Tam eşleşme bulunamadı, yakın değer kullanıldı: {cins} {kalinlik}cm -> {malzeme} {k}cm ({adet} adet/m²)")
+                return (malzeme, adet)
+        
+        # Varsayılan değerler (cins eşleşirse)
+        if 'bims' in cins_lower:
+            if 15 <= kalinlik <= 25:
+                return ('Bims', 12.5)  # 20cm varsayılan (standart bims tuğla)
+            elif kalinlik > 25:
+                return ('Bims', 10.0)   # 25cm varsayılan
+        
+        if 'gazbeton' in cins_lower:
+            if 15 <= kalinlik <= 25:
+                return ('Gazbeton', 6.25)  # 20cm varsayılan (standart gazbeton blok)
+            elif kalinlik > 25:
+                return ('Gazbeton', 5.0)   # 25cm varsayılan
+        
+        if 'tuğla' in cins_lower or 'tugla' in cins_lower:
+            return ('Tuğla', 55)  # Standart tuğla
+        
+        if 'briket' in cins_lower:
+            if kalinlik <= 20:
+                return ('Briket', 12.5)
+            else:
+                return ('Briket', 10.0)
+        
+        logger.warning(f"⚠️ Duvar cinsi/kalınlık için formül bulunamadı: {cins} {kalinlik}cm")
+        return (None, None)
             
     # Taşeron İşlemleri
     def load_taseron_data(self) -> None:
@@ -3218,7 +3624,7 @@ class MainWindow(QMainWindow):
                     f"Sekme değiştirilirken bir hata oluştu:\n{str(e)}\n\n"
                     f"Hata detayları 'error_log.txt' dosyasına kaydedildi.\n\n"
                     f"Lütfen programı yeniden başlatın."
-                )
+            )
             except Exception as msg_error:
                 print(f"QMessageBox hatası: {msg_error}")
                 # Uygulamayı kapatma, sadece logla
@@ -4694,7 +5100,7 @@ class MainWindow(QMainWindow):
                         search_lower in kategori or
                         search_lower in notlar):
                         filtered_items.append(item)
-                
+            
                 # Metraj tablosunu filtrele
                 self.metraj_table.setRowCount(len(filtered_items))
                 for row, item in enumerate(filtered_items):
@@ -4705,7 +5111,7 @@ class MainWindow(QMainWindow):
                     self.metraj_table.setItem(row, 4, QTableWidgetItem(item.get('birim', '')))
                     self.metraj_table.setItem(row, 5, QTableWidgetItem(f"{item.get('birim_fiyat', 0):,.2f}"))
                     self.metraj_table.setItem(row, 6, QTableWidgetItem(f"{item.get('toplam', 0):,.2f}"))
-                
+            
                 # Toplamı güncelle (KDV ile)
                 toplam = sum(item.get('toplam', 0) for item in filtered_items)
                 kdv_rate_text = self.metraj_kdv_rate.currentText().replace("%", "")
@@ -6158,13 +6564,13 @@ class MainWindow(QMainWindow):
         if item.column() == 2:
             row = item.row()
             kalem_id_item = self.ihale_kalem_table.item(row, 0)
-            if not kalem_id_item:
-                return
-            
-            kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
-            if not kalem_id:
-                return
-            
+        if not kalem_id_item:
+            return
+        
+        kalem_id = kalem_id_item.data(Qt.ItemDataRole.UserRole)
+        if not kalem_id:
+            return
+        
             yeni_tanim = item.text().strip()
             if yeni_tanim:
                 self.db.update_ihale_kalem(kalem_id, poz_tanim=yeni_tanim)
@@ -6334,87 +6740,87 @@ class MainWindow(QMainWindow):
         try:
             toplam = 0.0
             for row in range(self.ihale_kalem_table.rowCount()):
-                # Toplam sütunundan oku (6. sütun)
-                toplam_item = self.ihale_kalem_table.item(row, 6)
-                if toplam_item:
-                    toplam_text = toplam_item.text().replace("₺", "").strip()
-                    try:
-                        # Türkçe ve İngilizce format desteği
-                        toplam_text = toplam_text.replace(" ", "")
-                        if ',' in toplam_text and '.' in toplam_text:
-                            # Son noktadan önceki kısmı kontrol et
-                            last_dot = toplam_text.rfind('.')
-                            last_comma = toplam_text.rfind(',')
-                            if last_dot > last_comma:
-                                # Nokta ondalık ayırıcı (İngilizce format: 19,100.00)
-                                toplam += float(toplam_text.replace(',', ''))
-                            else:
-                                # Virgül ondalık ayırıcı (Türkçe format: 19.100,00)
-                                toplam += float(toplam_text.replace('.', '').replace(',', '.'))
-                        elif ',' in toplam_text:
-                            # Sadece virgül var - Türkçe format (ondalık ayırıcı)
-                            toplam += float(toplam_text.replace(',', '.'))
-                        elif '.' in toplam_text:
-                            # Sadece nokta var - kontrol et
-                            dot_count = toplam_text.count('.')
-                            if dot_count > 1:
-                                # Son noktadan önceki noktaları kaldır
-                                last_dot = toplam_text.rfind('.')
-                                before_last = toplam_text[:last_dot].replace('.', '')
-                                after_last = toplam_text[last_dot:]
-                                toplam += float(before_last + after_last)
-                            else:
-                                # Tek nokta - ondalık ayırıcı
-                                toplam += float(toplam_text)
-                        else:
-                            # Sadece sayı
-                            toplam += float(toplam_text)
-                    except (ValueError, AttributeError) as e:
-                        print(f"Toplam parse hatası (satır {row}): {toplam_text} -> {e}")
-                        # Alternatif: Birim miktar ve birim fiyattan hesapla
+                    # Toplam sütunundan oku (6. sütun)
+                    toplam_item = self.ihale_kalem_table.item(row, 6)
+                    if toplam_item:
+                        toplam_text = toplam_item.text().replace("₺", "").strip()
                         try:
-                            miktar_item = self.ihale_kalem_table.item(row, 3)
-                            fiyat_item = self.ihale_kalem_table.item(row, 5)
-                            if miktar_item and fiyat_item:
-                                miktar_text = miktar_item.text().strip()
-                                fiyat_text = fiyat_item.text().replace("₺", "").strip()
-                                
-                                # Miktar parse
-                                miktar_val = 0.0
-                                if miktar_text:
-                                    miktar_text = miktar_text.replace(" ", "")
-                                    if ',' in miktar_text and '.' in miktar_text:
-                                        last_dot = miktar_text.rfind('.')
-                                        last_comma = miktar_text.rfind(',')
-                                        if last_dot > last_comma:
-                                            miktar_val = float(miktar_text.replace(',', ''))
+                            # Türkçe ve İngilizce format desteği
+                            toplam_text = toplam_text.replace(" ", "")
+                            if ',' in toplam_text and '.' in toplam_text:
+                                # Son noktadan önceki kısmı kontrol et
+                                last_dot = toplam_text.rfind('.')
+                                last_comma = toplam_text.rfind(',')
+                                if last_dot > last_comma:
+                                    # Nokta ondalık ayırıcı (İngilizce format: 19,100.00)
+                                    toplam += float(toplam_text.replace(',', ''))
+                                else:
+                                    # Virgül ondalık ayırıcı (Türkçe format: 19.100,00)
+                                    toplam += float(toplam_text.replace('.', '').replace(',', '.'))
+                            elif ',' in toplam_text:
+                                # Sadece virgül var - Türkçe format (ondalık ayırıcı)
+                                toplam += float(toplam_text.replace(',', '.'))
+                            elif '.' in toplam_text:
+                                # Sadece nokta var - kontrol et
+                                dot_count = toplam_text.count('.')
+                                if dot_count > 1:
+                                    # Son noktadan önceki noktaları kaldır
+                                    last_dot = toplam_text.rfind('.')
+                                    before_last = toplam_text[:last_dot].replace('.', '')
+                                    after_last = toplam_text[last_dot:]
+                                    toplam += float(before_last + after_last)
+                                else:
+                                    # Tek nokta - ondalık ayırıcı
+                                    toplam += float(toplam_text)
+                            else:
+                                # Sadece sayı
+                                toplam += float(toplam_text)
+                        except (ValueError, AttributeError) as e:
+                            print(f"Toplam parse hatası (satır {row}): {toplam_text} -> {e}")
+                            # Alternatif: Birim miktar ve birim fiyattan hesapla
+                            try:
+                                miktar_item = self.ihale_kalem_table.item(row, 3)
+                                fiyat_item = self.ihale_kalem_table.item(row, 5)
+                                if miktar_item and fiyat_item:
+                                    miktar_text = miktar_item.text().strip()
+                                    fiyat_text = fiyat_item.text().replace("₺", "").strip()
+                                    
+                                    # Miktar parse
+                                    miktar_val = 0.0
+                                    if miktar_text:
+                                        miktar_text = miktar_text.replace(" ", "")
+                                        if ',' in miktar_text and '.' in miktar_text:
+                                            last_dot = miktar_text.rfind('.')
+                                            last_comma = miktar_text.rfind(',')
+                                            if last_dot > last_comma:
+                                                miktar_val = float(miktar_text.replace(',', ''))
+                                            else:
+                                                miktar_val = float(miktar_text.replace('.', '').replace(',', '.'))
+                                        elif ',' in miktar_text:
+                                            miktar_val = float(miktar_text.replace(',', '.'))
                                         else:
-                                            miktar_val = float(miktar_text.replace('.', '').replace(',', '.'))
-                                    elif ',' in miktar_text:
-                                        miktar_val = float(miktar_text.replace(',', '.'))
-                                    else:
-                                        miktar_val = float(miktar_text.replace(',', '.'))
-                                
-                                # Fiyat parse
-                                fiyat_val = 0.0
-                                if fiyat_text:
-                                    fiyat_text = fiyat_text.replace(" ", "")
-                                    if ',' in fiyat_text and '.' in fiyat_text:
-                                        last_dot = fiyat_text.rfind('.')
-                                        last_comma = fiyat_text.rfind(',')
-                                        if last_dot > last_comma:
-                                            fiyat_val = float(fiyat_text.replace(',', ''))
+                                            miktar_val = float(miktar_text.replace(',', '.'))
+                                    
+                                    # Fiyat parse
+                                    fiyat_val = 0.0
+                                    if fiyat_text:
+                                        fiyat_text = fiyat_text.replace(" ", "")
+                                        if ',' in fiyat_text and '.' in fiyat_text:
+                                            last_dot = fiyat_text.rfind('.')
+                                            last_comma = fiyat_text.rfind(',')
+                                            if last_dot > last_comma:
+                                                fiyat_val = float(fiyat_text.replace(',', ''))
+                                            else:
+                                                fiyat_val = float(fiyat_text.replace('.', '').replace(',', '.'))
+                                        elif ',' in fiyat_text:
+                                            fiyat_val = float(fiyat_text.replace(',', '.'))
                                         else:
-                                            fiyat_val = float(fiyat_text.replace('.', '').replace(',', '.'))
-                                    elif ',' in fiyat_text:
-                                        fiyat_val = float(fiyat_text.replace(',', '.'))
-                                    else:
-                                        fiyat_val = float(fiyat_text.replace(',', '.'))
-                                
-                                # Çarp ve ekle
-                                toplam += miktar_val * fiyat_val
-                        except:
-                            pass
+                                            fiyat_val = float(fiyat_text.replace(',', '.'))
+                                    
+                                    # Çarp ve ekle
+                                    toplam += miktar_val * fiyat_val
+                            except:
+                                pass
             
             # KDV hesaplama
             kdv_rate_text = self.ihale_kdv_rate.currentText().replace("%", "")
@@ -6883,13 +7289,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Modüller yeniden yükleniyor...")
             QApplication.processEvents()
             
-            # 1. Önce tüm core modülleri yeniden yükle
+            # 1. Önce tüm core ve UI modüllerini yeniden yükle
             modules_to_reload = [
                 'app.core.dxf_engine',
                 'app.core.database',
                 'app.core.calculator',
                 'app.core.material_calculator',
                 'app.core.cad_manager',
+                'app.ui.dialogs',  # Dialog sınıfları için
             ]
             
             reloaded_count = 0
@@ -6939,7 +7346,18 @@ class MainWindow(QMainWindow):
                 
                 # Sınıfları güncelle
                 self.DXFAnaliz = DXFAnaliz
-                logger.info("✅ Import'lar yenilendi")
+                
+                # Dialog modülünü yeniden import et (cache'i temizlemek için)
+                if 'app.ui.dialogs' in sys.modules:
+                    # Önce mevcut import'ları temizle
+                    import app.ui.dialogs
+                    # Modülü yeniden yükle
+                    importlib.reload(app.ui.dialogs)
+                    # Dialog sınıflarını yeniden import et
+                    from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
+                    logger.info("✅ Dialog sınıfları yeniden yüklendi")
+                
+                logger.info("✅ Import'lar yenilendi (core + dialogs)")
             except Exception as e:
                 logger.warning(f"⚠️ Import yenileme hatası: {e}")
             

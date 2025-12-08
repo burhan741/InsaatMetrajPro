@@ -1,11 +1,68 @@
 import os
 import sys
+import logging
 from pathlib import Path
+
+# ⚠️ ÖNEMLİ: Logging konfigürasyonunu EN BAŞTA yap (import'lardan ÖNCE)
+# Çünkü modüller import edilirken logger'lar oluşturuluyor ve o anda
+# logging konfigürasyonu aktif olmalı
+
+def setup_logging():
+    """Logging konfigürasyonunu ayarla - EN BAŞTA ÇAĞRILMALI"""
+    error_log_path = Path(__file__).parent / "error_log.txt"
+    
+    # Önceki handler'ları temizle (tekrar çağrılırsa duplicate log olmasın)
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+        handler.close()
+    
+    # Hem konsola hem dosyaya yazacak handler'lar oluştur
+    try:
+        file_handler = logging.FileHandler(error_log_path, encoding='utf-8', mode='a')
+        file_handler.setLevel(logging.DEBUG)  # Tüm logları dosyaya yaz
+        
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)  # Sadece INFO ve üzeri konsola
+        
+        # Format
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        # Root logger'ı ayarla
+        root_logger.setLevel(logging.DEBUG)  # Tüm logları yakala
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(console_handler)
+        
+        # Tüm alt logger'ların da DEBUG seviyesinde olmasını sağla
+        logging.getLogger('app').setLevel(logging.DEBUG)
+        logging.getLogger('app.core').setLevel(logging.DEBUG)
+        logging.getLogger('app.ui').setLevel(logging.DEBUG)
+        
+        logging.info("="*60)
+        logging.info("✅ Logging konfigürasyonu aktif - DEBUG seviyesi")
+        logging.info(f"📝 Log dosyası: {error_log_path}")
+        logging.info("="*60)
+    except Exception as e:
+        # Logging kurulumu başarısız olsa bile uygulama çalışsın
+        print(f"⚠️ Logging kurulum hatası: {e}")
+
+# Logging'i EN BAŞTA başlat (import'lardan ÖNCE)
+setup_logging()
+
+# Şimdi diğer modülleri import et
 from PyQt6.QtWidgets import QApplication, QSplashScreen, QMessageBox
 from PyQt6.QtCore import Qt, QFileSystemWatcher, QTimer
 from PyQt6.QtGui import QPixmap, QFont
 from app.ui.main_window import MainWindow
 from app.ui.styles import apply_dark_theme
+
+# Import sonrası test logu
+logging.info("📦 Modüller import edildi - Uygulama hazır")
 
 # --- AYARLAR ---
 DOSYA_ADI = "senin_dosyanin_adi.dxf"  # <-- Dosya adını buraya yaz
@@ -32,6 +89,8 @@ def log_error_to_file(error_msg: str, error_trace: str = "") -> None:
 
 def gui_uygulamasi():
     """PyQt6 GUI uygulamasını başlat"""
+    logging.info("🚀 gui_uygulamasi() fonksiyonu çağrıldı - GUI başlatılıyor...")
+    
     # Global exception handler (tüm yakalanmamış hatalar için)
     def exception_handler(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):

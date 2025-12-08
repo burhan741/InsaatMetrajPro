@@ -401,6 +401,22 @@ class DatabaseManager:
                 )
             """)
             
+            # AI Metraj Öğrenme tablosu (Duvar yüksekliği öğrenme)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ai_metraj_ogrenme (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    katman_adi TEXT NOT NULL,
+                    duvar_yuksekligi REAL NOT NULL,
+                    birim TEXT DEFAULT 'm',
+                    kaynak TEXT DEFAULT 'kullanici',  -- 'kullanici', 'katman_ismi', 'text_entity'
+                    kullanici_duzeltmesi INTEGER DEFAULT 0,  -- 1 ise kullanıcı düzeltmesi
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    kullanim_sayisi INTEGER DEFAULT 1,
+                    UNIQUE(katman_adi)
+                )
+            """)
+            
             # İndeksler
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_taseron_personel_is 
@@ -421,6 +437,22 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS idx_taseron_gelir_gider_tarih 
                 ON taseron_gelir_gider(tarih)
             """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ai_metraj_katman 
+                ON ai_metraj_ogrenme(katman_adi)
+            """)
+            
+            # Migration: Duvar cinsi ve kalınlığı kolonlarını ekle
+            try:
+                cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_cinsi TEXT")
+            except sqlite3.OperationalError:
+                pass  # Kolon zaten varsa hata verme
+            
+            try:
+                cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_kalinligi REAL")
+            except sqlite3.OperationalError:
+                pass  # Kolon zaten varsa hata verme
             
             conn.commit()
             
@@ -655,19 +687,20 @@ class DatabaseManager:
         if not kwargs:
             return False
             
-        # Toplam hesapla
-        if 'miktar' in kwargs and 'birim_fiyat' in kwargs:
-            kwargs['toplam'] = kwargs['miktar'] * kwargs['birim_fiyat']
-        elif 'miktar' in kwargs or 'birim_fiyat' in kwargs:
-            # Mevcut değerleri al
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT miktar, birim_fiyat FROM metraj_kalemleri WHERE id = ?", (item_id,))
-                row = cursor.fetchone()
-                if row:
-                    miktar = kwargs.get('miktar', row['miktar'])
-                    birim_fiyat = kwargs.get('birim_fiyat', row['birim_fiyat'])
-                    kwargs['toplam'] = miktar * birim_fiyat
+        # Toplam hesapla (eğer toplam parametresi verilmişse onu kullan, yoksa otomatik hesapla)
+        if 'toplam' not in kwargs:
+            if 'miktar' in kwargs and 'birim_fiyat' in kwargs:
+                kwargs['toplam'] = kwargs['miktar'] * kwargs['birim_fiyat']
+            elif 'miktar' in kwargs or 'birim_fiyat' in kwargs:
+                # Mevcut değerleri al
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT miktar, birim_fiyat FROM metraj_kalemleri WHERE id = ?", (item_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        miktar = kwargs.get('miktar', row['miktar'])
+                        birim_fiyat = kwargs.get('birim_fiyat', row['birim_fiyat'])
+                        kwargs['toplam'] = miktar * birim_fiyat
                     
         fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
         values = list(kwargs.values()) + [item_id]
@@ -2418,7 +2451,7 @@ class DatabaseManager:
         
         Args:
             version_id: Versiyon ID'si
-            
+
         Returns:
             bool: Başarılı ise True
         """
@@ -2429,5 +2462,118 @@ class DatabaseManager:
                 return True
         except Exception as e:
             print(f"Versiyon silme hatası: {e}")
+            return False
+    
+    # AI Metraj Öğrenme İşlemleri
+    def save_ai_learning(self, katman_adi: str, duvar_yuksekligi: float, 
+                        birim: str = 'm', kaynak: str = 'kullanici',
+                        duvar_cinsi: Optional[str] = None,
+                        duvar_kalinligi: Optional[float] = None) -> int:
+        """
+        AI öğrenme verisini kaydet veya güncelle.
+        
+        Args:
+            katman_adi: Katman adı
+            duvar_yuksekligi: Duvar yüksekliği değeri
+            birim: Birim ('m', 'cm', 'mm')
+            kaynak: Veri kaynağı ('kullanici', 'katman_ismi', 'text_entity')
+            duvar_cinsi: Duvar cinsi (örn: 'tuğla', 'beton', 'gazbeton')
+            duvar_kalinligi: Duvar kalınlığı (cm cinsinden)
+            
+        Returns:
+            int: Kayıt ID'si
+        """
+        now = datetime.now().isoformat()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Önce var mı kontrol et
+            cursor.execute("""
+                SELECT id, kullanim_sayisi FROM ai_metraj_ogrenme 
+                WHERE katman_adi = ?
+            """, (katman_adi,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Güncelle
+                kullanim_sayisi = existing['kullanim_sayisi'] + 1
+                cursor.execute("""
+                    UPDATE ai_metraj_ogrenme
+                    SET duvar_yuksekligi = ?, birim = ?, kaynak = ?,
+                        kullanici_duzeltmesi = ?,
+                        duvar_cinsi = ?, duvar_kalinligi = ?,
+                        guncelleme_tarihi = ?, kullanim_sayisi = ?
+                    WHERE katman_adi = ?
+                """, (duvar_yuksekligi, birim, kaynak, 
+                      1 if kaynak == 'kullanici' else 0,
+                      duvar_cinsi, duvar_kalinligi,
+                      now, kullanim_sayisi, katman_adi))
+                return existing['id']
+            else:
+                # Yeni kayıt
+                cursor.execute("""
+                    INSERT INTO ai_metraj_ogrenme 
+                    (katman_adi, duvar_yuksekligi, birim, kaynak, 
+                     kullanici_duzeltmesi, duvar_cinsi, duvar_kalinligi,
+                     olusturma_tarihi, guncelleme_tarihi, kullanim_sayisi)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (katman_adi, duvar_yuksekligi, birim, kaynak,
+                      1 if kaynak == 'kullanici' else 0,
+                      duvar_cinsi, duvar_kalinligi,
+                      now, now, 1))
+                return cursor.lastrowid
+    
+    def get_ai_learning(self, katman_adi: str) -> Optional[Dict[str, Any]]:
+        """
+        Katman adına göre öğrenilmiş duvar bilgilerini getir.
+        
+        Args:
+            katman_adi: Katman adı
+            
+        Returns:
+            Dict: Öğrenme verisi (duvar_yuksekligi, duvar_cinsi, duvar_kalinligi vb.) veya None
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM ai_metraj_ogrenme 
+                WHERE katman_adi = ?
+                ORDER BY kullanici_duzeltmesi DESC, kullanim_sayisi DESC
+                LIMIT 1
+            """, (katman_adi,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def get_all_ai_learning(self) -> List[Dict[str, Any]]:
+        """
+        Tüm AI öğrenme verilerini getir.
+        
+        Returns:
+            List[Dict]: Tüm öğrenme verileri
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM ai_metraj_ogrenme 
+                ORDER BY kullanici_duzeltmesi DESC, kullanim_sayisi DESC, olusturma_tarihi DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def delete_ai_learning(self, learning_id: int) -> bool:
+        """
+        AI öğrenme verisini sil.
+        
+        Args:
+            learning_id: Öğrenme kaydı ID'si
+            
+        Returns:
+            bool: Başarılı ise True
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM ai_metraj_ogrenme WHERE id = ?", (learning_id,))
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"AI öğrenme silme hatası: {e}")
             return False
 
