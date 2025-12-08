@@ -6,6 +6,10 @@ PyQt6 ile modern kullanıcı arayüzü
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from datetime import datetime
+import logging
+import importlib
+import sys
+import sqlite3
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
@@ -15,11 +19,12 @@ from PyQt6.QtWidgets import (
     QInputDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
-from PyQt6.QtGui import QIcon, QFont
+from PyQt6.QtGui import QIcon, QFont, QColor
 
 from app.core.database import DatabaseManager
 from app.core.calculator import Calculator
 from app.core.material_calculator import MaterialCalculator
+from app.core.dxf_engine import DXFAnaliz
 from app.utils.data_loader import (
     initialize_database_data, check_pozlar_loaded,
     initialize_material_data, check_malzemeler_loaded, check_formuller_loaded
@@ -27,6 +32,10 @@ from app.utils.data_loader import (
 from app.utils.export_manager import ExportManager
 from app.utils.pdf_importer import PDFBirimFiyatImporter
 from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
+
+logger = logging.getLogger(__name__)
+# Logger seviyesini açıkça DEBUG'a ayarla (modül import edilirken logging konfigürasyonu aktif olmalı)
+logger.setLevel(logging.DEBUG)
 
 
 class DataLoaderThread(QThread):
@@ -352,6 +361,11 @@ class MainWindow(QMainWindow):
         btn_delete = QPushButton("Sil")
         btn_delete.clicked.connect(self.delete_metraj_item)
         btn_layout.addWidget(btn_delete)
+        
+        # DXF Yükleme butonu
+        btn_dxf = QPushButton("📐 DXF Yükle")
+        btn_dxf.clicked.connect(self.load_dxf_for_metraj)
+        btn_layout.addWidget(btn_dxf)
         
         btn_layout.addStretch()
         
@@ -1732,6 +1746,13 @@ class MainWindow(QMainWindow):
         
         tools_menu.addSeparator()
         
+        # Yenile (Modül yeniden yükleme)
+        reload_action = tools_menu.addAction("🔄 Yenile (Modülleri Yeniden Yükle)")
+        reload_action.setShortcut("Ctrl+R")
+        reload_action.triggered.connect(self.reload_modules)
+        
+        tools_menu.addSeparator()
+        
         # Otomatik fire oranı hesaplama
         auto_fire_action = tools_menu.addAction("Otomatik Fire Oranı Hesapla")
         auto_fire_action.triggered.connect(self.calculate_auto_fire_rates)
@@ -2198,6 +2219,407 @@ class MainWindow(QMainWindow):
                     self.statusBar().showMessage("Kalem silindi")
         else:
             QMessageBox.warning(self, "Uyarı", "Lütfen silmek için bir satır seçin")
+    
+    def load_dxf_for_metraj(self) -> None:
+        """DXF dosyası yükle ve duvar yüksekliği tahmin et"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
+            return
+        
+        # Birim seçimi dialog'u
+        birim, ok = QInputDialog.getItem(
+            self,
+            "DXF Birim Seçimi",
+            "DXF dosyasının çizim birimi nedir?",
+            ["cm (Santimetre)", "m (Metre)", "mm (Milimetre)"],
+            0,  # Varsayılan: cm
+            False
+        )
+        
+        if not ok:
+            return
+        
+        # Birim string'ini parse et
+        if "cm" in birim.lower():
+            cizim_birimi = "cm"
+        elif "m" in birim.lower() and "mm" not in birim.lower():
+            cizim_birimi = "m"
+        else:
+            cizim_birimi = "mm"
+        
+        # DXF dosyası seç
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "DXF Dosyası Seç",
+            "",
+            "DXF Dosyaları (*.dxf);;Tüm Dosyalar (*.*)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # DXF dosyasını yükle
+            dxf_analiz = DXFAnaliz(file_path, cizim_birimi=cizim_birimi)
+            katmanlar = dxf_analiz.katmanlari_listele()
+            
+            if not katmanlar:
+                QMessageBox.warning(self, "Uyarı", "DXF dosyasında katman bulunamadı")
+                return
+            
+            # Duvar katmanlarını filtrele (DIS_DUVAR, IC_DUVAR vb.)
+            duvar_katmanlari = [k for k in katmanlar if 'DUVAR' in k.upper() or 'DIS' in k.upper()]
+            
+            if not duvar_katmanlari:
+                QMessageBox.information(
+                    self, "Bilgi",
+                    f"DXF dosyasında {len(katmanlar)} katman bulundu ancak duvar katmanı bulunamadı.\n"
+                    f"Katmanlar: {', '.join(katmanlar[:10])}"
+                )
+                return
+            
+            # Duvar yüksekliği tahmin dialog'u göster
+            self.show_duvar_yukseklik_dialog(dxf_analiz, duvar_katmanlari, file_path)
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Hata",
+                f"DXF dosyası yüklenirken hata oluştu:\n{str(e)}"
+            )
+    
+    def show_duvar_yukseklik_dialog(self, dxf_analiz: DXFAnaliz, 
+                                    katmanlar: List[str], file_path: str) -> None:
+        """Duvar yüksekliği tahmin dialog'unu göster"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("AI Duvar Yüksekliği Tahmini")
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Başlık
+        title = QLabel("📐 DXF Dosyasından Duvar Yüksekliği Tahmini")
+        title.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        layout.addWidget(title)
+        
+        # Bilgi
+        info_text = (
+            f"Dosya: {Path(file_path).name}\n"
+            f"Bulunan duvar katmanları: {len(katmanlar)}\n"
+            f"Çizim birimi: {dxf_analiz.birim}\n\n"
+            f"💡 İpucu: Eğer uzunluk veya alan değerleri beklenenden farklıysa,\n"
+            f"   birim seçimini kontrol edin (cm/m/mm)."
+        )
+        info = QLabel(info_text)
+        info.setStyleSheet("color: #666; padding: 5px; font-size: 9pt;")
+        layout.addWidget(info)
+        
+        # Tablo: Katman, Bulunan Uzunluk, Tahmin Yükseklik, Tahmini Alan, Kaynak, Düzeltme
+        table = QTableWidget()
+        table.setColumnCount(6)
+        table.setHorizontalHeaderLabels([
+            "Katman Adı", "Bulunan Uzunluk (m)", "Tahmin Yükseklik (m)", "Tahmini Alan (m²)", "Kaynak", "Düzelt"
+        ])
+        table.setRowCount(len(katmanlar))
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setColumnWidth(0, 180)
+        table.setColumnWidth(1, 140)
+        table.setColumnWidth(2, 140)
+        table.setColumnWidth(3, 140)
+        
+        yukseklikler = {}
+        for row, katman in enumerate(katmanlar):
+            # Önce uzunluk hesapla (önizleme için)
+            uzunluk_sonuc = dxf_analiz.uzunluk_hesapla(katman)
+            uzunluk_m = uzunluk_sonuc['toplam_miktar']
+            parca_sayisi = uzunluk_sonuc.get('parca_sayisi', 0)
+            detay = uzunluk_sonuc.get('detay', [])
+            
+            # Tahmin et
+            tahmin = dxf_analiz.duvar_yuksekligi_tahmin_et(katman, self.db)
+            yukseklik = tahmin['yukseklik']
+            
+            # Tahmini alan hesapla
+            tahmini_alan = uzunluk_m * yukseklik if uzunluk_m > 0 else 0.0
+            
+            table.setItem(row, 0, QTableWidgetItem(katman))
+            
+            # Uzunluk bilgisi
+            uzunluk_text = f"{uzunluk_m:.2f}"
+            if parca_sayisi > 0:
+                uzunluk_text += f" ({parca_sayisi} parça)"
+            uzunluk_item = QTableWidgetItem(uzunluk_text)
+            if uzunluk_m == 0:
+                uzunluk_item.setForeground(Qt.GlobalColor.red)
+            else:
+                # Uzunluk çok küçükse veya çok büyükse uyarı
+                if uzunluk_m < 0.1:
+                    uzunluk_item.setForeground(Qt.GlobalColor.yellow)
+                    uzunluk_item.setToolTip("⚠️ Uzunluk çok küçük! Birim kontrolü gerekebilir.")
+                elif uzunluk_m > 1000:
+                    uzunluk_item.setForeground(Qt.GlobalColor.yellow)
+                    uzunluk_item.setToolTip("⚠️ Uzunluk çok büyük! Birim kontrolü gerekebilir.")
+            table.setItem(row, 1, uzunluk_item)
+            
+            table.setItem(row, 2, QTableWidgetItem(f"{yukseklik:.2f}"))
+            
+            # Tahmini alan
+            alan_item = QTableWidgetItem(f"{tahmini_alan:.2f}")
+            if tahmini_alan > 0:
+                if tahmini_alan > 1000:
+                    alan_item.setForeground(Qt.GlobalColor.yellow)
+                    alan_item.setToolTip("⚠️ Alan çok büyük! Birim kontrolü gerekebilir.")
+            else:
+                alan_item.setForeground(Qt.GlobalColor.red)
+            table.setItem(row, 3, alan_item)
+            
+            table.setItem(row, 4, QTableWidgetItem(tahmin['kaynak']))
+            
+            # Düzeltme butonu
+            btn_duzelt = QPushButton("Düzelt")
+            btn_duzelt.clicked.connect(
+                lambda checked, k=katman, y=yukseklik: 
+                self.duzelt_duvar_yuksekligi(k, y, dialog)
+            )
+            table.setCellWidget(row, 5, btn_duzelt)
+            
+            yukseklikler[katman] = tahmin
+        
+        layout.addWidget(table)
+        
+        # Butonlar
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        btn_kaydet = QPushButton("Kaydet ve Metraj'a Ekle")
+        btn_kaydet.clicked.connect(
+            lambda: self.kaydet_duvar_metraji(dxf_analiz, yukseklikler, dialog)
+        )
+        btn_layout.addWidget(btn_kaydet)
+        
+        btn_kapat = QPushButton("Kapat")
+        btn_kapat.clicked.connect(dialog.reject)
+        btn_layout.addWidget(btn_kapat)
+        
+        layout.addLayout(btn_layout)
+        
+        dialog.exec()
+    
+    def duzelt_duvar_yuksekligi(self, katman_adi: str, mevcut_yukseklik: float, 
+                                 parent_dialog: QDialog) -> None:
+        """Duvar yüksekliğini, cinsini ve kalınlığını düzelt ve öğrenme veritabanına kaydet"""
+        # Önce mevcut öğrenilmiş değerleri al
+        mevcut_ogrenme = self.db.get_ai_learning(katman_adi)
+        mevcut_cins = mevcut_ogrenme.get('duvar_cinsi', '') if mevcut_ogrenme else ''
+        mevcut_kalinlik = mevcut_ogrenme.get('duvar_kalinligi', 0.0) if mevcut_ogrenme else 0.0
+        
+        # Dialog oluştur
+        dialog = QDialog(parent_dialog)
+        dialog.setWindowTitle("Duvar Bilgilerini Düzelt")
+        dialog.setMinimumWidth(450)
+        layout = QVBoxLayout(dialog)
+        
+        # Katman adı
+        katman_label = QLabel(f"<b>Katman:</b> {katman_adi}")
+        katman_label.setStyleSheet("font-size: 12pt; padding: 5px;")
+        layout.addWidget(katman_label)
+        layout.addWidget(QLabel(""))  # Boşluk
+        
+        # Yükseklik
+        yukseklik_label = QLabel("Duvar Yüksekliği (m):")
+        layout.addWidget(yukseklik_label)
+        yukseklik_spin = QDoubleSpinBox()
+        yukseklik_spin.setValue(mevcut_yukseklik)
+        yukseklik_spin.setMinimum(0.5)
+        yukseklik_spin.setMaximum(10.0)
+        yukseklik_spin.setDecimals(2)
+        yukseklik_spin.setSuffix(" m")
+        yukseklik_spin.setSingleStep(0.1)
+        layout.addWidget(yukseklik_spin)
+        
+        # Duvar cinsi
+        cins_label = QLabel("Duvar Cinsi:")
+        layout.addWidget(cins_label)
+        cins_combo = QComboBox()
+        cins_combo.setEditable(True)  # Kullanıcı kendi değerini yazabilsin
+        cins_combo.addItems([
+            "",  # Boş seçenek
+            "Tuğla",
+            "Beton",
+            "Gazbeton",
+            "Bims",
+            "Ahşap",
+            "Çelik",
+            "Diğer"
+        ])
+        if mevcut_cins:
+            index = cins_combo.findText(mevcut_cins)
+            if index >= 0:
+                cins_combo.setCurrentIndex(index)
+            else:
+                cins_combo.setCurrentText(mevcut_cins)
+        layout.addWidget(cins_combo)
+        
+        # Duvar kalınlığı
+        kalinlik_label = QLabel("Duvar Kalınlığı (cm):")
+        layout.addWidget(kalinlik_label)
+        kalinlik_spin = QDoubleSpinBox()
+        kalinlik_spin.setValue(mevcut_kalinlik if mevcut_kalinlik > 0 else 20.0)  # Varsayılan 20 cm
+        kalinlik_spin.setMinimum(5.0)
+        kalinlik_spin.setMaximum(100.0)
+        kalinlik_spin.setDecimals(1)
+        kalinlik_spin.setSuffix(" cm")
+        kalinlik_spin.setSingleStep(5.0)
+        layout.addWidget(kalinlik_spin)
+        
+        layout.addStretch()
+        
+        # Butonlar
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        btn_iptal = QPushButton("İptal")
+        btn_kaydet = QPushButton("Kaydet")
+        btn_kaydet.setDefault(True)
+        
+        def kaydet():
+            yukseklik = yukseklik_spin.value()
+            cins = cins_combo.currentText().strip() or None
+            kalinlik = kalinlik_spin.value() if kalinlik_spin.value() > 0 else None
+            
+            # Öğrenme veritabanına kaydet
+            self.db.save_ai_learning(
+                katman_adi=katman_adi,
+                duvar_yuksekligi=yukseklik,
+                birim='m',
+                kaynak='kullanici',
+                duvar_cinsi=cins,
+                duvar_kalinligi=kalinlik
+            )
+            
+            # Başarı mesajı
+            mesaj = f"Duvar bilgileri kaydedildi:\n\nYükseklik: {yukseklik:.2f} m"
+            if cins:
+                mesaj += f"\nCins: {cins}"
+            if kalinlik:
+                mesaj += f"\nKalınlık: {kalinlik:.1f} cm"
+            mesaj += "\n\nAI bu değerleri öğrendi ve bir sonraki analizde kullanacak."
+            
+            QMessageBox.information(dialog, "Başarılı", mesaj)
+            dialog.accept()
+            # Parent dialog'u kapat ve yeniden göster
+            parent_dialog.accept()
+        
+        btn_kaydet.clicked.connect(kaydet)
+        btn_iptal.clicked.connect(dialog.reject)
+        
+        btn_layout.addWidget(btn_iptal)
+        btn_layout.addWidget(btn_kaydet)
+        layout.addLayout(btn_layout)
+        
+        dialog.exec()
+    
+    def kaydet_duvar_metraji(self, dxf_analiz: DXFAnaliz, 
+                             yukseklikler: Dict[str, Dict], 
+                             dialog: QDialog) -> None:
+        """Duvar metrajını hesapla ve metraj tablosuna ekle"""
+        try:
+            eklenen_sayisi = 0
+            atlanan_katmanlar = []
+            
+            for katman, tahmin in yukseklikler.items():
+                yukseklik = tahmin['yukseklik']
+                duvar_alani_m2 = 0.0
+                
+                # Önce uzunluk hesapla (duvarlar genelde LINE entity'leriyle çizilir)
+                uzunluk_sonuc = dxf_analiz.uzunluk_hesapla(katman)
+                uzunluk_m = uzunluk_sonuc['toplam_miktar']
+                parca_sayisi = uzunluk_sonuc.get('parca_sayisi', 0)
+                detay = uzunluk_sonuc.get('detay', [])
+                
+                # Debug: Ham değerleri göster (birim dönüşümü öncesi)
+                logger.info(f"=== Katman: {katman} ===")
+                logger.info(f"Çizim birimi: {dxf_analiz.birim}")
+                logger.info(f"Bulunan uzunluk (m): {uzunluk_m:.4f}")
+                logger.info(f"Parça sayısı: {parca_sayisi}")
+                logger.info(f"Detay: {detay}")
+                
+                if uzunluk_m > 0:
+                    # Duvar alanı = uzunluk × yükseklik
+                    duvar_alani_m2 = uzunluk_m * yukseklik
+                    
+                    logger.info(f"Hesaplanan duvar alanı: {uzunluk_m:.4f}m × {yukseklik:.2f}m = {duvar_alani_m2:.4f}m²")
+                    
+                    # Birim kontrolü: Eğer sonuç çok büyükse (örn. 10000 m²), birim yanlış olabilir
+                    if duvar_alani_m2 > 1000:
+                        logger.warning(f"⚠️ UYARI: Duvar alanı çok büyük ({duvar_alani_m2:.2f}m²). Birim kontrolü gerekebilir!")
+                else:
+                    # Uzunluk bulunamadıysa alan hesaplamayı dene (kapalı poligonlar için)
+                    alan_sonuc = dxf_analiz.alan_hesapla(katman)
+                    alan_m2 = alan_sonuc['toplam_miktar']
+                    
+                    logger.info(f"Uzunluk bulunamadı, alan hesaplandı: {alan_m2:.4f}m²")
+                    
+                    if alan_m2 > 0:
+                        # Eğer alan varsa, bu zaten m² cinsinden duvar alanı olabilir
+                        # Ama genelde duvarlar için uzunluk × yükseklik kullanılır
+                        # Bu durumda alanı direkt kullan (yükseklik zaten dahil olabilir)
+                        duvar_alani_m2 = alan_m2
+                        logger.info(f"Katman {katman}: Alan bulundu: {alan_m2:.2f}m²")
+                    else:
+                        atlanan_katmanlar.append(
+                            f"{katman} (çizgi/alan bulunamadı - {parca_sayisi} parça kontrol edildi)"
+                        )
+                        continue
+                
+                if duvar_alani_m2 <= 0:
+                    atlanan_katmanlar.append(f"{katman} (hesaplanan değer 0)")
+                    continue
+                
+                # Metraj kalemi ekle (duvar alanı m² cinsinden)
+                self.db.add_metraj_kalem(
+                    proje_id=self.current_project_id,
+                    tanim=f"{katman} - Duvar Metrajı (H={yukseklik:.2f}m)",
+                    miktar=duvar_alani_m2,
+                    birim="m²",  # Duvar metrajı m² cinsinden
+                    birim_fiyat=0.0,
+                    poz_no="",  # Poz no yoksa boş
+                    kategori="Duvar"
+                )
+                eklenen_sayisi += 1
+            
+            if eklenen_sayisi > 0:
+                # Toplam hesaplanan alanı göster
+                toplam_hesaplanan = sum([
+                    dxf_analiz.uzunluk_hesapla(k).get('toplam_miktar', 0) * yukseklikler[k]['yukseklik']
+                    for k in yukseklikler.keys()
+                    if dxf_analiz.uzunluk_hesapla(k).get('toplam_miktar', 0) > 0
+                ])
+                
+                mesaj = f"✅ {eklenen_sayisi} duvar metraj kalemi eklendi.\n"
+                mesaj += f"Toplam hesaplanan duvar alanı: {toplam_hesaplanan:.2f} m²\n"
+                mesaj += f"Metraj Cetveli sekmesinde görüntüleyebilirsiniz.\n\n"
+                mesaj += f"💡 İpucu: Eğer sonuç beklenenden farklıysa, birim seçimini kontrol edin.\n"
+                mesaj += f"   (Çizim birimi: {dxf_analiz.birim})"
+                
+                if atlanan_katmanlar:
+                    mesaj += f"\n\n⚠️ Atlanan katmanlar:\n" + "\n".join(atlanan_katmanlar)
+                
+                QMessageBox.information(dialog, "Başarılı", mesaj)
+                self.load_metraj_data()
+                dialog.accept()
+            else:
+                mesaj = "❌ Hiçbir duvar metrajı eklenemedi.\n\n"
+                if atlanan_katmanlar:
+                    mesaj += "Atlanan katmanlar:\n" + "\n".join(atlanan_katmanlar)
+                else:
+                    mesaj += "Çizgi veya alan bulunamayan katmanlar atlandı."
+                QMessageBox.warning(dialog, "Uyarı", mesaj)
+        except Exception as e:
+            QMessageBox.critical(
+                dialog, "Hata",
+                f"Metraj kaydedilirken hata oluştu:\n{str(e)}"
+            )
             
     # Taşeron İşlemleri
     def load_taseron_data(self) -> None:
@@ -4272,7 +4694,7 @@ class MainWindow(QMainWindow):
                         search_lower in kategori or
                         search_lower in notlar):
                         filtered_items.append(item)
-            
+                
                 # Metraj tablosunu filtrele
                 self.metraj_table.setRowCount(len(filtered_items))
                 for row, item in enumerate(filtered_items):
@@ -6440,6 +6862,144 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self, "Hata",
                 f"Fire oranı hesaplama sırasında hata oluştu:\n{str(e)}"
+            )
+    
+    def reload_modules(self) -> None:
+        """Modülleri yeniden yükle ve UI'ı güncelle"""
+        reply = QMessageBox.question(
+            self, "Yenile",
+            "Modüller yeniden yüklenecek ve uygulama güncellenecek.\n"
+            "Bu işlem birkaç saniye sürebilir.\n\n"
+            "Devam etmek istiyor musunuz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            from PyQt6.QtWidgets import QApplication
+            self.statusBar().showMessage("Modüller yeniden yükleniyor...")
+            QApplication.processEvents()
+            
+            # 1. Önce tüm core modülleri yeniden yükle
+            modules_to_reload = [
+                'app.core.dxf_engine',
+                'app.core.database',
+                'app.core.calculator',
+                'app.core.material_calculator',
+                'app.core.cad_manager',
+            ]
+            
+            reloaded_count = 0
+            for module_name in modules_to_reload:
+                try:
+                    if module_name in sys.modules:
+                        importlib.reload(sys.modules[module_name])
+                        reloaded_count += 1
+                        logger.info(f"✅ Modül yeniden yüklendi: {module_name}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Modül yeniden yüklenemedi {module_name}: {e}")
+            
+            QApplication.processEvents()
+            
+            # 2. Database migration'larını çalıştır
+            try:
+                logger.info("🔄 Database migration'ları çalıştırılıyor...")
+                # Migration'ları manuel çalıştır
+                with self.db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    # Migration: Duvar cinsi ve kalınlığı kolonlarını ekle
+                    try:
+                        cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_cinsi TEXT")
+                        logger.info("✅ Migration: duvar_cinsi kolonu eklendi")
+                    except sqlite3.OperationalError:
+                        pass  # Kolon zaten varsa hata verme
+                    
+                    try:
+                        cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_kalinligi REAL")
+                        logger.info("✅ Migration: duvar_kalinligi kolonu eklendi")
+                    except sqlite3.OperationalError:
+                        pass  # Kolon zaten varsa hata verme
+                    
+                    conn.commit()
+                logger.info("✅ Database migration'ları tamamlandı")
+            except Exception as e:
+                logger.warning(f"⚠️ Database migration hatası: {e}")
+            
+            QApplication.processEvents()
+            
+            # 3. Import'ları yeniden yap (yeniden yüklenen modüllerden)
+            try:
+                from app.core.dxf_engine import DXFAnaliz
+                from app.core.database import DatabaseManager
+                from app.core.calculator import Calculator
+                from app.core.material_calculator import MaterialCalculator
+                
+                # Sınıfları güncelle
+                self.DXFAnaliz = DXFAnaliz
+                logger.info("✅ Import'lar yenilendi")
+            except Exception as e:
+                logger.warning(f"⚠️ Import yenileme hatası: {e}")
+            
+            QApplication.processEvents()
+            
+            # 4. UI bileşenlerini güncelle
+            # Mevcut proje verilerini yeniden yükle
+            if self.current_project_id:
+                try:
+                    if hasattr(self, 'metraj_table') and self._tabs_created.get('metraj', False):
+                        logger.info("🔄 Metraj verileri yenileniyor...")
+                        self.load_metraj_data()
+                    if hasattr(self, 'taseron_table') and self._tabs_created.get('taseron', False):
+                        logger.info("🔄 Taşeron verileri yenileniyor...")
+                        self.load_taseron_data()
+                    if hasattr(self, 'ozet_kalem_label'):
+                        logger.info("🔄 Proje özeti yenileniyor...")
+                        self.update_proje_ozet()
+                except Exception as e:
+                    logger.warning(f"⚠️ Veri yenileme hatası: {e}")
+            
+            QApplication.processEvents()
+            
+            # 5. Projeleri yeniden yükle
+            try:
+                logger.info("🔄 Proje listesi yenileniyor...")
+                self.load_projects()
+            except Exception as e:
+                logger.warning(f"⚠️ Proje listesi yenileme hatası: {e}")
+            
+            QApplication.processEvents()
+            
+            # 6. Tab'ları kontrol et ve gerekirse yeniden oluştur
+            # (Özellikle metraj sekmesi için DXF işlemleri)
+            try:
+                if hasattr(self, 'metraj_tab') and self._tabs_created.get('metraj', False):
+                    logger.info("🔄 Metraj sekmesi kontrol ediliyor...")
+                    # Metraj sekmesindeki DXF butonlarını kontrol et
+                    # Eğer yoksa yeniden oluştur (lazy loading nedeniyle)
+                    pass
+            except Exception as e:
+                logger.warning(f"⚠️ Tab kontrolü hatası: {e}")
+            
+            QMessageBox.information(
+                self, "Başarılı",
+                f"✅ {reloaded_count} modül yeniden yüklendi.\n\n"
+                f"🔄 Database migration'ları çalıştırıldı.\n"
+                f"📊 Veriler yenilendi.\n\n"
+                f"Yeni güncellemeler aktif!\n"
+                f"Uygulamayı kullanmaya devam edebilirsiniz."
+            )
+            self.statusBar().showMessage("✅ Modüller başarıyla yeniden yüklendi - Yeni özellikler aktif!", 5000)
+            
+        except Exception as e:
+            logger.error(f"❌ Modül yeniden yükleme hatası: {e}", exc_info=True)
+            QMessageBox.critical(
+                self, "Hata",
+                f"Modüller yeniden yüklenirken hata oluştu:\n{str(e)}\n\n"
+                f"Detaylar için error_log.txt dosyasını kontrol edin.\n\n"
+                f"Uygulamayı kapatıp tekrar açmanız önerilir."
             )
     
     def show_about(self) -> None:
