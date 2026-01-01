@@ -43,6 +43,7 @@ class TemelDemirAnalyzer:
     def tum_textleri_getir(self) -> Dict[str, List[str]]:
         """DXF'deki tüm text nesnelerini katman bazında topla"""
         textler = {}
+        text_count = 0
         
         try:
             if self.dxf_analiz and self.dxf_analiz.msp:
@@ -53,20 +54,22 @@ class TemelDemirAnalyzer:
                             text_degeri = entity.dxf.text
                             katman = entity.dxf.layer
                             
-                            # DEBUG: Tüm text'leri logla
-                            logger.debug(f"TEXT BULUNDU: '{text_degeri}' (Katman: {katman})")
+                            # İlk 30 text'i logla
+                            if text_count < 30:
+                                logger.info(f"TEXT[{text_count}]: '{text_degeri}'")
+                            
+                            text_count += 1
                             
                             if katman not in textler:
                                 textler[katman] = []
                             textler[katman].append(text_degeri)
                     except (AttributeError, KeyError):
-                        # Bu entity TEXT değil, devam et
                         pass
         
         except Exception as e:
             logger.warning(f"Text çıkarma hatası: {e}")
         
-        logger.info(f"Toplam {sum(len(t) for t in textler.values())} TEXT bulundu")
+        logger.info(f"Toplam {text_count} TEXT bulundu")
         return textler
     
     def temel_tipi_belirle(self) -> Optional[str]:
