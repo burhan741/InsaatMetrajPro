@@ -25,6 +25,7 @@ from app.core.database import DatabaseManager
 from app.core.calculator import Calculator
 from app.core.material_calculator import MaterialCalculator
 from app.core.dxf_engine import DXFAnaliz
+from app.core.demir_engine import DemirEngine
 from app.utils.data_loader import (
     initialize_database_data, check_pozlar_loaded,
     initialize_material_data, check_malzemeler_loaded, check_formuller_loaded
@@ -32,6 +33,7 @@ from app.utils.data_loader import (
 from app.utils.export_manager import ExportManager
 from app.utils.pdf_importer import PDFBirimFiyatImporter
 from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
+from app.ui.demir_hesaplama_window import DemirHesaplamaWindow
 
 logger = logging.getLogger(__name__)
 # Logger seviyesini açıkça DEBUG'a ayarla (modül import edilirken logging konfigürasyonu aktif olmalı)
@@ -1739,6 +1741,12 @@ class MainWindow(QMainWindow):
         
         # Araçlar menüsü
         tools_menu = menubar.addMenu("Araçlar")
+        
+        # Demir Hesaplama
+        demir_hesaplama_action = tools_menu.addAction("Yapısal Demir Hesaplama")
+        demir_hesaplama_action.triggered.connect(self.open_demir_hesaplama)
+        
+        tools_menu.addSeparator()
         
         # Birim dönüştürücü
         unit_converter_action = tools_menu.addAction("Birim Dönüştürücü")
@@ -7170,6 +7178,16 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         
         form_layout = QFormLayout()
+    
+    def open_demir_hesaplama(self) -> None:
+        """Demir hesaplama penceresini aç"""
+        try:
+            self.demir_window = DemirHesaplamaWindow(self)
+            self.demir_window.show()
+            logger.info("Demir hesaplama penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Demir hesaplama penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
         
         # Değer girişi
         value_input = QDoubleSpinBox()
