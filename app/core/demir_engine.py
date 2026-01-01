@@ -7,6 +7,7 @@ Temel, Kolon, Kiriş ve Döşeme demiri hesaplamaları
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -24,14 +25,13 @@ class TemelTipi(Enum):
 @dataclass
 class DemirHesap:
     """Demir hesaplama sonuçları"""
-    eleman_tipi: str  # "temel", "kolon", "kiriş", "döşeme"
+    poz_no: str  # Poz numarası
+    eleman_tipi: str  # "temel_kesit", "temel_ilave", "sehpa", "kolon_filizi", "kolon_etriye", "hatil"
     eleman_adi: str
-    uzunluk: float  # cm
-    eni: float  # cm
-    yükseklik: float  # cm
+    adet: int  # Demir adet sayısı
     demir_capi: int  # mm
-    demir_sayisi: int
-    toplam_uzunluk: float  # cm
+    uzunluk: float  # cm (bir adet için)
+    toplam_uzunluk: float  # cm (adet × uzunluk)
     birim_agirlik: float  # kg/m
     toplam_agirlik: float  # kg
 
@@ -59,209 +59,145 @@ class DemirEngine:
         """Demir Engine'i başlat"""
         self.hesaplamalar: List[DemirHesap] = []
     
-    def temel_demiri_hesapla(self, temel_tipi: TemelTipi, 
-                            uzunluk: float, eni: float, yukseklik: float,
-                            demir_capi: int = 12, aralık: float = 15.0) -> DemirHesap:
+    def demir_ekle(self, poz_no: str, eleman_tipi: str, eleman_adi: str,
+                   adet: int, demir_capi: int, uzunluk: float) -> DemirHesap:
         """
-        Temel demirini hesapla
+        Demir hesabı ekle ve kayıt tutar
         
         Args:
-            temel_tipi: Temel türü
-            uzunluk: Temel uzunluğu (cm)
-            eni: Temel eni (cm)
-            yukseklik: Temel yüksekliği (cm)
-            demir_capi: Demir çapı (mm) - varsayılan 12
-            aralık: Demir aralığı (cm) - varsayılan 15
+            poz_no: Poz numarası
+            eleman_tipi: Eleman tipi
+            eleman_adi: Eleman adı
+            adet: Demir adet sayısı
+            demir_capi: Demir çapı (mm)
+            uzunluk: Bir adet demirin uzunluğu (cm)
         """
         if demir_capi not in self.DEMIR_ORANLAR:
-            raise ValueError(f"Geçersiz demir çapı: {demir_capi}mm")
+            logger.warning(f"Bilinmeyen demir çapı: {demir_capi}mm, en yakın değer kullanılıyor")
+            demir_capi = min(self.DEMIR_ORANLAR.keys(), key=lambda x: abs(x - demir_capi))
         
-        # Temel türüne göre demir sayısını hesapla
-        if temel_tipi == TemelTipi.RADYE:
-            # Radye: uzunluk ve enine demir ağları
-            demir_sayisi_u = int(uzunluk / aralık) + 1
-            demir_sayisi_e = int(eni / aralık) + 1
-            demir_sayisi = (demir_sayisi_u * 2) + (demir_sayisi_e * 2)
-            
-        elif temel_tipi == TemelTipi.KIRIŞ_LI_RADYE:
-            # Kirişli Radye: radye demiri + kiriş demiri
-            demir_sayisi_u = int(uzunluk / aralık) + 1
-            demir_sayisi_e = int(eni / aralık) + 1
-            kiriş_demiri = int(uzunluk / 100) + 1  # Her metrede bir kiriş
-            demir_sayisi = (demir_sayisi_u * 2) + (demir_sayisi_e * 2) + (kiriş_demiri * 4)
-            
-        elif temel_tipi == TemelTipi.MUTEMADI_TEMEL:
-            # Mütemadi Temel: şerit halinde
-            demir_sayisi = int(uzunluk / aralık) + 1
-            demir_sayisi *= 4  # 4 layer
-            
-        elif temel_tipi == TemelTipi.KIRIŞ_LI_TEMEL:
-            # Kirişli Temel: mütemadi + kiriş
-            demir_sayisi = int(uzunluk / aralık) + 1
-            demir_sayisi *= 6  # 6 layer
-        else:
-            demir_sayisi = 0
-        
-        # Toplam demir uzunluğunu hesapla
-        ort_uzunluk = (uzunluk + eni) / 2
-        toplam_uzunluk = demir_sayisi * ort_uzunluk
-        
-        # Ağırlığı hesapla
+        toplam_uzunluk = adet * uzunluk
         birim_agirlik = self.DEMIR_ORANLAR[demir_capi]
         toplam_agirlik = (toplam_uzunluk / 100) * birim_agirlik  # cm'den m'ye çevir
         
-        return DemirHesap(
-            eleman_tipi="temel",
-            eleman_adi=temel_tipi.value,
+        hesap = DemirHesap(
+            poz_no=poz_no,
+            eleman_tipi=eleman_tipi,
+            eleman_adi=eleman_adi,
+            adet=adet,
+            demir_capi=demir_capi,
             uzunluk=uzunluk,
-            eni=eni,
-            yükseklik=yukseklik,
-            demir_capi=demir_capi,
-            demir_sayisi=demir_sayisi,
             toplam_uzunluk=toplam_uzunluk,
             birim_agirlik=birim_agirlik,
             toplam_agirlik=toplam_agirlik
         )
+        
+        self.hesaplamalar.append(hesap)
+        logger.debug(f"Demir eklendi: {poz_no} - {adet}Ø{demir_capi} l={uzunluk}cm")
+        
+        return hesap
     
-    def kolon_demiri_hesapla(self, uzunluk: float, eni: float, demir_capi: int = 12,
-                            asama_capi: int = 8, asama_araligi: float = 15.0) -> DemirHesap:
-        """
-        Kolon demirini hesapla
+    def ozet_by_type(self) -> Dict[str, Dict[str, Any]]:
+        """Eleman tipi bazında özet hesaplama yap"""
+        ozet = {}
         
-        Args:
-            uzunluk: Kolon uzunluğu (cm)
-            eni: Kolon eni (cm)
-            demir_capi: Boyuna demir çapı (mm)
-            asama_capi: Asama demiri çapı (mm)
-            asama_araligi: Asama aralığı (cm)
-        """
-        # Boyuna demir (4 veya 6 adım)
-        if eni < 30:
-            boyuna_demir_sayisi = 4
-        else:
-            boyuna_demir_sayisi = 6
+        tiplar = {}
+        for h in self.hesaplamalar:
+            if h.eleman_tipi not in tiplar:
+                tiplar[h.eleman_tipi] = []
+            tiplar[h.eleman_tipi].append(h)
         
-        # Asama demiri sayısı
-        asama_sayisi = int(uzunluk / asama_araligi) + 1
-        asama_cevre = (eni * 2 + 20) * 2  # cm cinsinden çevre + kaynama
+        for tip, hesaplar in tiplar.items():
+            toplam_agirlik = sum(h.toplam_agirlik for h in hesaplar)
+            toplam_uzunluk = sum(h.toplam_uzunluk for h in hesaplar)
+            
+            ozet[tip] = {
+                "toplam_agirlik_kg": round(toplam_agirlik, 2),
+                "toplam_uzunluk_cm": round(toplam_uzunluk, 2),
+                "toplam_uzunluk_m": round(toplam_uzunluk / 100, 2),
+                "hesaplama_sayisi": len(hesaplar),
+                "detaylar": [
+                    {
+                        "poz_no": h.poz_no,
+                        "adi": h.eleman_adi,
+                        "adet": h.adet,
+                        "cap": h.demir_capi,
+                        "uzunluk": round(h.uzunluk, 2),
+                        "toplam_uzunluk": round(h.toplam_uzunluk, 2),
+                        "agirlik": round(h.toplam_agirlik, 2)
+                    }
+                    for h in hesaplar
+                ]
+            }
         
-        # Toplam hesaplama
-        toplam_uzunluk = (boyuna_demir_sayisi * uzunluk) + (asama_sayisi * asama_cevre)
-        
-        # Ağırlık hesaplama (ortalama çap)
-        ort_capi = (demir_capi + asama_capi) / 2
-        ort_capi_degeri = min(self.DEMIR_ORANLAR.keys(), 
-                              key=lambda x: abs(x - ort_capi))
-        birim_agirlik = self.DEMIR_ORANLAR[ort_capi_degeri]
-        toplam_agirlik = (toplam_uzunluk / 100) * birim_agirlik
-        
-        return DemirHesap(
-            eleman_tipi="kolon",
-            eleman_adi="kolon",
-            uzunluk=uzunluk,
-            eni=eni,
-            yükseklik=0,
-            demir_capi=demir_capi,
-            demir_sayisi=boyuna_demir_sayisi + asama_sayisi,
-            toplam_uzunluk=toplam_uzunluk,
-            birim_agirlik=birim_agirlik,
-            toplam_agirlik=toplam_agirlik
-        )
+        return ozet
     
-    def kiris_demiri_hesapla(self, uzunluk: float, yukseklik: float, 
-                             demir_capi: int = 14, asama_capi: int = 8,
-                             asama_araligi: float = 20.0) -> DemirHesap:
-        """
-        Kiriş demirini hesapla
-        
-        Args:
-            uzunluk: Kiriş uzunluğu (cm)
-            yukseklik: Kiriş yüksekliği (cm)
-            demir_capi: Boyuna demir çapı (mm)
-            asama_capi: Asama demiri çapı (mm)
-            asama_araligi: Asama aralığı (cm)
-        """
-        # Boyuna demir (üst: 2, alt: 2)
-        boyuna_demir_sayisi = 4
-        
-        # Asama demiri
-        asama_sayisi = int(uzunluk / asama_araligi) + 1
-        asama_cevre = (yukseklik * 2 + 10) * 2  # çevre + kaynama
-        
-        # Toplam uzunluk
-        toplam_uzunluk = (boyuna_demir_sayisi * uzunluk) + (asama_sayisi * asama_cevre)
-        
-        # Ağırlık
-        ort_capi = (demir_capi + asama_capi) / 2
-        ort_capi_degeri = min(self.DEMIR_ORANLAR.keys(), 
-                              key=lambda x: abs(x - ort_capi))
-        birim_agirlik = self.DEMIR_ORANLAR[ort_capi_degeri]
-        toplam_agirlik = (toplam_uzunluk / 100) * birim_agirlik
-        
-        return DemirHesap(
-            eleman_tipi="kiriş",
-            eleman_adi="kiriş",
-            uzunluk=uzunluk,
-            eni=yukseklik,
-            yükseklik=yukseklik,
-            demir_capi=demir_capi,
-            demir_sayisi=boyuna_demir_sayisi + asama_sayisi,
-            toplam_uzunluk=toplam_uzunluk,
-            birim_agirlik=birim_agirlik,
-            toplam_agirlik=toplam_agirlik
-        )
-    
-    def doseme_demiri_hesapla(self, alan: float, demir_capi: int = 10,
-                              aralık: float = 15.0) -> DemirHesap:
-        """
-        Döşeme demirini hesapla
-        
-        Args:
-            alan: Döşeme alanı (m²)
-            demir_capi: Demir çapı (mm)
-            aralık: Demir aralığı (cm)
-        """
-        # Döşeme demiri (her iki yönde)
-        alan_cm = alan * 10000  # m² to cm²
-        eni_cm = int((alan_cm) ** 0.5)  # Kare olduğu varsayılarak
-        
-        demir_sayisi = int(eni_cm / aralık) + 1
-        toplam_uzunluk = demir_sayisi * eni_cm * 2  # Her iki yön
-        
-        birim_agirlik = self.DEMIR_ORANLAR[demir_capi]
-        toplam_agirlik = (toplam_uzunluk / 100) * birim_agirlik
-        
-        return DemirHesap(
-            eleman_tipi="döşeme",
-            eleman_adi="döşeme",
-            uzunluk=float(eni_cm),
-            eni=float(eni_cm),
-            yükseklik=0,
-            demir_capi=demir_capi,
-            demir_sayisi=demir_sayisi * 2,
-            toplam_uzunluk=toplam_uzunluk,
-            birim_agirlik=birim_agirlik,
-            toplam_agirlik=toplam_agirlik
-        )
-    
-    def ozet_hesapla(self) -> Dict[str, Any]:
-        """Tüm hesaplamaların özetini yap"""
+    def ozet_genel(self) -> Dict[str, Any]:
+        """Tüm demirler için genel özet"""
         toplam_agirlik = sum(h.toplam_agirlik for h in self.hesaplamalar)
         toplam_uzunluk = sum(h.toplam_uzunluk for h in self.hesaplamalar)
         
         return {
             "toplam_agirlik_kg": round(toplam_agirlik, 2),
             "toplam_uzunluk_cm": round(toplam_uzunluk, 2),
-            "hesaplama_sayisi": len(self.hesaplamalar),
-            "detaylar": [
-                {
-                    "tipi": h.eleman_tipi,
-                    "adi": h.eleman_adi,
-                    "agirlik": round(h.toplam_agirlik, 2),
-                    "uzunluk": round(h.toplam_uzunluk, 2)
-                }
-                for h in self.hesaplamalar
-            ]
+            "toplam_uzunluk_m": round(toplam_uzunluk / 100, 2),
+            "hesaplama_sayisi": len(self.hesaplamalar)
         }
+    
+    @staticmethod
+    def parse_demir_text(text: str) -> Optional[Tuple[int, int, float]]:
+        """
+        Demir textini parse et
+        Format: 56Ø12 l=1200 veya 12@10 l=4000 vb.
+        
+        Returns: (adet, çap, uzunluk) veya None
+        """
+        # Çeşitli format desteği
+        patterns = [
+            r'(\d+)[Ø@](\d+).*?l=(\d+)',  # 56Ø12 l=1200 veya 56@12 l=1200
+            r'(\d+)\s*[Ø@]\s*(\d+).*?l=(\d+)',  # Boşluk toleransı
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                adet = int(match.group(1))
+                cap = int(match.group(2))
+                uzunluk = float(match.group(3))
+                return (adet, cap, uzunluk)
+        
+        return None
+    
+    @staticmethod
+    def parse_table_donati(donati_text: str) -> Optional[Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]]:
+        """
+        Tablo format donatısını parse et
+        Format: "12Ø10/20 | 21Ø12/20" (boyuna | enine)
+        
+        Returns: ((boyuna_list), (enine_list)) veya None
+        """
+        try:
+            parts = donati_text.split('|')
+            
+            boyuna_list = []
+            enine_list = []
+            
+            for part in parts:
+                part = part.strip()
+                # Pattern: 12Ø10/20
+                match = re.search(r'(\d+)[Ø@](\d+)', part)
+                if match:
+                    adet = int(match.group(1))
+                    cap = int(match.group(2))
+                    
+                    if parts.index(part) == 0:  # Boyuna
+                        boyuna_list.append((adet, cap))
+                    else:  # Enine
+                        enine_list.append((adet, cap))
+            
+            return (boyuna_list, enine_list) if boyuna_list or enine_list else None
+        
+        except:
+            return None
 
 
