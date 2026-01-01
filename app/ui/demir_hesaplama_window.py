@@ -237,20 +237,28 @@ class DemirHesaplamaWindow(QMainWindow):
         """Sonuç tablosunu güncelle"""
         self.table.setRowCount(0)
         
-        tip_ozet = self.hesaplama_sonucu['tip_ozet']
+        tip_ozet = self.hesaplama_sonucu.get('tip_ozet', {})
+        
+        logger.info(f"Tablo güncelleniyor - Tip özet: {len(tip_ozet)} tip bulundu")
+        
+        if not tip_ozet:
+            logger.warning("Tip özeti boş! Hesaplama sonucu: " + str(self.hesaplama_sonucu))
+            return
         
         for tip, veri in tip_ozet.items():
-            for detay in veri['detaylar']:
+            logger.info(f"Tablo: {tip} - {len(veri.get('detaylar', []))} detay")
+            for detay in veri.get('detaylar', []):
                 row = self.table.rowCount()
                 self.table.insertRow(row)
                 
                 self.table.setItem(row, 0, QTableWidgetItem(tip))
-                self.table.setItem(row, 1, QTableWidgetItem(detay['adi']))
-                self.table.setItem(row, 2, QTableWidgetItem(f"{detay['uzunluk']:.2f}"))
-                self.table.setItem(row, 3, QTableWidgetItem(f"{detay['cap']:.2f}"))
-                self.table.setItem(row, 4, QTableWidgetItem(f"Ø{detay['cap']}"))
-                self.table.setItem(row, 5, QTableWidgetItem(str(detay['adet'])))
-                self.table.setItem(row, 6, QTableWidgetItem(f"{detay['toplam_uzunluk']:.2f}"))
-                self.table.setItem(row, 7, QTableWidgetItem(f"{detay['agirlik']:.2f}"))
+                self.table.setItem(row, 1, QTableWidgetItem(detay.get('adi', 'N/A')))
+                self.table.setItem(row, 2, QTableWidgetItem(f"{detay.get('uzunluk', 0):.2f}"))
+                self.table.setItem(row, 3, QTableWidgetItem(f"{detay.get('cap', 0):.2f}"))
+                self.table.setItem(row, 4, QTableWidgetItem(f"Ø{detay.get('cap', 0)}"))
+                self.table.setItem(row, 5, QTableWidgetItem(str(detay.get('adet', 0))))
+                self.table.setItem(row, 6, QTableWidgetItem(f"{detay.get('toplam_uzunluk', 0):.2f}"))
+                self.table.setItem(row, 7, QTableWidgetItem(f"{detay.get('agirlik', 0):.2f}"))
         
         self.table.resizeColumnsToContents()
+        logger.info(f"Tablo güncelleme tamamlandı - {self.table.rowCount()} satır")

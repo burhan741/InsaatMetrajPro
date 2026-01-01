@@ -53,6 +53,9 @@ class TemelDemirAnalyzer:
                             text_degeri = entity.dxf.text
                             katman = entity.dxf.layer
                             
+                            # DEBUG: Tüm text'leri logla
+                            logger.debug(f"TEXT BULUNDU: '{text_degeri}' (Katman: {katman})")
+                            
                             if katman not in textler:
                                 textler[katman] = []
                             textler[katman].append(text_degeri)
@@ -63,6 +66,7 @@ class TemelDemirAnalyzer:
         except Exception as e:
             logger.warning(f"Text çıkarma hatası: {e}")
         
+        logger.info(f"Toplam {sum(len(t) for t in textler.values())} TEXT bulundu")
         return textler
     
     def temel_tipi_belirle(self) -> Optional[str]:

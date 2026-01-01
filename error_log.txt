@@ -3668,3 +3668,27 @@ NameError: name 'form_layout' is not defined
 2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
 2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
 2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:38:38 - root - INFO - ============================================================
+2026-01-01 16:38:38 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2026-01-01 16:38:38 - root - INFO - Log dosyasi: E:\Yeni klasör\yeni_proje\error_log.txt
+2026-01-01 16:38:38 - root - INFO - ============================================================
+2026-01-01 16:38:42 - root - INFO - Moduller import edildi - Uygulama hazir
+2026-01-01 16:38:42 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2026-01-01 16:38:51 - app.ui.main_window - INFO - Demir hesaplama penceresi açıldı
+2026-01-01 16:39:03 - app.core.dxf_engine - INFO - ✅ Başarılı: 'C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf' yüklendi. Birim: cm
+2026-01-01 16:39:03 - app.core.temel_demir_analyzer - INFO - DXF dosyası yüklendi: C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf
+2026-01-01 16:39:03 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: radye
+2026-01-01 16:39:04 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: radye
+2026-01-01 16:40:31 - root - INFO - ============================================================
+2026-01-01 16:40:31 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2026-01-01 16:40:31 - root - INFO - Log dosyasi: E:\Yeni klasör\yeni_proje\error_log.txt
+2026-01-01 16:40:31 - root - INFO - ============================================================
+2026-01-01 16:40:35 - root - INFO - Moduller import edildi - Uygulama hazir
+2026-01-01 16:40:35 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2026-01-01 16:40:46 - app.ui.main_window - INFO - Demir hesaplama penceresi açıldı
+2026-01-01 16:40:58 - app.core.dxf_engine - INFO - ✅ Başarılı: 'C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf' yüklendi. Birim: cm
+2026-01-01 16:40:58 - app.core.temel_demir_analyzer - INFO - DXF dosyası yüklendi: C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf
+2026-01-01 16:40:58 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: radye
+2026-01-01 16:40:59 - app.ui.demir_hesaplama_window - INFO - Tablo güncelleniyor - Tip özet: 0 tip bulundu
+2026-01-01 16:40:59 - app.ui.demir_hesaplama_window - WARNING - Tip özeti boş! Hesaplama sonucu: {'tip_ozet': {}, 'genel_ozet': {'toplam_agirlik_kg': 0, 'toplam_uzunluk_cm': 0, 'toplam_uzunluk_m': 0.0, 'hesaplama_sayisi': 0}, 'temel_tipi': 'radye'}
+2026-01-01 16:40:59 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: radye
