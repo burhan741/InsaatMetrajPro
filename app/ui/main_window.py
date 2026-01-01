@@ -152,11 +152,11 @@ class MainWindow(QMainWindow):
         # Kullanıcı tipine göre arayüz oluştur
         if self.user_type == 'taseron':
             from app.ui.taseron_window import TaseronWindow
-            # Taşeron penceresini göster, müteahhit penceresini gizle
+            # Alt Yüklenici penceresini göster, Yüklenici penceresini gizle
             self.taseron_window = TaseronWindow(self.db, self.splash)
             self.taseron_window.show()
             self.taseron_window.showMaximized()  # Tam ekran aç
-            self.hide()  # Müteahhit penceresini gizle
+            self.hide()  # Yüklenici penceresini gizle
         else:
             self.init_ui()
         
@@ -333,7 +333,7 @@ class MainWindow(QMainWindow):
         
         # Diğer sekmeler placeholder olarak ekle, lazy loading ile yüklenecek
         self.tabs.addTab(QWidget(), "Proje Özeti")
-        self.tabs.addTab(QWidget(), "Taşeron Analizi")
+        self.tabs.addTab(QWidget(), "Alt Yüklenici Analizi")
         self.tabs.addTab(QWidget(), "Malzeme Listesi")
         self.tabs.addTab(QWidget(), "Şablonlar")
         self.tabs.addTab(QWidget(), "Birim Fiyat Yönetimi")
@@ -529,8 +529,8 @@ class MainWindow(QMainWindow):
         self.ozet_kdv_card.setMinimumHeight(100)
         cards_layout.addWidget(self.ozet_kdv_card)
         
-        # Kart 4: Taşeron Teklif Sayısı
-        self.ozet_taseron_card = QGroupBox("Taşeron Teklifleri")
+        # Kart 4: Alt Yüklenici Teklif Sayısı
+        self.ozet_taseron_card = QGroupBox("Alt Yüklenici Teklifleri")
         taseron_layout = QVBoxLayout()
         self.ozet_taseron_label = QLabel("0")
         self.ozet_taseron_label.setFont(QFont("Arial", 24, QFont.Weight.Bold))
@@ -654,7 +654,7 @@ class MainWindow(QMainWindow):
         stats_group.setLayout(stats_layout)
         layout.addWidget(stats_group)
         
-        # Alt panel: Malzeme ve Taşeron Özeti
+        # Alt panel: Malzeme ve Alt Yüklenici Özeti
         alt_splitter = QSplitter(Qt.Orientation.Horizontal)
         
         # Malzeme Özeti

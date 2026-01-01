@@ -1,5 +1,5 @@
 """
-Başlangıç Ekranı - Müteahhit/Taşeron Seçimi
+Başlangıç Ekranı - Yüklenici/Alt Yüklenici Seçimi
 """
 
 from PyQt6.QtWidgets import (
@@ -76,25 +76,25 @@ class StartupDialog(QDialog):
         muteahhit_icon_path = assets_dir / "muteahhit_icon.png"
         taseron_icon_path = assets_dir / "taseron_icon.png"
         
-        # Müteahhit butonu (Beyaz baret + takım elbise)
-        btn_muteahhit = QPushButton("MÜTEAHHİT")
+        # Yüklenici butonu (Beyaz baret + takım elbise)
+        btn_muteahhit = QPushButton("YÜKLENİCİ")
         if muteahhit_icon_path.exists():
             icon = QIcon(str(muteahhit_icon_path))
             btn_muteahhit.setIcon(icon)
             btn_muteahhit.setIconSize(QSize(64, 64))
         else:
-            btn_muteahhit.setText("👔👷 MÜTEAHHİT")  # Fallback emoji
+            btn_muteahhit.setText("👔👷 YÜKLENİCİ")  # Fallback emoji
         btn_muteahhit.clicked.connect(lambda: self.select_user_type('muteahhit'))
         btn_layout.addWidget(btn_muteahhit)
         
-        # Taşeron butonu (Sarı baret + turuncu yelek)
-        btn_taseron = QPushButton("TAŞERON")
+        # Alt Yüklenici butonu (Sarı baret + turuncu yelek)
+        btn_taseron = QPushButton("ALT YÜKLENİCİ")
         if taseron_icon_path.exists():
             icon = QIcon(str(taseron_icon_path))
             btn_taseron.setIcon(icon)
             btn_taseron.setIconSize(QSize(64, 64))
         else:
-            btn_taseron.setText("👷🦺 TAŞERON")  # Fallback emoji
+            btn_taseron.setText("👷🦺 ALT YÜKLENİCİ")  # Fallback emoji
         btn_taseron.clicked.connect(lambda: self.select_user_type('taseron'))
         btn_layout.addWidget(btn_taseron)
         
@@ -102,8 +102,8 @@ class StartupDialog(QDialog):
         layout.addStretch()
         
         # Alt bilgi
-        info = QLabel("Müteahhit: Proje yönetimi, metraj, ihale hazırlama\n"
-                     "Taşeron: İş takibi, puantaj, gelir/gider yönetimi")
+        info = QLabel("Yüklenici: Proje yönetimi, metraj, ihale hazırlama\n"
+                     "Alt Yüklenici: İş takibi, puantaj, gelir/gider yönetimi")
         info.setFont(QFont("Arial", 9))
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info.setStyleSheet("color: #888;")

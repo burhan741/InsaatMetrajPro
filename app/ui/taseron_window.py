@@ -1,5 +1,5 @@
 """
-Taşeron Modu Ana Pencere
+Alt Yüklenici Modu Ana Pencere
 """
 
 from typing import Optional, List, Dict, Any
@@ -18,7 +18,7 @@ from app.core.database import DatabaseManager
 
 
 class TaseronWindow(QMainWindow):
-    """Taşeron modu ana pencere"""
+    """Alt Yüklenici modu ana pencere"""
     
     def __init__(self, db: DatabaseManager, splash=None):
         super().__init__()
@@ -29,8 +29,8 @@ class TaseronWindow(QMainWindow):
         self.init_ui()
     
     def init_ui(self):
-        """Taşeron arayüzünü oluştur"""
-        self.setWindowTitle("Taşeron Modu - İnşaat Metraj Pro")
+        """Alt Yüklenici arayüzünü oluştur"""
+        self.setWindowTitle("Alt Yüklenici Modu - İnşaat Metraj Pro")
         self.setGeometry(100, 100, 1400, 900)
         
         # Merkezi widget

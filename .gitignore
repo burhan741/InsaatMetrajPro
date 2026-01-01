@@ -27,7 +27,11 @@ ENV/
 .venv
 
 # IDE
+# VS Code - tüm klasörü ignore et, ama önemli dosyaları commit et
 .vscode/
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
 .idea/
 *.swp
 *.swo

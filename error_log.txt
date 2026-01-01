@@ -2945,3 +2945,72 @@ TypeError: '>' not supported between instances of 'NoneType' and 'int'
 2025-12-08 22:45:33 - app.core.dxf_engine - INFO - ✅ Yakın text'ten kalınlık bulundu: 20.0cm
 2025-12-08 22:45:33 - app.core.dxf_engine - INFO - ✅ Yakın text'ten kalınlık bulundu: 20.0cm
 2025-12-08 22:45:33 - app.core.dxf_engine - INFO - ✅ Yakın text'ten duvar cinsi bulundu: Bims
+2025-12-31 19:37:11 - root - INFO - ============================================================
+2025-12-31 19:37:11 - root - INFO - ✅ Logging konfigürasyonu aktif - DEBUG seviyesi
+2025-12-31 19:37:11 - root - INFO - 📝 Log dosyası: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:37:11 - root - INFO - ============================================================
+2025-12-31 19:37:14 - root - INFO - 📦 Modüller import edildi - Uygulama hazır
+2025-12-31 19:37:17 - root - INFO - 🚀 gui_uygulamasi() fonksiyonu çağrıldı - GUI başlatılıyor...
+2025-12-31 19:41:31 - root - INFO - ============================================================
+2025-12-31 19:41:31 - root - INFO - ✅ Logging konfigürasyonu aktif - DEBUG seviyesi
+2025-12-31 19:41:31 - root - INFO - 📝 Log dosyası: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:41:31 - root - INFO - ============================================================
+2025-12-31 19:41:33 - root - INFO - 📦 Modüller import edildi - Uygulama hazır
+2025-12-31 19:41:35 - root - INFO - 🚀 gui_uygulamasi() fonksiyonu çağrıldı - GUI başlatılıyor...
+2025-12-31 19:46:45 - root - INFO - ============================================================
+2025-12-31 19:46:45 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2025-12-31 19:46:45 - root - INFO - Log dosyasi: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:46:45 - root - INFO - ============================================================
+2025-12-31 19:46:50 - root - INFO - Moduller import edildi - Uygulama hazir
+2025-12-31 19:49:00 - root - INFO - ============================================================
+2025-12-31 19:49:00 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2025-12-31 19:49:00 - root - INFO - Log dosyasi: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:49:00 - root - INFO - ============================================================
+2025-12-31 19:49:03 - root - INFO - Moduller import edildi - Uygulama hazir
+2025-12-31 19:49:57 - root - INFO - ============================================================
+2025-12-31 19:49:57 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2025-12-31 19:49:57 - root - INFO - Log dosyasi: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:49:57 - root - INFO - ============================================================
+2025-12-31 19:49:59 - root - INFO - Moduller import edildi - Uygulama hazir
+2025-12-31 19:49:59 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2025-12-31 19:50:27 - root - INFO - ============================================================
+2025-12-31 19:50:27 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2025-12-31 19:50:27 - root - INFO - Log dosyasi: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:50:27 - root - INFO - ============================================================
+2025-12-31 19:50:29 - root - INFO - Moduller import edildi - Uygulama hazir
+2025-12-31 19:50:29 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2025-12-31 19:52:40 - root - INFO - ============================================================
+2025-12-31 19:52:40 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2025-12-31 19:52:40 - root - INFO - Log dosyasi: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:52:40 - root - INFO - ============================================================
+2025-12-31 19:52:42 - root - INFO - Moduller import edildi - Uygulama hazir
+2025-12-31 19:52:42 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2025-12-31 19:55:04 - root - INFO - ============================================================
+2025-12-31 19:55:04 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2025-12-31 19:55:04 - root - INFO - Log dosyasi: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:55:04 - root - INFO - ============================================================
+2025-12-31 19:55:07 - root - INFO - Moduller import edildi - Uygulama hazir
+2025-12-31 19:55:43 - root - INFO - ============================================================
+2025-12-31 19:55:43 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2025-12-31 19:55:43 - root - INFO - Log dosyasi: E:\data\yeni_proje\error_log.txt
+2025-12-31 19:55:43 - root - INFO - ============================================================
+2025-12-31 19:55:45 - root - INFO - Moduller import edildi - Uygulama hazir
+2025-12-31 19:55:45 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2025-12-31 20:24:32 - root - INFO - ============================================================
+2025-12-31 20:24:32 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2025-12-31 20:24:32 - root - INFO - Log dosyasi: E:\data\yeni_proje\error_log.txt
+2025-12-31 20:24:32 - root - INFO - ============================================================
+2025-12-31 20:24:36 - root - INFO - Moduller import edildi - Uygulama hazir
+2025-12-31 20:24:36 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2026-01-01 13:21:37 - root - INFO - ============================================================
+2026-01-01 13:21:37 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2026-01-01 13:21:37 - root - INFO - Log dosyasi: E:\Yeni klasör\yeni_proje\error_log.txt
+2026-01-01 13:21:37 - root - INFO - ============================================================
+2026-01-01 13:22:05 - root - INFO - Moduller import edildi - Uygulama hazir
+2026-01-01 13:22:05 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2026-01-01 13:24:44 - root - INFO - ============================================================
+2026-01-01 13:24:44 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2026-01-01 13:24:44 - root - INFO - Log dosyasi: E:\Yeni klasör\yeni_proje\error_log.txt
+2026-01-01 13:24:44 - root - INFO - ============================================================
+2026-01-01 13:24:48 - root - INFO - Moduller import edildi - Uygulama hazir
+2026-01-01 13:24:48 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
