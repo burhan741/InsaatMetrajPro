@@ -3613,3 +3613,58 @@ Traceback (most recent call last):
 NameError: name 'form_layout' is not defined
 
 ============================================================
+2026-01-01 16:36:01 - root - INFO - ============================================================
+2026-01-01 16:36:01 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2026-01-01 16:36:01 - root - INFO - Log dosyasi: E:\Yeni klasör\yeni_proje\error_log.txt
+2026-01-01 16:36:01 - root - INFO - ============================================================
+2026-01-01 16:36:06 - root - INFO - Moduller import edildi - Uygulama hazir
+2026-01-01 16:36:06 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2026-01-01 16:36:19 - app.ui.main_window - INFO - Demir hesaplama penceresi açıldı
+2026-01-01 16:36:34 - app.core.dxf_engine - INFO - ✅ Başarılı: 'C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf' yüklendi. Birim: cm
+2026-01-01 16:36:34 - app.core.temel_demir_analyzer - INFO - DXF dosyası yüklendi: C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf
+2026-01-01 16:36:34 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:34 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: None
+2026-01-01 16:36:34 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:34 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:34 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:34 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:34 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:35 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:35 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: None
+2026-01-01 16:36:35 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:35 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:35 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:35 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:35 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.dxf_engine - INFO - ✅ Başarılı: 'C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf' yüklendi. Birim: cm
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - INFO - DXF dosyası yüklendi: C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: None
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: None
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:36:48 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.dxf_engine - INFO - ✅ Başarılı: 'C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf' yüklendi. Birim: cm
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - INFO - DXF dosyası yüklendi: C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: None
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - INFO - Temel tipi belirlendi: None
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE
+2026-01-01 16:37:00 - app.core.temel_demir_analyzer - WARNING - Text çıkarma hatası: Invalid DXF attribute "entity_type" for entity LINE

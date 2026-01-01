@@ -47,13 +47,18 @@ class TemelDemirAnalyzer:
         try:
             if self.dxf_analiz and self.dxf_analiz.msp:
                 for entity in self.dxf_analiz.msp:
-                    if entity.dxf.entity_type == 'TEXT':
-                        text_degeri = entity.dxf.text
-                        katman = entity.dxf.layer
-                        
-                        if katman not in textler:
-                            textler[katman] = []
-                        textler[katman].append(text_degeri)
+                    try:
+                        # Entity tipi kontrol et
+                        if hasattr(entity, 'dxf') and hasattr(entity.dxf, 'text'):
+                            text_degeri = entity.dxf.text
+                            katman = entity.dxf.layer
+                            
+                            if katman not in textler:
+                                textler[katman] = []
+                            textler[katman].append(text_degeri)
+                    except (AttributeError, KeyError):
+                        # Bu entity TEXT değil, devam et
+                        pass
         
         except Exception as e:
             logger.warning(f"Text çıkarma hatası: {e}")
