@@ -3583,3 +3583,33 @@ NameError: name 'form_layout' is not defined
 ============================================================
 2026-01-01 13:44:27 - app.core.dxf_engine - INFO - ✅ Başarılı: 'C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf' yüklendi. Birim: cm
 2026-01-01 13:44:27 - app.core.dxf_demir_analyzer - INFO - DXF dosyası yüklendi: C:/Users/USER/Desktop/İdari Bina Statik Projesi (1).dxf
+2026-01-01 16:32:30 - root - INFO - ============================================================
+2026-01-01 16:32:30 - root - INFO - Logging konfigurasyonu aktif - DEBUG seviyesi
+2026-01-01 16:32:30 - root - INFO - Log dosyasi: E:\Yeni klasör\yeni_proje\error_log.txt
+2026-01-01 16:32:30 - root - INFO - ============================================================
+2026-01-01 16:32:35 - root - INFO - Moduller import edildi - Uygulama hazir
+2026-01-01 16:32:35 - root - INFO - gui_uygulamasi() fonksiyonu cagirildi - GUI baslatiliyor...
+2026-01-01 16:32:47 - app.ui.main_window - INFO - Demir hesaplama penceresi açıldı
+
+============================================================
+Tarih: 2026-01-01 16:32:47
+Yakalanamayan hata: NameError: name 'form_layout' is not defined
+Traceback (most recent call last):
+  File "E:\Yeni klasör\yeni_proje\app\ui\main_window.py", line 7197, in open_demir_hesaplama
+    form_layout.addRow("Değer:", value_input)
+    ^^^^^^^^^^^
+NameError: name 'form_layout' is not defined
+
+============================================================
+2026-01-01 16:33:41 - app.ui.main_window - INFO - Demir hesaplama penceresi açıldı
+
+============================================================
+Tarih: 2026-01-01 16:33:41
+Yakalanamayan hata: NameError: name 'form_layout' is not defined
+Traceback (most recent call last):
+  File "E:\Yeni klasör\yeni_proje\app\ui\main_window.py", line 7197, in open_demir_hesaplama
+    form_layout.addRow("Değer:", value_input)
+    ^^^^^^^^^^^
+NameError: name 'form_layout' is not defined
+
+============================================================

@@ -7169,25 +7169,15 @@ class MainWindow(QMainWindow):
     
     def show_unit_converter(self) -> None:
         """Birim dönüştürücü dialogu göster"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QDoubleSpinBox, QComboBox, QLabel
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QDoubleSpinBox, QComboBox, QLabel, QPushButton
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Birim Dönüştürücü")
-        dialog.setGeometry(300, 300, 400, 200)
+        dialog.setGeometry(300, 300, 400, 300)
         
         layout = QVBoxLayout(dialog)
         
         form_layout = QFormLayout()
-    
-    def open_demir_hesaplama(self) -> None:
-        """Demir hesaplama penceresini aç"""
-        try:
-            self.demir_window = DemirHesaplamaWindow(self)
-            self.demir_window.show()
-            logger.info("Demir hesaplama penceresi açıldı")
-        except Exception as e:
-            logger.error(f"Demir hesaplama penceresi açılamadı: {e}")
-            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
         
         # Değer girişi
         value_input = QDoubleSpinBox()
@@ -7198,48 +7188,58 @@ class MainWindow(QMainWindow):
         
         # Kaynak birim
         from_unit_combo = QComboBox()
-        from_unit_combo.setEditable(True)
-        from_unit_combo.addItems(['m', 'm²', 'm³', 'kg', 't', 'cm', 'cm²', 'cm³', 'mm', 'km', 'l', 'ml'])
+        from_unit_combo.addItems(["m", "cm", "mm", "km", "İnç", "Ayak", "Mil"])
         form_layout.addRow("Kaynak Birim:", from_unit_combo)
         
         # Hedef birim
         to_unit_combo = QComboBox()
-        to_unit_combo.setEditable(True)
-        to_unit_combo.addItems(['m', 'm²', 'm³', 'kg', 't', 'cm', 'cm²', 'cm³', 'mm', 'km', 'l', 'ml'])
+        to_unit_combo.addItems(["m", "cm", "mm", "km", "İnç", "Ayak", "Mil"])
+        to_unit_combo.setCurrentText("cm")
         form_layout.addRow("Hedef Birim:", to_unit_combo)
         
         # Sonuç
-        result_label = QLabel("0.0000")
-        result_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        result_label.setStyleSheet("color: #00BFFF; padding: 10px;")
+        result_label = QLabel("0")
         form_layout.addRow("Sonuç:", result_label)
         
         layout.addLayout(form_layout)
         
-        def calculate():
-            try:
-                value = value_input.value()
-                from_unit = from_unit_combo.currentText().strip()
-                to_unit = to_unit_combo.currentText().strip()
-                
-                result = self.calculator.convert_unit(value, from_unit, to_unit)
-                result_label.setText(f"{result:,.4f}")
-            except Exception as e:
-                result_label.setText(f"Hata: {str(e)}")
-                result_label.setStyleSheet("color: #c9184a; padding: 10px;")
+        # Dönüştür butonu
+        btn_convert = QPushButton("Dönüştür")
+        def convert():
+            value = value_input.value()
+            from_unit = from_unit_combo.currentText()
+            to_unit = to_unit_combo.currentText()
+            
+            # Birim dönüştürme tablosu (mm cinsinden)
+            units = {
+                "mm": 1,
+                "cm": 10,
+                "m": 1000,
+                "km": 1000000,
+                "İnç": 25.4,
+                "Ayak": 304.8,
+                "Mil": 1609344
+            }
+            
+            if from_unit in units and to_unit in units:
+                mm_value = value * units[from_unit]
+                result = mm_value / units[to_unit]
+                result_label.setText(f"{result:.6f} {to_unit}")
         
-        value_input.valueChanged.connect(calculate)
-        from_unit_combo.currentTextChanged.connect(calculate)
-        to_unit_combo.currentTextChanged.connect(calculate)
+        btn_convert.clicked.connect(convert)
+        layout.addWidget(btn_convert)
         
-        btn_layout = QHBoxLayout()
-        btn_close = QPushButton("Kapat")
-        btn_close.clicked.connect(dialog.close)
-        btn_layout.addWidget(btn_close)
-        layout.addLayout(btn_layout)
-        
-        calculate()  # İlk hesaplama
         dialog.exec()
+    
+    def open_demir_hesaplama(self) -> None:
+        """Demir hesaplama penceresini aç"""
+        try:
+            self.demir_window = DemirHesaplamaWindow(self)
+            self.demir_window.show()
+            logger.info("Demir hesaplama penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Demir hesaplama penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
     
     def calculate_auto_fire_rates(self) -> None:
         """Tüm pozlar için otomatik fire oranı hesapla"""
