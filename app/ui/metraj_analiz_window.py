@@ -2027,6 +2027,8 @@ class MetrajAnalizWindow(QMainWindow):
             # Excel butonunu etkinleştir
             self.btn_demir_excel.setEnabled(True)
 
+            elemanlar = sonuc.get("elemanlar", [])
+            tip = sonuc.get("tip", "")
             logger.info(f"'{self.aktif_kat_adi}' katına {len(demirler)} demir eklendi ({mod} mod, {len(elemanlar)} {tip.lower()})")
 
         except Exception as e:
