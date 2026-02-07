@@ -64,6 +64,10 @@ class DatabaseManager:
             conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
             # Foreign key kontrolünü aktif et
             conn.execute("PRAGMA foreign_keys=ON")
+
+            # Schema versiyonu kontrolü - migration'ları tekrar çalıştırmayı önler
+            current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+            SCHEMA_VERSION = 2
             
             cursor = conn.cursor()
             
@@ -81,12 +85,12 @@ class DatabaseManager:
                 )
             """)
             
-            # Proje notları sütunu ekle (migration)
-            try:
-                cursor.execute("ALTER TABLE projects ADD COLUMN notlar TEXT")
-            except sqlite3.OperationalError:
-                # Sütun zaten varsa hata verme
-                pass
+            # Migration'lar sadece eski schema versiyonlarında çalışır
+            if current_version < 1:
+                try:
+                    cursor.execute("ALTER TABLE projects ADD COLUMN notlar TEXT")
+                except sqlite3.OperationalError:
+                    pass
             
             # Şablonlar tablosu
             cursor.execute("""
@@ -174,12 +178,11 @@ class DatabaseManager:
                 )
             """)
             
-            # Mevcut tablolara fire_orani sütunu ekle (migration)
-            try:
-                cursor.execute("ALTER TABLE pozlar ADD COLUMN fire_orani REAL DEFAULT 0.05")
-            except sqlite3.OperationalError:
-                # Sütun zaten varsa hata verme
-                pass
+            if current_version < 1:
+                try:
+                    cursor.execute("ALTER TABLE pozlar ADD COLUMN fire_orani REAL DEFAULT 0.05")
+                except sqlite3.OperationalError:
+                    pass
             
             # Metraj kalemleri tablosu
             cursor.execute("""
@@ -233,12 +236,11 @@ class DatabaseManager:
                 )
             """)
             
-            # Mevcut tablolara birim_fiyat sütunu ekle (migration)
-            try:
-                cursor.execute("ALTER TABLE malzemeler ADD COLUMN birim_fiyat REAL DEFAULT 0")
-            except sqlite3.OperationalError:
-                # Sütun zaten varsa hata verme
-                pass
+            if current_version < 1:
+                try:
+                    cursor.execute("ALTER TABLE malzemeler ADD COLUMN birim_fiyat REAL DEFAULT 0")
+                except sqlite3.OperationalError:
+                    pass
             
             # Malzeme formülleri tablosu (Poz → Malzeme ilişkileri)
             cursor.execute("""
@@ -443,19 +445,434 @@ class DatabaseManager:
                 ON ai_metraj_ogrenme(katman_adi)
             """)
             
-            # Migration: Duvar cinsi ve kalınlığı kolonlarını ekle
-            try:
-                cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_cinsi TEXT")
-            except sqlite3.OperationalError:
-                pass  # Kolon zaten varsa hata verme
-            
-            try:
-                cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_kalinligi REAL")
-            except sqlite3.OperationalError:
-                pass  # Kolon zaten varsa hata verme
-            
+            if current_version < 2:
+                try:
+                    cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_cinsi TEXT")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_kalinligi REAL")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Enflasyon verileri tablosu (TÜFE/ÜFE verilerini saklar)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS enflasyon_verileri (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tarih TEXT NOT NULL,
+                    tufe REAL,
+                    ufe REAL,
+                    aylik_tufe REAL,
+                    aylik_ufe REAL,
+                    yillik_tufe REAL,
+                    yillik_ufe REAL,
+                    kaynak TEXT DEFAULT 'TCMB',
+                    olusturma_tarihi TEXT NOT NULL,
+                    UNIQUE(tarih)
+                )
+            """)
+
+            # Fiyat farkı hesaplamaları tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS fiyat_farki_hesaplamalari (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER,
+                    metraj_kalem_id INTEGER,
+                    baslangic_fiyat REAL NOT NULL,
+                    baslangic_tarihi TEXT NOT NULL,
+                    bitis_tarihi TEXT NOT NULL,
+                    endeks_tipi TEXT DEFAULT 'TUFE',
+                    enflasyon_orani REAL,
+                    guncel_fiyat REAL,
+                    fark REAL,
+                    fark_yuzde REAL,
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Tedarikçiler tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tedarikci_listesi (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ad TEXT NOT NULL,
+                    api_url TEXT,
+                    api_key TEXT,
+                    aktif INTEGER DEFAULT 1,
+                    telefon TEXT,
+                    email TEXT,
+                    adres TEXT,
+                    notlar TEXT,
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT
+                )
+            """)
+
+            # Tedarikçi fiyatları tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tedarikci_fiyatlari (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tedarikci_id INTEGER NOT NULL,
+                    malzeme_kodu TEXT NOT NULL,
+                    malzeme_adi TEXT,
+                    birim TEXT,
+                    birim_fiyat REAL NOT NULL,
+                    kdv_orani REAL DEFAULT 20,
+                    minimum_miktar REAL DEFAULT 1,
+                    indirim_orani REAL DEFAULT 0,
+                    teslimat_suresi TEXT,
+                    stok_durumu TEXT,
+                    gecerlilik_tarihi TEXT,
+                    notlar TEXT,
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    FOREIGN KEY (tedarikci_id) REFERENCES tedarikci_listesi(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Tedarikçi fiyat karşılaştırmaları tablosu (geçmiş karşılaştırmaları saklar)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tedarikci_karsilastirma (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    malzeme_kodu TEXT NOT NULL,
+                    miktar REAL NOT NULL,
+                    en_ucuz_tedarikci_id INTEGER,
+                    en_ucuz_fiyat REAL,
+                    en_pahali_tedarikci_id INTEGER,
+                    en_pahali_fiyat REAL,
+                    tasarruf REAL,
+                    tasarruf_yuzde REAL,
+                    karsilastirma_tarihi TEXT NOT NULL,
+                    tedarikci_sayisi INTEGER,
+                    FOREIGN KEY (en_ucuz_tedarikci_id) REFERENCES tedarikci_listesi(id),
+                    FOREIGN KEY (en_pahali_tedarikci_id) REFERENCES tedarikci_listesi(id)
+                )
+            """)
+
+            # İndeksler - Enflasyon ve Tedarikçi
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_enflasyon_tarih
+                ON enflasyon_verileri(tarih)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_fiyat_farki_proje
+                ON fiyat_farki_hesaplamalari(proje_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tedarikci_fiyat_tedarikci
+                ON tedarikci_fiyatlari(tedarikci_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tedarikci_fiyat_malzeme
+                ON tedarikci_fiyatlari(malzeme_kodu)
+            """)
+
+            # Hakediş gerçekleşme tablosu (QR kod bazlı takip)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS hakedis_gerceklesme (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER NOT NULL,
+                    metraj_kalem_id INTEGER NOT NULL,
+                    gerceklesen_miktar REAL NOT NULL,
+                    aciklama TEXT,
+                    foto_path TEXT,
+                    konum TEXT,
+                    gerceklesme_tarihi TEXT NOT NULL,
+                    olusturan_kisi TEXT,
+                    onay_durumu TEXT DEFAULT 'beklemede',
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE,
+                    FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Hakediş dönemleri tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS hakedis_donemleri (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER NOT NULL,
+                    donem_adi TEXT NOT NULL,
+                    baslangic_tarihi TEXT NOT NULL,
+                    bitis_tarihi TEXT NOT NULL,
+                    toplam_tutar REAL DEFAULT 0,
+                    onay_durumu TEXT DEFAULT 'hazirlaniyor',
+                    olusturma_tarihi TEXT NOT NULL,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+
+            # İndeksler - Hakediş
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_hakedis_gerceklesme_proje
+                ON hakedis_gerceklesme(proje_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_hakedis_gerceklesme_kalem
+                ON hakedis_gerceklesme(metraj_kalem_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_hakedis_donem_proje
+                ON hakedis_donemleri(proje_id)
+            """)
+
+            # ============================================
+            # SÜRDÜRÜLEBİLİRLİK MODÜLÜ TABLOLARI
+            # ============================================
+
+            # Malzeme karbon ayak izi tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS malzeme_karbon_ayakizi (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    malzeme_adi TEXT NOT NULL,
+                    kategori TEXT,
+                    karbon_faktor REAL NOT NULL,
+                    birim TEXT NOT NULL,
+                    kaynak TEXT,
+                    guncelleme_tarihi TEXT,
+                    UNIQUE(malzeme_adi, birim)
+                )
+            """)
+
+            # Enerji verileri tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS enerji_verileri (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER,
+                    yillik_tuketim_kwh REAL NOT NULL,
+                    toplam_alan_m2 REAL NOT NULL,
+                    enerji_sinifi TEXT,
+                    puan REAL,
+                    tarih TEXT NOT NULL,
+                    aciklama TEXT,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Atık yönetimi tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS atik_yonetimi (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER NOT NULL,
+                    atik_turu TEXT NOT NULL,
+                    miktar_ton REAL NOT NULL,
+                    geri_donusturuldu INTEGER DEFAULT 0,
+                    tehlikeli INTEGER DEFAULT 0,
+                    aciklama TEXT,
+                    tarih TEXT NOT NULL,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Sürdürülebilirlik hesaplama tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS surdurulebilirlik_hesaplama (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER NOT NULL,
+                    toplam_karbon_kg REAL,
+                    enerji_sinifi TEXT,
+                    geri_donusum_orani REAL,
+                    leed_puani REAL,
+                    leed_seviye TEXT,
+                    hesaplama_tarihi TEXT NOT NULL,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Yeşil sertifika kriterleri tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS yesil_sertifika_kriterleri (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER NOT NULL,
+                    sertifika_tipi TEXT NOT NULL,
+                    kategori TEXT NOT NULL,
+                    kriter_adi TEXT NOT NULL,
+                    puan REAL DEFAULT 0,
+                    max_puan REAL NOT NULL,
+                    durum TEXT DEFAULT 'beklemede',
+                    aciklama TEXT,
+                    tarih TEXT,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+
+            # İndeksler - Sürdürülebilirlik
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_enerji_proje
+                ON enerji_verileri(proje_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_atik_proje
+                ON atik_yonetimi(proje_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_surdurulebilirlik_proje
+                ON surdurulebilirlik_hesaplama(proje_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_yesil_sertifika_proje
+                ON yesil_sertifika_kriterleri(proje_id)
+            """)
+
+            # ============================================
+            # GANTT CHART VE CPM MODÜLÜ TABLOLARI
+            # ============================================
+
+            # İş programı header tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS is_programi (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER NOT NULL,
+                    baslangic_tarihi TEXT NOT NULL,
+                    bitis_tarihi TEXT NOT NULL,
+                    toplam_sure_gun INTEGER DEFAULT 0,
+                    kritik_yol_sure_gun INTEGER DEFAULT 0,
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+
+            # İş programı kalemleri (task) tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS is_programi_kalemleri (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    program_id INTEGER NOT NULL,
+                    ad TEXT NOT NULL,
+                    sure_gun INTEGER NOT NULL,
+                    baslangic_tarihi TEXT,
+                    bitis_tarihi TEXT,
+                    early_start TEXT,
+                    early_finish TEXT,
+                    late_start TEXT,
+                    late_finish TEXT,
+                    float_gun INTEGER DEFAULT 0,
+                    kritik INTEGER DEFAULT 0,
+                    ilerleme REAL DEFAULT 0,
+                    milestone INTEGER DEFAULT 0,
+                    kaynak TEXT,
+                    metraj_kalem_id INTEGER,
+                    aciklama TEXT,
+                    olusturma_tarihi TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (program_id) REFERENCES is_programi(id) ON DELETE CASCADE,
+                    FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE SET NULL
+                )
+            """)
+
+            # Bağımlılıklar tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS is_programi_bagimliliklar (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    program_id INTEGER NOT NULL,
+                    onceki_is_id INTEGER NOT NULL,
+                    sonraki_is_id INTEGER NOT NULL,
+                    bagimliluk_tipi TEXT DEFAULT 'FS',
+                    lag_gun INTEGER DEFAULT 0,
+                    FOREIGN KEY (program_id) REFERENCES is_programi(id) ON DELETE CASCADE,
+                    FOREIGN KEY (onceki_is_id) REFERENCES is_programi_kalemleri(id) ON DELETE CASCADE,
+                    FOREIGN KEY (sonraki_is_id) REFERENCES is_programi_kalemleri(id) ON DELETE CASCADE
+                )
+            """)
+
+            # İndeksler - Gantt Chart
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_is_programi_proje
+                ON is_programi(proje_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_is_programi_kalemleri_program
+                ON is_programi_kalemleri(program_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_is_programi_kalemleri_metraj
+                ON is_programi_kalemleri(metraj_kalem_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_is_programi_bagimliliklar_program
+                ON is_programi_bagimliliklar(program_id)
+            """)
+
+            # Temel Demir Listesi tablosu
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS temel_demir_listesi (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER,
+                    temel_tipi TEXT,           -- RADYE, BAG_KIRISI, KOLON_FILIZI
+                    temel_adi TEXT,            -- PL1, PL2, BK1, S001 vb.
+                    pozisyon_no TEXT,          -- P36, P37 vb.
+                    donati_tipi TEXT,          -- BOYUNA, ENINE, UST, ALT, SEHPA
+                    demir_capi INTEGER,        -- 8, 10, 12, 14, 16... (mm)
+                    demir_uzunlugu REAL,       -- cm
+                    demir_adeti INTEGER,
+                    aralik_cm REAL,            -- Donatı aralığı (varsa)
+                    toplam_uzunluk REAL,       -- adet × uzunluk (cm)
+                    toplam_uzunluk_m REAL,     -- metre cinsinden
+                    birim_agirlik REAL,        -- kg/m
+                    toplam_agirlik REAL,       -- kg
+                    kaynak TEXT DEFAULT 'DXF', -- DXF, MANUEL
+                    dxf_layer TEXT,            -- Hangi layer'dan okundu
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Temel Özet tablosu (Çapa göre gruplandırılmış özet)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS temel_demir_ozet (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proje_id INTEGER,
+                    demir_capi INTEGER,
+                    toplam_uzunluk_m REAL,
+                    toplam_agirlik_kg REAL,
+                    toplam_agirlik_ton REAL,
+                    adet_sayisi INTEGER,       -- Toplam kaç adet demir var
+                    olusturma_tarihi TEXT NOT NULL,
+                    guncelleme_tarihi TEXT,
+                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+
+            # İndeksler - Temel Demir
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_proje
+                ON temel_demir_listesi(proje_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_capi
+                ON temel_demir_listesi(demir_capi)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_poz
+                ON temel_demir_listesi(pozisyon_no)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_temel_demir_ozet_proje
+                ON temel_demir_ozet(proje_id)
+            """)
+
+            # Schema versiyonunu güncelle
+            if current_version < SCHEMA_VERSION:
+                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
             conn.commit()
-            
+
     # Proje İşlemleri
     def create_project(self, ad: str, aciklama: str = "") -> int:
         """
@@ -2576,4 +2993,216 @@ class DatabaseManager:
         except Exception as e:
             print(f"AI öğrenme silme hatası: {e}")
             return False
+
+    # Dashboard Analytics İşlemleri
+    def get_dashboard_summary(self) -> Dict[str, Any]:
+        """
+        Dashboard için genel özet bilgileri getir.
+
+        Returns:
+            Dict: Dashboard özet verileri
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Toplam proje sayısı
+            cursor.execute("SELECT COUNT(*) as total FROM projects WHERE durum = 'aktif'")
+            toplam_proje = cursor.fetchone()['total']
+
+            # Toplam maliyet (aktif projeler)
+            cursor.execute("SELECT SUM(toplam_maliyet) as total FROM projects WHERE durum = 'aktif'")
+            toplam_maliyet = cursor.fetchone()['total'] or 0
+
+            # Toplam metraj kalem sayısı
+            cursor.execute("""
+                SELECT COUNT(DISTINCT mk.id) as total
+                FROM metraj_kalemleri mk
+                JOIN projects p ON mk.proje_id = p.id
+                WHERE p.durum = 'aktif'
+            """)
+            toplam_kalem = cursor.fetchone()['total']
+
+            # Toplam taşeron teklif sayısı
+            cursor.execute("""
+                SELECT COUNT(DISTINCT tt.id) as total
+                FROM taseron_teklifleri tt
+                JOIN projects p ON tt.proje_id = p.id
+                WHERE p.durum = 'aktif'
+            """)
+            toplam_teklif = cursor.fetchone()['total']
+
+            # Son 30 gün içinde oluşturulan projeler
+            from datetime import datetime, timedelta
+            thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
+            cursor.execute("""
+                SELECT COUNT(*) as total
+                FROM projects
+                WHERE olusturma_tarihi >= ? AND durum = 'aktif'
+            """, (thirty_days_ago,))
+            yeni_projeler = cursor.fetchone()['total']
+
+            return {
+                'toplam_proje': toplam_proje,
+                'toplam_maliyet': toplam_maliyet,
+                'toplam_kalem': toplam_kalem,
+                'toplam_teklif': toplam_teklif,
+                'yeni_projeler_30_gun': yeni_projeler
+            }
+
+    def get_projects_by_cost(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        En yüksek maliyetli projeleri getir.
+
+        Args:
+            limit: Maksimum proje sayısı
+
+        Returns:
+            List[Dict]: Proje listesi (ad, toplam_maliyet)
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT ad, toplam_maliyet, aciklama
+                FROM projects
+                WHERE durum = 'aktif' AND toplam_maliyet > 0
+                ORDER BY toplam_maliyet DESC
+                LIMIT ?
+            """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_cost_by_category(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Kategorilere göre maliyet dağılımı.
+
+        Args:
+            project_id: Belirli bir proje için (None ise tüm projeler)
+
+        Returns:
+            List[Dict]: Kategori bazlı maliyet listesi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if project_id:
+                cursor.execute("""
+                    SELECT
+                        kategori,
+                        SUM(toplam) as toplam_maliyet,
+                        COUNT(*) as kalem_sayisi
+                    FROM metraj_kalemleri
+                    WHERE proje_id = ? AND kategori IS NOT NULL AND kategori != ''
+                    GROUP BY kategori
+                    ORDER BY toplam_maliyet DESC
+                """, (project_id,))
+            else:
+                cursor.execute("""
+                    SELECT
+                        mk.kategori,
+                        SUM(mk.toplam) as toplam_maliyet,
+                        COUNT(*) as kalem_sayisi
+                    FROM metraj_kalemleri mk
+                    JOIN projects p ON mk.proje_id = p.id
+                    WHERE p.durum = 'aktif' AND mk.kategori IS NOT NULL AND mk.kategori != ''
+                    GROUP BY mk.kategori
+                    ORDER BY toplam_maliyet DESC
+                """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_monthly_project_trend(self, months: int = 12) -> List[Dict[str, Any]]:
+        """
+        Aylık proje oluşturma trendi.
+
+        Args:
+            months: Kaç aylık veri
+
+        Returns:
+            List[Dict]: Aylık proje sayısı
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            from datetime import datetime, timedelta
+            start_date = (datetime.now() - timedelta(days=months*30)).isoformat()
+
+            cursor.execute("""
+                SELECT
+                    strftime('%Y-%m', olusturma_tarihi) as ay,
+                    COUNT(*) as proje_sayisi,
+                    SUM(toplam_maliyet) as toplam_maliyet
+                FROM projects
+                WHERE olusturma_tarihi >= ?
+                GROUP BY strftime('%Y-%m', olusturma_tarihi)
+                ORDER BY ay
+            """, (start_date,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_top_subcontractors(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        En çok teklif veren taşeronlar.
+
+        Args:
+            limit: Maksimum taşeron sayısı
+
+        Returns:
+            List[Dict]: Taşeron firma listesi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    firma_adi,
+                    COUNT(*) as teklif_sayisi,
+                    AVG(fiyat) as ortalama_fiyat,
+                    SUM(toplam) as toplam_teklif
+                FROM taseron_teklifleri
+                GROUP BY firma_adi
+                ORDER BY teklif_sayisi DESC
+                LIMIT ?
+            """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_material_usage_stats(self) -> List[Dict[str, Any]]:
+        """
+        Malzeme kullanım istatistikleri.
+
+        Returns:
+            List[Dict]: En çok kullanılan malzemeler
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    m.ad as malzeme_adi,
+                    m.kategori,
+                    COUNT(DISTINCT mf.poz_id) as kullanilan_poz_sayisi,
+                    m.birim_fiyat
+                FROM malzemeler m
+                JOIN malzeme_formulleri mf ON m.id = mf.malzeme_id
+                GROUP BY m.id
+                ORDER BY kullanilan_poz_sayisi DESC
+                LIMIT 20
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_recent_activities(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Son aktiviteler (proje oluşturma, güncelleme).
+
+        Args:
+            limit: Maksimum aktivite sayısı
+
+        Returns:
+            List[Dict]: Aktivite listesi
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    ad,
+                    'Proje Oluşturuldu' as aktivite_tipi,
+                    olusturma_tarihi as tarih
+                FROM projects
+                WHERE durum = 'aktif'
+                ORDER BY olusturma_tarihi DESC
+                LIMIT ?
+            """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
 

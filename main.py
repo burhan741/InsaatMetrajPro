@@ -47,14 +47,14 @@ def setup_logging():
 # Logging'i EN BAŞTA başlat
 setup_logging()
 
-# Şimdi diğer modülleri import et
+# Şimdi diğer modülleri import et (hafif olanlar)
 from PyQt6.QtWidgets import QApplication, QSplashScreen, QMessageBox
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
-from app.ui.main_window import MainWindow
 from app.ui.styles import apply_dark_theme
 
-logging.info("Moduller import edildi - Uygulama hazir")
+# MainWindow lazy import edilir - splash screen gösterildikten sonra yüklenir
+logging.info("Temel moduller import edildi - Uygulama hazir")
 
 
 def log_error_to_file(error_msg: str, error_trace: str = "") -> None:
@@ -188,16 +188,17 @@ def gui_uygulamasi():
                     Qt.GlobalColor.white
                 )
             app.processEvents()
-            
+
             # Veritabanı bağlantısı
             from app.core.database import DatabaseManager
             db = DatabaseManager()
-            
-            # Ana pencere
+
+            # Ana pencere (lazy import - splash screen gösterildikten sonra)
             if user_type == 'taseron':
                 from app.ui.taseron_window import TaseronWindow
                 window = TaseronWindow(db=db, splash=splash)
             else:
+                from app.ui.main_window import MainWindow
                 window = MainWindow(splash=splash, user_type=user_type)
             
             splash.finish(window)

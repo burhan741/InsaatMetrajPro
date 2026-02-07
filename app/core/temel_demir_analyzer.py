@@ -40,8 +40,8 @@ class TemelDemirAnalyzer:
             logger.error(f"DXF yükleme hatası: {e}")
             raise
     
-    def tum_textleri_getir(self) -> Dict[str, List[str]]:
-        """DXF'deki tüm text nesnelerini katman bazında topla"""
+    def tum_textleri_getir(self) -> Dict[str, List[Dict[str, Any]]]:
+        """DXF'deki tüm text nesnelerini pozisyon ve katman bilgisi ile topla"""
         textler = {}
         text_count = 0
         
@@ -53,16 +53,23 @@ class TemelDemirAnalyzer:
                         if hasattr(entity, 'dxf') and hasattr(entity.dxf, 'text'):
                             text_degeri = entity.dxf.text
                             katman = entity.dxf.layer
+                            x = entity.dxf.insert[0] if hasattr(entity.dxf, 'insert') else 0
+                            y = entity.dxf.insert[1] if hasattr(entity.dxf, 'insert') else 0
                             
-                            # İlk 30 text'i logla
-                            if text_count < 30:
-                                logger.info(f"TEXT[{text_count}]: '{text_degeri}'")
+                            # İlk 100 text'i detaylı logla
+                            if text_count < 100:
+                                logger.info(f"TEXT[{text_count}]: '{text_degeri}' | Layer: '{katman}' | Pos: ({x:.1f}, {y:.1f})")
                             
                             text_count += 1
                             
                             if katman not in textler:
                                 textler[katman] = []
-                            textler[katman].append(text_degeri)
+                            textler[katman].append({
+                                'text': text_degeri,
+                                'x': x,
+                                'y': y,
+                                'sira': text_count
+                            })
                     except (AttributeError, KeyError):
                         pass
         
@@ -76,8 +83,8 @@ class TemelDemirAnalyzer:
         """DXF'den temel türünü belirle"""
         textler = self.tum_textleri_getir()
         
-        # Tüm textleri birleştir
-        tum_text = " ".join([t for metinler in textler.values() for t in metinler]).lower()
+        # Tüm textleri birleştir (dict'lerden yalnızca 'text' alanını al)
+        tum_text = " ".join([str(m.get('text', '')) for metinler in textler.values() for m in metinler]).lower()
         
         if "radye" in tum_text and "kiriş" in tum_text:
             self.temel_tipi = "kirişli_radye"
@@ -104,15 +111,16 @@ class TemelDemirAnalyzer:
         
         for katman, metinler in textler.items():
             for metin in metinler:
-                # Kesit başlığını ara
-                kesit_match = re.search(kesit_pattern, metin.upper())
+                # Kesit başlığını ara (metin dict'indeki 'text' alanını kullan)
+                text_val = str(metin.get('text', ''))
+                kesit_match = re.search(kesit_pattern, text_val.upper())
                 if kesit_match:
                     kesit_adi = f"{kesit_match.group(1)}-{kesit_match.group(2)}"
                     
                     # Bu kesitle ilişkili demir textlerini ara
                     # (Basit olarak aynı katmandaki numerik textleri kontrol et)
                     for metin_check in metinler:
-                        demir_info = DemirEngine.parse_demir_text(metin_check)
+                        demir_info = DemirEngine.parse_demir_text(metin_check.get('text', ''))
                         if demir_info:
                             adet, cap, uzunluk = demir_info
                             if kesit_adi not in kesit_demirler:
@@ -132,13 +140,14 @@ class TemelDemirAnalyzer:
         # POZ numaraları ve demir bilgileri
         for katman, metinler in textler.items():
             for metin in metinler:
-                # POZ patternu: "POZ 7", "PZ7", vb.
-                poz_match = re.search(r'P[OZ]+\s*(\d+)', metin)
+                # POZ patternu: "POZ 7", "PZ7", vb. (metin dict'indeki 'text' alanını kullan)
+                text_val = str(metin.get('text', ''))
+                poz_match = re.search(r'P[OZ]+\s*(\d+)', text_val)
                 if poz_match:
                     poz_no = poz_match.group(1)
                     
                     # Demir bilgisini ara
-                    demir_info = DemirEngine.parse_demir_text(metin)
+                    demir_info = DemirEngine.parse_demir_text(text_val)
                     if demir_info:
                         adet, cap, uzunluk = demir_info
                         ilave_demirler.append((f"POZ{poz_no}", adet, cap, uzunluk))
@@ -154,7 +163,8 @@ class TemelDemirAnalyzer:
         filizler = {}
         textler = self.tum_textleri_getir()
         
-        tum_text = " ".join([t for metinler in textler.values() for t in metinler])
+        # Yalnızca 'text' alanlarını birleştir
+        tum_text = " ".join([str(m.get('text', '')) for metinler in textler.values() for m in metinler])
         
         # Kolon filizi tablosu kontrolü
         if "kolon" in tum_text.lower() and "filiz" in tum_text.lower():
@@ -183,7 +193,7 @@ class TemelDemirAnalyzer:
         etriyeler = {}
         textler = self.tum_textleri_getir()
         
-        tum_text = " ".join([t for metinler in textler.values() for t in metinler])
+        tum_text = " ".join([str(m.get('text', '')) for metinler in textler.values() for m in metinler])
         
         # Etriye tablosu kontrolü
         if "etriye" in tum_text.lower() and "donati" in tum_text.lower():
@@ -213,7 +223,7 @@ class TemelDemirAnalyzer:
         hatillar = {}
         textler = self.tum_textleri_getir()
         
-        tum_text = " ".join([t for metinler in textler.values() for t in metinler])
+        tum_text = " ".join([str(m.get('text', '')) for metinler in textler.values() for m in metinler])
         
         # Hatıl tablosu kontrolü
         if "hatil" in tum_text.lower() and "donati" in tum_text.lower():
@@ -315,10 +325,42 @@ class TemelDemirAnalyzer:
                         uzunluk=uzunluk
                     )
             
+            # Eğer hala hesaplama yoksa veya ek olarak, tüm textlerde demir patternlerini tarayıp otomatik ekleme yap
+            try:
+                textler_all = self.tum_textleri_getir()
+                otomatik_eklenen = 0
+                for katman, metinler in textler_all.items():
+                    for metin in metinler:
+                        txt = str(metin.get('text', ''))
+                        demir_info = DemirEngine.parse_demir_text(txt)
+                        if demir_info:
+                            adet, cap, uzunluk = demir_info
+                            # Basit eşsiz kontrol: aynı katman ve aynı uzunluk/çap/adet kombinasyonu zaten varsa atla
+                            exists = any(
+                                h.eleman_adi == katman and h.adet == adet and h.demir_capi == cap and h.uzunluk == uzunluk
+                                for h in self.demir_engine.hesaplamalar
+                            )
+                            if not exists:
+                                self.demir_engine.demir_ekle(
+                                    poz_no=f"AUTO-{katman}",
+                                    eleman_tipi="otomatik",
+                                    eleman_adi=katman,
+                                    adet=adet,
+                                    demir_capi=cap,
+                                    uzunluk=uzunluk
+                                )
+                                otomatik_eklenen += 1
+                if otomatik_eklenen > 0:
+                    logger.info(f"Otomatik olarak {otomatik_eklenen} demir eklendi (brute-force tarama)")
+            except Exception as e:
+                logger.debug(f"Otomatik demir tarama hatasi: {e}")
+            
             # Özetleri hazırla
             sonuc['tip_ozet'] = self.demir_engine.ozet_by_type()
             sonuc['genel_ozet'] = self.demir_engine.ozet_genel()
             sonuc['temel_tipi'] = self.temel_tipi
+            # Debug: toplam hesap sayısını logla
+            logger.info(f"Demir hesaplama tamamlandi - toplam hesap: {len(self.demir_engine.hesaplamalar)}")
             
         except Exception as e:
             logger.error(f"Demir hesaplama hatası: {e}")

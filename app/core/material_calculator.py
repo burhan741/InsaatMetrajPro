@@ -3,10 +3,200 @@ Malzeme Hesaplama Yöneticisi
 Poz bazlı malzeme hesaplamaları için core modül
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from decimal import Decimal
+import math
 from app.core.database import DatabaseManager
 from app.core.calculator import Calculator
+
+
+# ============================================================================
+# BOYA MALİYET HESAPLAMA FONKSİYONU (GELİŞMİŞ)
+# ============================================================================
+
+def hesapla_boya_maliyet_gelismis(
+    boyanacak_alan_m2: float,
+    kat_sayisi: int = 2,
+    astar_yapilacak_mi: bool = True,
+    kova_birim_fiyat: float = 0.0,
+    astar_kova_fiyat: float = 0.0,
+    ekip_gunluk_ucret: float = 0.0,
+    fire_orani: float = 0.05,
+    verim_kaynagi: Literal['piyasa', 'csb_resmi', 'manuel'] = 'piyasa',
+    manuel_hiz: Optional[float] = None
+) -> Dict[str, Any]:
+    """
+    Gelişmiş boya maliyet hesaplama fonksiyonu.
+
+    Kat sayısı ve astar durumuna göre dinamik hesaplama yapar.
+
+    Args:
+        boyanacak_alan_m2: Boyanacak toplam alan (m²)
+        kat_sayisi: Boya kat sayısı (1 veya 2, varsayılan: 2)
+        astar_yapilacak_mi: Astar uygulanacak mı (True/False, varsayılan: True)
+        kova_birim_fiyat: 20 Kg'lık boya kovası fiyatı (TL)
+        astar_kova_fiyat: 20 Kg'lık astar kovası fiyatı (TL)
+        ekip_gunluk_ucret: 1 Usta + 1 Yardımcı günlük ücret (TL)
+        fire_orani: Fire oranı (Örn: 0.05 = %5)
+        verim_kaynagi: Verim kaynağı ('piyasa', 'csb_resmi', 'manuel')
+        manuel_hiz: Manuel hız (m²/gün) - sadece verim_kaynagi='manuel' ise kullanılır
+
+    Returns:
+        Dict: Hesaplama sonuçları
+            - uygulanan_kat_sayisi: int
+            - astar_durumu: bool
+            - tahmini_sure_gun: int
+            - gereken_boya_kova_adet: int
+            - gereken_astar_kova_adet: int
+            - toplam_boya_kg: float
+            - toplam_astar_kg: float
+            - toplam_iscilik_tl: float
+            - toplam_malzeme_tl: float
+            - genel_toplam_maliyet_tl: float
+
+    Raises:
+        ValueError: Geçersiz parametre değerleri için
+
+    Example:
+        >>> sonuc = hesapla_boya_maliyet_gelismis(
+        ...     boyanacak_alan_m2=500.0,
+        ...     kat_sayisi=2,
+        ...     astar_yapilacak_mi=True,
+        ...     kova_birim_fiyat=1500.0,
+        ...     astar_kova_fiyat=800.0,
+        ...     ekip_gunluk_ucret=3500.0,
+        ...     fire_orani=0.05,
+        ...     verim_kaynagi='piyasa'
+        ... )
+        >>> print(sonuc['genel_toplam_maliyet_tl'])
+    """
+
+    # =========================================================================
+    # 1. GİRDİ VALİDASYONU
+    # =========================================================================
+    if boyanacak_alan_m2 <= 0:
+        raise ValueError("Boyanacak alan 0'dan büyük olmalıdır.")
+
+    if kat_sayisi not in (1, 2):
+        raise ValueError("Kat sayısı sadece 1 veya 2 olabilir.")
+
+    if fire_orani < 0 or fire_orani > 1:
+        raise ValueError("Fire oranı 0 ile 1 arasında olmalıdır.")
+
+    if verim_kaynagi == 'manuel' and (manuel_hiz is None or manuel_hiz <= 0):
+        raise ValueError("Manuel verim kaynağı seçildiğinde geçerli bir manuel_hiz değeri gereklidir.")
+
+    # =========================================================================
+    # 2. SABİT DEĞERLER
+    # =========================================================================
+    BOYA_SARFIYAT_KG_M2 = 0.150  # Her kat için m² başına kg
+    ASTAR_SARFIYAT_KG_M2 = 0.150  # m² başına kg
+    KOVA_AGIRLIK_KG = 20.0  # 20 Kg'lık kova
+
+    # Baz hızlar (2 kat boya + astar için, m²/gün)
+    BAZ_HIZLAR = {
+        'piyasa': 90.0,
+        'csb_resmi': 45.0,
+        'manuel': manuel_hiz if manuel_hiz else 90.0
+    }
+
+    # =========================================================================
+    # 3. MALZEME SARFIYATI HESABI
+    # =========================================================================
+
+    # A. Boya Miktarı (kat sayısına göre)
+    # Formül: (alan * kat_sayisi * sarfiyat) * (1 + fire_orani)
+    toplam_boya_kg = (boyanacak_alan_m2 * kat_sayisi * BOYA_SARFIYAT_KG_M2) * (1 + fire_orani)
+
+    # B. Astar Miktarı (sadece astar seçildiyse)
+    if astar_yapilacak_mi:
+        toplam_astar_kg = (boyanacak_alan_m2 * ASTAR_SARFIYAT_KG_M2) * (1 + fire_orani)
+    else:
+        toplam_astar_kg = 0.0
+
+    # C. Kova Çevrimi (yukarı yuvarlama)
+    gereken_boya_kova_adet = math.ceil(toplam_boya_kg / KOVA_AGIRLIK_KG)
+    gereken_astar_kova_adet = math.ceil(toplam_astar_kg / KOVA_AGIRLIK_KG) if astar_yapilacak_mi else 0
+
+    # =========================================================================
+    # 4. İŞÇİLİK HIZI HESABI (Dinamik Çarpanlarla)
+    # =========================================================================
+
+    # Baz hızı al
+    baz_hiz = BAZ_HIZLAR.get(verim_kaynagi, BAZ_HIZLAR['piyasa'])
+
+    # Hız çarpanını başlat
+    hiz_carpani = 1.0
+
+    # Kat sayısı çarpanı: 1 kat seçilirse iş daha hızlı biter (1.5x)
+    if kat_sayisi == 1:
+        hiz_carpani *= 1.5
+
+    # Astar durumu çarpanı: Astar yoksa ekstra %10 hız artışı (1.1x)
+    if not astar_yapilacak_mi:
+        hiz_carpani *= 1.1
+
+    # Efektif hız (günlük tamamlanan m²)
+    efektif_hiz = baz_hiz * hiz_carpani
+
+    # =========================================================================
+    # 5. SÜRE VE MALİYET HESABI
+    # =========================================================================
+
+    # A. Tahmini süre (gün) - yukarı yuvarlama
+    tahmini_sure_gun = math.ceil(boyanacak_alan_m2 / efektif_hiz)
+
+    # B. İşçilik maliyeti
+    toplam_iscilik_tl = tahmini_sure_gun * ekip_gunluk_ucret
+
+    # C. Malzeme maliyeti
+    boya_maliyeti = gereken_boya_kova_adet * kova_birim_fiyat
+    astar_maliyeti = gereken_astar_kova_adet * astar_kova_fiyat
+    toplam_malzeme_tl = boya_maliyeti + astar_maliyeti
+
+    # D. Genel toplam
+    genel_toplam_maliyet_tl = toplam_iscilik_tl + toplam_malzeme_tl
+
+    # =========================================================================
+    # 6. SONUÇ DÖNDÜR
+    # =========================================================================
+    return {
+        # Uygulama parametreleri
+        'uygulanan_kat_sayisi': kat_sayisi,
+        'astar_durumu': astar_yapilacak_mi,
+
+        # Zaman
+        'tahmini_sure_gun': tahmini_sure_gun,
+
+        # Malzeme miktarları
+        'gereken_boya_kova_adet': gereken_boya_kova_adet,
+        'gereken_astar_kova_adet': gereken_astar_kova_adet,
+        'toplam_boya_kg': round(toplam_boya_kg, 2),
+        'toplam_astar_kg': round(toplam_astar_kg, 2),
+
+        # Maliyetler
+        'toplam_iscilik_tl': round(toplam_iscilik_tl, 2),
+        'toplam_malzeme_tl': round(toplam_malzeme_tl, 2),
+        'genel_toplam_maliyet_tl': round(genel_toplam_maliyet_tl, 2),
+
+        # Detay bilgileri (opsiyonel - raporlama için)
+        '_detay': {
+            'boyanacak_alan_m2': boyanacak_alan_m2,
+            'fire_orani': fire_orani,
+            'verim_kaynagi': verim_kaynagi,
+            'baz_hiz_m2_gun': baz_hiz,
+            'hiz_carpani': round(hiz_carpani, 2),
+            'efektif_hiz_m2_gun': round(efektif_hiz, 2),
+            'boya_sarfiyat_kg_m2': BOYA_SARFIYAT_KG_M2,
+            'astar_sarfiyat_kg_m2': ASTAR_SARFIYAT_KG_M2,
+            'kova_agirlik_kg': KOVA_AGIRLIK_KG,
+            'kova_birim_fiyat': kova_birim_fiyat,
+            'astar_kova_fiyat': astar_kova_fiyat,
+            'ekip_gunluk_ucret': ekip_gunluk_ucret,
+            'boya_maliyeti_tl': round(boya_maliyeti, 2),
+            'astar_maliyeti_tl': round(astar_maliyeti, 2)
+        }
+    }
 
 
 class MaterialCalculator:

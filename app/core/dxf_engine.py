@@ -18,6 +18,13 @@ except ImportError:
     EZDXF_AVAILABLE = False
     ezdxf = None
 
+try:
+    from shapely.geometry import box
+    SHAPELY_AVAILABLE = True
+except ImportError:
+    SHAPELY_AVAILABLE = False
+    box = None
+
 logger = logging.getLogger(__name__)
 # Logger seviyesini açıkça DEBUG'a ayarla (modül import edilirken logging konfigürasyonu aktif olmalı)
 logger.setLevel(logging.DEBUG)
@@ -1142,6 +1149,233 @@ class DXFAnaliz:
         except Exception as e:
             logger.warning(f"Text entity okuma hatası (kalınlık/cins): {e}")
             return {}
+
+    def oda_isimlerini_oku(self, oda_ismi_layer: str = "A_ODA_ISMI", hesap_siniri_layer: str = "HESAP_SINIRI") -> List[Dict[str, Any]]:
+        """
+        DXF dosyasından oda isimlerini okur.
+
+        Mimarın belirlediği layer'daki TEXT ve MTEXT entity'lerini okur.
+        Opsiyonel olarak HESAP_SINIRI layer'ı ile sınırlandırılabilir.
+
+        Args:
+            oda_ismi_layer: Oda isimlerinin bulunduğu layer adı (varsayılan: "A_ODA_ISMI")
+            hesap_siniri_layer: Hesap sınırı polyline'ının bulunduğu layer (varsayılan: "HESAP_SINIRI")
+
+        Returns:
+            List[Dict]: Her oda için {"text": str, "x": float, "y": float} bilgisi içeren liste
+        """
+        if not self.msp:
+            logger.warning("DXF dosyası yüklenmemiş!")
+            return []
+
+        logger.info(f"📄 Oda isimleri okunuyor - Layer: {oda_ismi_layer}")
+
+        # 1. SINIR KUTUSU (Varsa okur, yoksa geçer)
+        hesap_kutusu = None
+        if SHAPELY_AVAILABLE:
+            try:
+                sinir_poly = self.msp.query(f'LWPOLYLINE[layer=="{hesap_siniri_layer}"]')
+                sinir_list = list(sinir_poly)
+                if sinir_list:
+                    with sinir_list[0].points("xy") as pts:
+                        noktalar = list(pts)
+                    x_coords = [p[0] for p in noktalar]
+                    y_coords = [p[1] for p in noktalar]
+                    hesap_kutusu = box(min(x_coords), min(y_coords), max(x_coords), max(y_coords))
+                    logger.info(f"✅ Hesap sınırı bulundu: {min(x_coords):.2f}, {min(y_coords):.2f} -> {max(x_coords):.2f}, {max(y_coords):.2f}")
+            except Exception as e:
+                logger.warning(f"Hesap sınırı okuma hatası: {e}")
+
+        oda_isimleri = []
+
+        # 2. YAZILARI TOPLA (TEXT ve MTEXT)
+        for entity in self.msp.query('TEXT MTEXT'):
+            try:
+                if entity.dxf.layer != oda_ismi_layer:
+                    continue
+
+                # Yazı İçeriği
+                if entity.dxftype() == 'TEXT':
+                    text = entity.dxf.text
+                else:
+                    # MTEXT için
+                    text = entity.text if hasattr(entity, 'text') else entity.dxf.text
+
+                # Konum
+                insert = entity.dxf.insert
+
+                # Sınır Kontrolü
+                if hesap_kutusu:
+                    bounds = hesap_kutusu.bounds
+                    if not (bounds[0] <= insert.x <= bounds[2] and
+                            bounds[1] <= insert.y <= bounds[3]):
+                        continue
+
+                if text and text.strip():
+                    # MTEXT formatlarını temizle (örn: {\fArial;ODA ADI} -> ODA ADI)
+                    clean_text = re.sub(r'\\[A-Za-z][^;]*;', '', text)
+                    clean_text = re.sub(r'[{}\\]', '', clean_text)
+                    clean_text = clean_text.strip()
+
+                    if clean_text:
+                        oda_isimleri.append({
+                            "text": clean_text,
+                            "x": insert.x,
+                            "y": insert.y
+                        })
+                        logger.info(f"  -> Bulundu: {clean_text} ({insert.x:.2f}, {insert.y:.2f})")
+            except Exception as e:
+                logger.warning(f"Entity okuma hatası: {e}")
+                continue
+
+        if not oda_isimleri:
+            logger.warning(f"⚠️ '{oda_ismi_layer}' layer'ında hiçbir oda ismi bulunamadı!")
+        else:
+            logger.info(f"📊 Toplam {len(oda_isimleri)} oda ismi bulundu")
+
+        return oda_isimleri
+
+    def kat_isimlerini_oku(self, kat_ismi_layer: str = "A_KAT_ISMI", hesap_siniri_layer: str = "HESAP_SINIRI") -> List[Dict[str, Any]]:
+        """
+        DXF dosyasından kat isimlerini okur.
+
+        Mimarın belirlediği layer'daki TEXT ve MTEXT entity'lerini okur.
+        Opsiyonel olarak HESAP_SINIRI layer'ı ile sınırlandırılabilir.
+
+        Args:
+            kat_ismi_layer: Kat isimlerinin bulunduğu layer adı (varsayılan: "A_KAT_ISMI")
+            hesap_siniri_layer: Hesap sınırı polyline'ının bulunduğu layer (varsayılan: "HESAP_SINIRI")
+
+        Returns:
+            List[Dict]: Her kat için {"text": str, "x": float, "y": float} bilgisi içeren liste
+        """
+        if not self.msp:
+            logger.warning("DXF dosyası yüklenmemiş!")
+            return []
+
+        logger.info(f"📄 Kat isimleri okunuyor - Layer: {kat_ismi_layer}")
+
+        # 1. SINIR KUTUSU (Varsa okur, yoksa geçer)
+        hesap_kutusu = None
+        if SHAPELY_AVAILABLE:
+            try:
+                sinir_poly = self.msp.query(f'LWPOLYLINE[layer=="{hesap_siniri_layer}"]')
+                sinir_list = list(sinir_poly)
+                if sinir_list:
+                    with sinir_list[0].points("xy") as pts:
+                        noktalar = list(pts)
+                    x_coords = [p[0] for p in noktalar]
+                    y_coords = [p[1] for p in noktalar]
+                    hesap_kutusu = box(min(x_coords), min(y_coords), max(x_coords), max(y_coords))
+                    logger.info(f"✅ Hesap sınırı bulundu")
+            except Exception as e:
+                logger.warning(f"Hesap sınırı okuma hatası: {e}")
+
+        kat_isimleri = []
+
+        # 2. YAZILARI TOPLA (TEXT ve MTEXT)
+        for entity in self.msp.query('TEXT MTEXT'):
+            try:
+                if entity.dxf.layer != kat_ismi_layer:
+                    continue
+
+                # Yazı İçeriği
+                if entity.dxftype() == 'TEXT':
+                    text = entity.dxf.text
+                else:
+                    text = entity.text if hasattr(entity, 'text') else entity.dxf.text
+
+                # Konum
+                insert = entity.dxf.insert
+
+                # Sınır Kontrolü
+                if hesap_kutusu:
+                    bounds = hesap_kutusu.bounds
+                    if not (bounds[0] <= insert.x <= bounds[2] and
+                            bounds[1] <= insert.y <= bounds[3]):
+                        continue
+
+                if text and text.strip():
+                    # MTEXT formatlarını temizle
+                    clean_text = re.sub(r'\\[A-Za-z][^;]*;', '', text)
+                    clean_text = re.sub(r'[{}\\]', '', clean_text)
+                    clean_text = clean_text.strip()
+
+                    if clean_text:
+                        kat_isimleri.append({
+                            "text": clean_text,
+                            "x": insert.x,
+                            "y": insert.y
+                        })
+                        logger.info(f"  -> Kat bulundu: {clean_text} ({insert.x:.2f}, {insert.y:.2f})")
+            except Exception as e:
+                logger.warning(f"Entity okuma hatası: {e}")
+                continue
+
+        if not kat_isimleri:
+            logger.warning(f"⚠️ '{kat_ismi_layer}' layer'ında hiçbir kat ismi bulunamadı!")
+        else:
+            logger.info(f"📊 Toplam {len(kat_isimleri)} kat ismi bulundu")
+
+        return kat_isimleri
+
+    def proje_kimligini_oku(self, oda_layer: str = "A_ODA_ISMI", kat_layer: str = "A_KAT_ISMI",
+                           hesap_siniri_layer: str = "HESAP_SINIRI") -> Dict[str, Any]:
+        """
+        DXF dosyasından proje kimliğini okur (oda ve kat isimleri).
+
+        Args:
+            oda_layer: Oda isimlerinin bulunduğu layer
+            kat_layer: Kat isimlerinin bulunduğu layer
+            hesap_siniri_layer: Hesap sınırı layer'ı
+
+        Returns:
+            Dict: {
+                "odalar": List[Dict],
+                "katlar": List[Dict],
+                "hesap_siniri": Optional[Tuple] (min_x, min_y, max_x, max_y)
+            }
+        """
+        hesap_siniri = None
+
+        # Hesap sınırını al
+        if SHAPELY_AVAILABLE and self.msp:
+            try:
+                sinir_poly = self.msp.query(f'LWPOLYLINE[layer=="{hesap_siniri_layer}"]')
+                sinir_list = list(sinir_poly)
+                if sinir_list:
+                    with sinir_list[0].points("xy") as pts:
+                        noktalar = list(pts)
+                    x_coords = [p[0] for p in noktalar]
+                    y_coords = [p[1] for p in noktalar]
+                    hesap_siniri = (min(x_coords), min(y_coords), max(x_coords), max(y_coords))
+            except:
+                pass
+
+        return {
+            "odalar": self.oda_isimlerini_oku(oda_layer, hesap_siniri_layer),
+            "katlar": self.kat_isimlerini_oku(kat_layer, hesap_siniri_layer),
+            "hesap_siniri": hesap_siniri
+        }
+
+    def tum_text_layerlarini_listele(self) -> List[str]:
+        """
+        DXF dosyasındaki TEXT ve MTEXT entity'lerinin bulunduğu tüm layer'ları listeler.
+
+        Returns:
+            List[str]: TEXT veya MTEXT içeren layer adları
+        """
+        if not self.msp:
+            return []
+
+        text_layers = set()
+        for entity in self.msp.query('TEXT MTEXT'):
+            try:
+                text_layers.add(entity.dxf.layer)
+            except:
+                continue
+
+        return sorted(list(text_layers))
 
 
 # --- TEST ALANI (Sadece bu dosya çalıştırıldığında devreye girer) ---

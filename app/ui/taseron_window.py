@@ -79,7 +79,10 @@ class TaseronWindow(QMainWindow):
         
         # Sekme 4: Raporlar
         self.create_raporlar_tab()
-        
+
+        # Sekme 5: İş, Süre ve Maliyet Hesaplama
+        self.create_is_sure_maliyet_tab()
+
         main_layout.addWidget(self.tabs)
         
         # Durum çubuğu
@@ -378,7 +381,461 @@ class TaseronWindow(QMainWindow):
         layout.addWidget(summary_group)
         
         self.tabs.addTab(tab, "📋 Raporlar")
-    
+
+    def create_is_sure_maliyet_tab(self):
+        """İş, Süre ve Maliyet Hesaplama sekmesi - Kalıp işleri için"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(15)
+
+        # Başlık
+        title_label = QLabel("İŞ, SÜRE VE MİKTAR VE MALİYET HESAPLAMA")
+        title_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("color: #4CAF50; padding: 10px; background-color: #1a1a2e; border-radius: 8px;")
+        layout.addWidget(title_label)
+
+        # Scroll Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.setSpacing(15)
+
+        # ============ BÖLÜM 1: KALIP METRAJ GİRİŞİ ============
+        kalip_group = QGroupBox("1. KALIP METRAJ GİRİŞİ")
+        kalip_group.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        kalip_group.setStyleSheet("""
+            QGroupBox {
+                border: 2px solid #4CAF50;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #4CAF50;
+            }
+        """)
+        kalip_layout = QFormLayout()
+        kalip_layout.setSpacing(10)
+
+        # Kalıp metrajı girişi
+        self.kalip_metraj_input = QDoubleSpinBox()
+        self.kalip_metraj_input.setRange(0, 999999)
+        self.kalip_metraj_input.setDecimals(2)
+        self.kalip_metraj_input.setSuffix(" m²")
+        self.kalip_metraj_input.setMinimumHeight(35)
+        self.kalip_metraj_input.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.kalip_metraj_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        kalip_layout.addRow("Kalıp Metrajı:", self.kalip_metraj_input)
+
+        # Plywood kullanım oranı (varsayılan: 1 plywood = 2.98 m²)
+        self.plywood_verim_input = QDoubleSpinBox()
+        self.plywood_verim_input.setRange(0.1, 10)
+        self.plywood_verim_input.setDecimals(2)
+        self.plywood_verim_input.setValue(2.98)  # Standart 125x240cm plywood = 3m² ama fire ile 2.98
+        self.plywood_verim_input.setSuffix(" m²/adet")
+        self.plywood_verim_input.setMinimumHeight(35)
+        self.plywood_verim_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        kalip_layout.addRow("Plywood Verimi:", self.plywood_verim_input)
+
+        # Hesaplanan plywood miktarı (sonuç)
+        self.plywood_miktar_label = QLabel("0 Adet Plywood Gerekli")
+        self.plywood_miktar_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        self.plywood_miktar_label.setStyleSheet("color: #FFD700; padding: 10px; background-color: #2a2a3e; border-radius: 5px;")
+        self.plywood_miktar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        kalip_layout.addRow("Gereken Plywood:", self.plywood_miktar_label)
+
+        kalip_group.setLayout(kalip_layout)
+        scroll_layout.addWidget(kalip_group)
+
+        # ============ BÖLÜM 2: PERSONEL VE SÜRE HESABI ============
+        personel_group = QGroupBox("2. PERSONEL VE SÜRE HESABI")
+        personel_group.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        personel_group.setStyleSheet("""
+            QGroupBox {
+                border: 2px solid #2196F3;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #2196F3;
+            }
+        """)
+        personel_layout = QFormLayout()
+        personel_layout.setSpacing(10)
+
+        # Usta sayısı
+        self.usta_sayisi_input = QSpinBox()
+        self.usta_sayisi_input.setRange(0, 100)
+        self.usta_sayisi_input.setValue(1)
+        self.usta_sayisi_input.setSuffix(" kişi")
+        self.usta_sayisi_input.setMinimumHeight(35)
+        self.usta_sayisi_input.setStyleSheet("font-size: 14px;")
+        self.usta_sayisi_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        personel_layout.addRow("Usta Sayısı:", self.usta_sayisi_input)
+
+        # Usta yardımcısı sayısı
+        self.yardimci_sayisi_input = QSpinBox()
+        self.yardimci_sayisi_input.setRange(0, 100)
+        self.yardimci_sayisi_input.setValue(1)
+        self.yardimci_sayisi_input.setSuffix(" kişi")
+        self.yardimci_sayisi_input.setMinimumHeight(35)
+        self.yardimci_sayisi_input.setStyleSheet("font-size: 14px;")
+        self.yardimci_sayisi_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        personel_layout.addRow("Usta Yardımcısı Sayısı:", self.yardimci_sayisi_input)
+
+        # Günlük üretim kapasitesi (m² / (usta + 0.5*yardımcı) / gün)
+        self.gunluk_kapasite_input = QDoubleSpinBox()
+        self.gunluk_kapasite_input.setRange(1, 100)
+        self.gunluk_kapasite_input.setDecimals(1)
+        self.gunluk_kapasite_input.setValue(12.0)  # Varsayılan: 1 usta günde 12 m² kalıp yapar
+        self.gunluk_kapasite_input.setSuffix(" m²/kişi/gün")
+        self.gunluk_kapasite_input.setMinimumHeight(35)
+        self.gunluk_kapasite_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        personel_layout.addRow("Usta Günlük Kapasitesi:", self.gunluk_kapasite_input)
+
+        # Yardımcı verimlilik katsayısı
+        self.yardimci_katsayi_input = QDoubleSpinBox()
+        self.yardimci_katsayi_input.setRange(0.1, 1.0)
+        self.yardimci_katsayi_input.setDecimals(2)
+        self.yardimci_katsayi_input.setValue(0.50)  # Yardımcı, ustanın %50 verimliliğinde
+        self.yardimci_katsayi_input.setMinimumHeight(35)
+        self.yardimci_katsayi_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        personel_layout.addRow("Yardımcı Verimlilik Katsayısı:", self.yardimci_katsayi_input)
+
+        # Hesaplanan iş süresi (sonuç)
+        self.is_suresi_label = QLabel("0 Gün")
+        self.is_suresi_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        self.is_suresi_label.setStyleSheet("color: #2196F3; padding: 10px; background-color: #2a2a3e; border-radius: 5px;")
+        self.is_suresi_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        personel_layout.addRow("Tahmini İş Süresi:", self.is_suresi_label)
+
+        personel_group.setLayout(personel_layout)
+        scroll_layout.addWidget(personel_group)
+
+        # ============ BÖLÜM 3: MALİYET HESABI ============
+        maliyet_group = QGroupBox("3. MALİYET HESABI")
+        maliyet_group.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        maliyet_group.setStyleSheet("""
+            QGroupBox {
+                border: 2px solid #FF9800;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #FF9800;
+            }
+        """)
+        maliyet_layout = QFormLayout()
+        maliyet_layout.setSpacing(10)
+
+        # Usta günlük ücreti
+        self.usta_gunluk_ucret_input = QDoubleSpinBox()
+        self.usta_gunluk_ucret_input.setRange(0, 99999)
+        self.usta_gunluk_ucret_input.setDecimals(2)
+        self.usta_gunluk_ucret_input.setValue(2500.0)
+        self.usta_gunluk_ucret_input.setSuffix(" ₺/gün")
+        self.usta_gunluk_ucret_input.setMinimumHeight(35)
+        self.usta_gunluk_ucret_input.setStyleSheet("font-size: 14px;")
+        self.usta_gunluk_ucret_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        maliyet_layout.addRow("Usta Günlük Ücreti:", self.usta_gunluk_ucret_input)
+
+        # Usta yardımcısı günlük ücreti
+        self.yardimci_gunluk_ucret_input = QDoubleSpinBox()
+        self.yardimci_gunluk_ucret_input.setRange(0, 99999)
+        self.yardimci_gunluk_ucret_input.setDecimals(2)
+        self.yardimci_gunluk_ucret_input.setValue(1500.0)
+        self.yardimci_gunluk_ucret_input.setSuffix(" ₺/gün")
+        self.yardimci_gunluk_ucret_input.setMinimumHeight(35)
+        self.yardimci_gunluk_ucret_input.setStyleSheet("font-size: 14px;")
+        self.yardimci_gunluk_ucret_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        maliyet_layout.addRow("Yardımcı Günlük Ücreti:", self.yardimci_gunluk_ucret_input)
+
+        # Plywood birim fiyatı
+        self.plywood_birim_fiyat_input = QDoubleSpinBox()
+        self.plywood_birim_fiyat_input.setRange(0, 9999)
+        self.plywood_birim_fiyat_input.setDecimals(2)
+        self.plywood_birim_fiyat_input.setValue(850.0)  # Varsayılan plywood fiyatı
+        self.plywood_birim_fiyat_input.setSuffix(" ₺/adet")
+        self.plywood_birim_fiyat_input.setMinimumHeight(35)
+        self.plywood_birim_fiyat_input.valueChanged.connect(self.hesapla_kalip_maliyet)
+        maliyet_layout.addRow("Plywood Birim Fiyatı:", self.plywood_birim_fiyat_input)
+
+        maliyet_group.setLayout(maliyet_layout)
+        scroll_layout.addWidget(maliyet_group)
+
+        # ============ BÖLÜM 4: SONUÇLAR ============
+        sonuc_group = QGroupBox("4. SONUÇLAR")
+        sonuc_group.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        sonuc_group.setStyleSheet("""
+            QGroupBox {
+                border: 2px solid #4CAF50;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+                background-color: #1a2a1a;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #4CAF50;
+            }
+        """)
+        sonuc_layout = QVBoxLayout()
+        sonuc_layout.setSpacing(10)
+
+        # Sonuç tablosu
+        self.maliyet_sonuc_table = QTableWidget()
+        self.maliyet_sonuc_table.setColumnCount(2)
+        self.maliyet_sonuc_table.setHorizontalHeaderLabels(["Kalem", "Tutar"])
+        self.maliyet_sonuc_table.setRowCount(6)
+        self.maliyet_sonuc_table.setAlternatingRowColors(True)
+        self.maliyet_sonuc_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.maliyet_sonuc_table.horizontalHeader().setStretchLastSection(True)
+        self.maliyet_sonuc_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.maliyet_sonuc_table.setMaximumHeight(220)
+
+        # Satır başlıklarını ayarla
+        basliklar = [
+            "Plywood Maliyeti",
+            "Usta İşçilik Maliyeti",
+            "Yardımcı İşçilik Maliyeti",
+            "Toplam İşçilik Maliyeti",
+            "Toplam Malzeme Maliyeti",
+            "GENEL TOPLAM"
+        ]
+        for i, baslik in enumerate(basliklar):
+            item = QTableWidgetItem(baslik)
+            item.setFont(QFont("Arial", 11, QFont.Weight.Bold if i == 5 else QFont.Weight.Normal))
+            self.maliyet_sonuc_table.setItem(i, 0, item)
+            self.maliyet_sonuc_table.setItem(i, 1, QTableWidgetItem("0.00 ₺"))
+
+        sonuc_layout.addWidget(self.maliyet_sonuc_table)
+
+        # Genel toplam büyük gösterim
+        self.genel_toplam_label = QLabel("GENEL TOPLAM: 0.00 ₺")
+        self.genel_toplam_label.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        self.genel_toplam_label.setStyleSheet("""
+            color: #4CAF50;
+            padding: 15px;
+            background-color: #0a1a0a;
+            border: 3px solid #4CAF50;
+            border-radius: 10px;
+        """)
+        self.genel_toplam_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sonuc_layout.addWidget(self.genel_toplam_label)
+
+        # Özet bilgi
+        self.ozet_label = QLabel("")
+        self.ozet_label.setFont(QFont("Arial", 11))
+        self.ozet_label.setStyleSheet("color: #888; padding: 5px;")
+        self.ozet_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ozet_label.setWordWrap(True)
+        sonuc_layout.addWidget(self.ozet_label)
+
+        sonuc_group.setLayout(sonuc_layout)
+        scroll_layout.addWidget(sonuc_group)
+
+        # Stretch ekle
+        scroll_layout.addStretch()
+
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        # Alt butonlar
+        btn_layout = QHBoxLayout()
+
+        btn_temizle = QPushButton("Temizle")
+        btn_temizle.setStyleSheet("background-color: #c9184a;")
+        btn_temizle.clicked.connect(self.temizle_kalip_maliyet)
+        btn_layout.addWidget(btn_temizle)
+
+        btn_layout.addStretch()
+
+        btn_kaydet = QPushButton("Hesaplamayı Kaydet")
+        btn_kaydet.setStyleSheet("background-color: #4CAF50; font-weight: bold;")
+        btn_kaydet.clicked.connect(self.kaydet_kalip_maliyet)
+        btn_layout.addWidget(btn_kaydet)
+
+        layout.addLayout(btn_layout)
+
+        self.tabs.addTab(tab, "🧮 İş Süre Maliyet")
+
+    def hesapla_kalip_maliyet(self):
+        """Kalıp maliyet hesaplaması yap"""
+        try:
+            # Girdileri al
+            kalip_metraj = self.kalip_metraj_input.value()
+            plywood_verim = self.plywood_verim_input.value()
+            usta_sayisi = self.usta_sayisi_input.value()
+            yardimci_sayisi = self.yardimci_sayisi_input.value()
+            gunluk_kapasite = self.gunluk_kapasite_input.value()
+            yardimci_katsayi = self.yardimci_katsayi_input.value()
+            usta_gunluk_ucret = self.usta_gunluk_ucret_input.value()
+            yardimci_gunluk_ucret = self.yardimci_gunluk_ucret_input.value()
+            plywood_birim_fiyat = self.plywood_birim_fiyat_input.value()
+
+            # 1. Plywood miktarı hesapla
+            if plywood_verim > 0:
+                plywood_miktar = kalip_metraj / plywood_verim
+                plywood_miktar_tam = int(plywood_miktar) + (1 if plywood_miktar % 1 > 0 else 0)  # Yukarı yuvarla
+            else:
+                plywood_miktar_tam = 0
+
+            self.plywood_miktar_label.setText(f"{plywood_miktar_tam} Adet Plywood Gerekli")
+
+            # 2. İş süresi hesapla
+            # Toplam günlük kapasite = (usta_sayisi * kapasite) + (yardimci_sayisi * kapasite * yardimci_katsayi)
+            toplam_gunluk_kapasite = (usta_sayisi * gunluk_kapasite) + (yardimci_sayisi * gunluk_kapasite * yardimci_katsayi)
+
+            if toplam_gunluk_kapasite > 0:
+                is_suresi = kalip_metraj / toplam_gunluk_kapasite
+                is_suresi_tam = int(is_suresi) + (1 if is_suresi % 1 > 0 else 0)  # Yukarı yuvarla
+            else:
+                is_suresi_tam = 0
+
+            self.is_suresi_label.setText(f"{is_suresi_tam} Gün")
+
+            # 3. Maliyet hesapla
+            plywood_maliyeti = plywood_miktar_tam * plywood_birim_fiyat
+            usta_iscilik_maliyeti = usta_sayisi * usta_gunluk_ucret * is_suresi_tam
+            yardimci_iscilik_maliyeti = yardimci_sayisi * yardimci_gunluk_ucret * is_suresi_tam
+            toplam_iscilik = usta_iscilik_maliyeti + yardimci_iscilik_maliyeti
+            toplam_malzeme = plywood_maliyeti
+            genel_toplam = toplam_iscilik + toplam_malzeme
+
+            # Sonuçları tabloya yaz
+            sonuclar = [
+                plywood_maliyeti,
+                usta_iscilik_maliyeti,
+                yardimci_iscilik_maliyeti,
+                toplam_iscilik,
+                toplam_malzeme,
+                genel_toplam
+            ]
+
+            for i, sonuc in enumerate(sonuclar):
+                item = QTableWidgetItem(f"{sonuc:,.2f} ₺")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if i == 5:  # Genel toplam
+                    item.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+                    item.setForeground(Qt.GlobalColor.green)
+                self.maliyet_sonuc_table.setItem(i, 1, item)
+
+            # Genel toplam büyük gösterim
+            self.genel_toplam_label.setText(f"GENEL TOPLAM: {genel_toplam:,.2f} ₺")
+
+            # Özet bilgi
+            if kalip_metraj > 0:
+                birim_maliyet = genel_toplam / kalip_metraj
+                self.ozet_label.setText(
+                    f"Özet: {kalip_metraj:,.2f} m² kalıp için {plywood_miktar_tam} adet plywood, "
+                    f"{usta_sayisi} usta + {yardimci_sayisi} yardımcı ile {is_suresi_tam} günde tamamlanacak. "
+                    f"Birim Maliyet: {birim_maliyet:,.2f} ₺/m²"
+                )
+            else:
+                self.ozet_label.setText("")
+
+        except Exception as e:
+            print(f"Hesaplama hatası: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def temizle_kalip_maliyet(self):
+        """Kalıp maliyet formunu temizle"""
+        self.kalip_metraj_input.setValue(0)
+        self.plywood_verim_input.setValue(2.98)
+        self.usta_sayisi_input.setValue(1)
+        self.yardimci_sayisi_input.setValue(1)
+        self.gunluk_kapasite_input.setValue(12.0)
+        self.yardimci_katsayi_input.setValue(0.50)
+        self.usta_gunluk_ucret_input.setValue(2500.0)
+        self.yardimci_gunluk_ucret_input.setValue(1500.0)
+        self.plywood_birim_fiyat_input.setValue(850.0)
+        self.hesapla_kalip_maliyet()
+
+    def kaydet_kalip_maliyet(self):
+        """Kalıp maliyet hesaplamasını kaydet"""
+        if not self.current_is_id:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir iş seçin")
+            return
+
+        kalip_metraj = self.kalip_metraj_input.value()
+        if kalip_metraj <= 0:
+            QMessageBox.warning(self, "Uyarı", "Lütfen kalıp metrajını girin")
+            return
+
+        # Hesaplama sonuçlarını al
+        plywood_verim = self.plywood_verim_input.value()
+        plywood_miktar = int(kalip_metraj / plywood_verim) + 1 if plywood_verim > 0 else 0
+
+        usta_sayisi = self.usta_sayisi_input.value()
+        yardimci_sayisi = self.yardimci_sayisi_input.value()
+        gunluk_kapasite = self.gunluk_kapasite_input.value()
+        yardimci_katsayi = self.yardimci_katsayi_input.value()
+
+        toplam_gunluk_kapasite = (usta_sayisi * gunluk_kapasite) + (yardimci_sayisi * gunluk_kapasite * yardimci_katsayi)
+        is_suresi = int(kalip_metraj / toplam_gunluk_kapasite) + 1 if toplam_gunluk_kapasite > 0 else 0
+
+        usta_gunluk_ucret = self.usta_gunluk_ucret_input.value()
+        yardimci_gunluk_ucret = self.yardimci_gunluk_ucret_input.value()
+        plywood_birim_fiyat = self.plywood_birim_fiyat_input.value()
+
+        plywood_maliyeti = plywood_miktar * plywood_birim_fiyat
+        usta_iscilik = usta_sayisi * usta_gunluk_ucret * is_suresi
+        yardimci_iscilik = yardimci_sayisi * yardimci_gunluk_ucret * is_suresi
+        genel_toplam = plywood_maliyeti + usta_iscilik + yardimci_iscilik
+
+        # Özet açıklama oluştur
+        aciklama = (
+            f"Kalıp İşi: {kalip_metraj:,.2f} m² | "
+            f"Plywood: {plywood_miktar} adet | "
+            f"Ekip: {usta_sayisi} usta + {yardimci_sayisi} yardımcı | "
+            f"Süre: {is_suresi} gün"
+        )
+
+        try:
+            # İş birim fiyat olarak kaydet
+            self.db.add_taseron_is_birim_fiyat(
+                self.current_is_id,
+                f"Kalıp İşi ({kalip_metraj:,.2f} m²)",
+                "m²",
+                genel_toplam / kalip_metraj if kalip_metraj > 0 else 0,
+                kalip_metraj
+            )
+
+            QMessageBox.information(
+                self, "Başarılı",
+                f"Kalıp maliyet hesaplaması kaydedildi!\n\n"
+                f"Kalıp Metrajı: {kalip_metraj:,.2f} m²\n"
+                f"Plywood: {plywood_miktar} adet ({plywood_maliyeti:,.2f} ₺)\n"
+                f"İş Süresi: {is_suresi} gün\n"
+                f"Usta İşçilik: {usta_iscilik:,.2f} ₺\n"
+                f"Yardımcı İşçilik: {yardimci_iscilik:,.2f} ₺\n"
+                f"─────────────────────\n"
+                f"GENEL TOPLAM: {genel_toplam:,.2f} ₺"
+            )
+
+            # İş birim fiyat sekmesini güncelle
+            self.load_is_birim_fiyat()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Kaydetme hatası:\n{str(e)}")
+
     # Veritabanı işlemleri
     def load_isler(self):
         """İşleri yükle"""

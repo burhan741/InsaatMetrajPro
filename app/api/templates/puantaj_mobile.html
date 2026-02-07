@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#1a1a2e">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <title>Şantiye Puantaj</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        :root {
+            --primary: #e94560;
+            --primary-dark: #c73e54;
+            --bg-dark: #1a1a2e;
+            --bg-card: #16213e;
+            --bg-input: #0f3460;
+            --text: #eaeaea;
+            --text-muted: #a0a0a0;
+            --success: #00d26a;
+            --warning: #ffc107;
+            --danger: #ff6b6b;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+            padding-bottom: 80px;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--bg-card), var(--bg-dark));
+            padding: 20px 16px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header h1::before {
+            content: "👷";
+            font-size: 28px;
+        }
+
+        .date-selector {
+            margin-top: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .date-selector input {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 10px;
+            background: var(--bg-input);
+            color: var(--text);
+            font-size: 16px;
+        }
+
+        .date-nav {
+            display: flex;
+            gap: 8px;
+        }
+
+        .date-nav button {
+            width: 44px;
+            height: 44px;
+            border: none;
+            border-radius: 10px;
+            background: var(--bg-input);
+            color: var(--text);
+            font-size: 20px;
+            cursor: pointer;
+        }
+
+        /* Stats Cards */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            padding: 16px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 14px;
+            text-align: center;
+        }
+
+        .stat-card .number {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--primary);
+        }
+
+        .stat-card .label {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .stat-card.success .number { color: var(--success); }
+        .stat-card.warning .number { color: var(--warning); }
+
+        /* Tab Navigation */
+        .tabs {
+            display: flex;
+            padding: 0 16px;
+            gap: 8px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .tab {
+            flex-shrink: 0;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 20px;
+            background: var(--bg-card);
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            background: var(--primary);
+            color: white;
+        }
+
+        /* Content Sections */
+        .section {
+            display: none;
+            padding: 16px;
+        }
+
+        .section.active {
+            display: block;
+        }
+
+        /* Worker List */
+        .worker-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .worker-card {
+            background: var(--bg-card);
+            border-radius: 14px;
+            padding: 14px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: transform 0.2s;
+        }
+
+        .worker-card:active {
+            transform: scale(0.98);
+        }
+
+        .worker-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .worker-info {
+            flex: 1;
+        }
+
+        .worker-name {
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .worker-role {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .worker-status {
+            display: flex;
+            gap: 6px;
+        }
+
+        .status-btn {
+            width: 40px;
+            height: 40px;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .status-btn.tam { background: var(--success); }
+        .status-btn.yarim { background: var(--warning); }
+        .status-btn.yok { background: var(--danger); }
+        .status-btn.selected {
+            transform: scale(1.15);
+            box-shadow: 0 0 0 3px rgba(255,255,255,0.3);
+        }
+
+        /* Quick Add Form */
+        .quick-form {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .form-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .form-row {
+            margin-bottom: 14px;
+        }
+
+        .form-row label {
+            display: block;
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+
+        .form-row input,
+        .form-row select,
+        .form-row textarea {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 10px;
+            background: var(--bg-input);
+            color: var(--text);
+            font-size: 16px;
+        }
+
+        .form-row textarea {
+            min-height: 80px;
+            resize: none;
+        }
+
+        .time-inputs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        /* Buttons */
+        .btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+        }
+
+        .btn-primary:active {
+            transform: scale(0.98);
+        }
+
+        .btn-secondary {
+            background: var(--bg-input);
+            color: var(--text);
+        }
+
+        /* Bottom Navigation */
+        .bottom-nav {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--bg-card);
+            display: flex;
+            justify-content: space-around;
+            padding: 10px 0 25px 0;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 8px 16px;
+            border: none;
+            background: none;
+            color: var(--text-muted);
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .nav-item.active {
+            color: var(--primary);
+        }
+
+        .nav-item .icon {
+            font-size: 24px;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 200;
+            align-items: flex-end;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg-dark);
+            width: 100%;
+            border-radius: 20px 20px 0 0;
+            padding: 20px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-close {
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 50%;
+            background: var(--bg-input);
+            color: var(--text);
+            font-size: 20px;
+            cursor: pointer;
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-100px);
+            background: var(--bg-card);
+            padding: 14px 24px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 300;
+            transition: transform 0.3s;
+            border-left: 4px solid var(--success);
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .toast.error {
+            border-left-color: var(--danger);
+        }
+
+        /* Summary Table */
+        .summary-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .summary-table th,
+        .summary-table td {
+            padding: 12px 8px;
+            text-align: left;
+            font-size: 13px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .summary-table th {
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--bg-input);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-state .icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <h1>Şantiye Puantaj</h1>
+        <div class="date-selector">
+            <input type="date" id="selectedDate" onchange="loadData()">
+            <div class="date-nav">
+                <button onclick="changeDate(-1)">◀</button>
+                <button onclick="changeDate(1)">▶</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats">
+        <div class="stat-card success">
+            <div class="number" id="statGelen">-</div>
+            <div class="label">Gelen</div>
+        </div>
+        <div class="stat-card warning">
+            <div class="number" id="statGelmeyen">-</div>
+            <div class="label">Gelmeyen</div>
+        </div>
+        <div class="stat-card">
+            <div class="number" id="statMesai">-</div>
+            <div class="label">Mesai (Saat)</div>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <button class="tab active" onclick="showSection('puantaj')">Puantaj</button>
+        <button class="tab" onclick="showSection('isciler')">İşçiler</button>
+        <button class="tab" onclick="showSection('ozet')">Haftalık Özet</button>
+        <button class="tab" onclick="showSection('avans')">Avans</button>
+    </div>
+
+    <!-- Puantaj Section -->
+    <div class="section active" id="section-puantaj">
+        <div class="worker-list" id="puantajList">
+            <div class="loading">
+                <div class="spinner"></div>
+                Yükleniyor...
+            </div>
+        </div>
+    </div>
+
+    <!-- İşçiler Section -->
+    <div class="section" id="section-isciler">
+        <div class="quick-form">
+            <div class="form-title">➕ Yeni İşçi Ekle</div>
+            <div class="form-row">
+                <label>Ad Soyad</label>
+                <input type="text" id="yeniIsciAd" placeholder="Ahmet Yılmaz">
+            </div>
+            <div class="form-row">
+                <label>Ustalık</label>
+                <select id="yeniIsciUstalik">
+                    <option value="Duz Isci">Düz İşçi</option>
+                    <option value="Kalipci">Kalıpçı</option>
+                    <option value="Demirci">Demirci</option>
+                    <option value="Betoncu">Betoncu</option>
+                    <option value="Usta">Usta</option>
+                    <option value="Operator">Operatör</option>
+                    <option value="Elektrikci">Elektrikçi</option>
+                    <option value="Tesisatci">Tesisatçı</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>Günlük Ücret (TL)</label>
+                <input type="number" id="yeniIsciUcret" placeholder="1500">
+            </div>
+            <div class="form-row">
+                <label>Telefon</label>
+                <input type="tel" id="yeniIsciTel" placeholder="05XX XXX XX XX">
+            </div>
+            <button class="btn btn-primary" onclick="addIsci()">İşçi Ekle</button>
+        </div>
+
+        <div class="worker-list" id="isciList"></div>
+    </div>
+
+    <!-- Özet Section -->
+    <div class="section" id="section-ozet">
+        <div class="quick-form">
+            <div class="form-title">📊 Haftalık Puantaj Özeti</div>
+            <table class="summary-table" id="ozetTable">
+                <thead>
+                    <tr>
+                        <th>İşçi</th>
+                        <th>Gün</th>
+                        <th>Mesai</th>
+                        <th>Hakediş</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Avans Section -->
+    <div class="section" id="section-avans">
+        <div class="quick-form">
+            <div class="form-title">💰 Avans Ver</div>
+            <div class="form-row">
+                <label>İşçi</label>
+                <select id="avansIsci"></select>
+            </div>
+            <div class="form-row">
+                <label>Miktar (TL)</label>
+                <input type="number" id="avansMiktar" placeholder="500">
+            </div>
+            <div class="form-row">
+                <label>Açıklama</label>
+                <input type="text" id="avansAciklama" placeholder="Haftalık avans">
+            </div>
+            <button class="btn btn-primary" onclick="addAvans()">Avans Kaydet</button>
+        </div>
+    </div>
+
+    <!-- Puantaj Detail Modal -->
+    <div class="modal" id="puantajModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalIsciAd">İşçi Detay</h3>
+                <button class="modal-close" onclick="closeModal()">×</button>
+            </div>
+            <div class="form-row">
+                <label>Çalışma Durumu</label>
+                <select id="modalDurum">
+                    <option value="tam_gun">Tam Gün</option>
+                    <option value="yarim_gun">Yarım Gün</option>
+                    <option value="izinli">İzinli</option>
+                    <option value="raporlu">Raporlu</option>
+                </select>
+            </div>
+            <div class="time-inputs">
+                <div class="form-row">
+                    <label>Giriş Saati</label>
+                    <input type="time" id="modalGiris" value="08:00">
+                </div>
+                <div class="form-row">
+                    <label>Çıkış Saati</label>
+                    <input type="time" id="modalCikis" value="17:00">
+                </div>
+            </div>
+            <div class="form-row">
+                <label>Mesai (Saat)</label>
+                <input type="number" id="modalMesai" value="0" min="0" max="8">
+            </div>
+            <div class="form-row">
+                <label>Yapılan İş</label>
+                <textarea id="modalYapilanIs" placeholder="Bugün yapılan işler..."></textarea>
+            </div>
+            <button class="btn btn-primary" onclick="savePuantaj()">Kaydet</button>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <!-- Bottom Navigation -->
+    <div class="bottom-nav">
+        <button class="nav-item active" onclick="showSection('puantaj')">
+            <span class="icon">📋</span>
+            <span>Puantaj</span>
+        </button>
+        <button class="nav-item" onclick="showSection('isciler')">
+            <span class="icon">👷</span>
+            <span>İşçiler</span>
+        </button>
+        <button class="nav-item" onclick="showSection('ozet')">
+            <span class="icon">📊</span>
+            <span>Özet</span>
+        </button>
+        <button class="nav-item" onclick="showSection('avans')">
+            <span class="icon">💰</span>
+            <span>Avans</span>
+        </button>
+    </div>
+
+    <script>
+        // Config
+        const API_BASE = '';
+        let selectedIsciId = null;
+
+        // Auth header
+        function getAuthHeaders() {
+            const credentials = btoa('santiye:2024');
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': `Basic ${credentials}`
+            };
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('selectedDate').value = today;
+            loadData();
+        });
+
+        // Date Navigation
+        function changeDate(days) {
+            const input = document.getElementById('selectedDate');
+            const current = new Date(input.value);
+            current.setDate(current.getDate() + days);
+            input.value = current.toISOString().split('T')[0];
+            loadData();
+        }
+
+        // Load All Data
+        async function loadData() {
+            await Promise.all([
+                loadStats(),
+                loadPuantaj(),
+                loadIsciler(),
+                loadOzet()
+            ]);
+        }
+
+        // Load Stats
+        async function loadStats() {
+            try {
+                const tarih = document.getElementById('selectedDate').value;
+                const res = await fetch(`${API_BASE}/api/ozet/gunluk?tarih=${tarih}`, {
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+
+                document.getElementById('statGelen').textContent = data.gelen_isci || 0;
+                document.getElementById('statGelmeyen').textContent = data.gelmeyen_isci || 0;
+                document.getElementById('statMesai').textContent = data.toplam_mesai_saat || 0;
+            } catch (e) {
+                console.error('Stats error:', e);
+            }
+        }
+
+        // Load Puantaj List
+        async function loadPuantaj() {
+            const container = document.getElementById('puantajList');
+
+            try {
+                // Get all workers
+                const isciRes = await fetch(`${API_BASE}/api/isci`, {
+                    headers: getAuthHeaders()
+                });
+                const isciler = await isciRes.json();
+
+                // Get today's puantaj
+                const tarih = document.getElementById('selectedDate').value;
+                const puantajRes = await fetch(`${API_BASE}/api/puantaj?tarih=${tarih}`, {
+                    headers: getAuthHeaders()
+                });
+                const puantajlar = await puantajRes.json();
+
+                // Create lookup
+                const puantajMap = {};
+                puantajlar.forEach(p => puantajMap[p.isci_id] = p);
+
+                if (isciler.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <div class="icon">👷</div>
+                            <p>Henüz işçi eklenmemiş</p>
+                            <p style="font-size:12px;margin-top:8px">İşçiler sekmesinden ekleyin</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = isciler.map(isci => {
+                    const p = puantajMap[isci.id];
+                    const initials = isci.ad_soyad.split(' ').map(n => n[0]).join('').substring(0, 2);
+                    const status = p?.calisma_durumu || '';
+
+                    return `
+                        <div class="worker-card" onclick="openPuantajModal(${isci.id}, '${isci.ad_soyad}')">
+                            <div class="worker-avatar">${initials}</div>
+                            <div class="worker-info">
+                                <div class="worker-name">${isci.ad_soyad}</div>
+                                <div class="worker-role">${isci.ustalik || 'İşçi'}</div>
+                            </div>
+                            <div class="worker-status">
+                                <button class="status-btn tam ${status === 'tam_gun' ? 'selected' : ''}"
+                                        onclick="event.stopPropagation(); quickPuantaj(${isci.id}, 'tam_gun')">✓</button>
+                                <button class="status-btn yarim ${status === 'yarim_gun' ? 'selected' : ''}"
+                                        onclick="event.stopPropagation(); quickPuantaj(${isci.id}, 'yarim_gun')">½</button>
+                                <button class="status-btn yok ${status === 'izinli' ? 'selected' : ''}"
+                                        onclick="event.stopPropagation(); quickPuantaj(${isci.id}, 'izinli')">✗</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+            } catch (e) {
+                container.innerHTML = `<div class="empty-state">Bağlantı hatası</div>`;
+                console.error('Puantaj error:', e);
+            }
+        }
+
+        // Quick Puantaj (one-tap)
+        async function quickPuantaj(isciId, durum) {
+            const tarih = document.getElementById('selectedDate').value;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/puantaj`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({
+                        isci_id: isciId,
+                        tarih: tarih,
+                        calisma_durumu: durum,
+                        giris_saati: durum === 'tam_gun' ? '08:00' : durum === 'yarim_gun' ? '08:00' : null,
+                        cikis_saati: durum === 'tam_gun' ? '17:00' : durum === 'yarim_gun' ? '12:00' : null
+                    })
+                });
+
+                const data = await res.json();
+                showToast(data.message || 'Kaydedildi');
+                loadPuantaj();
+                loadStats();
+
+            } catch (e) {
+                showToast('Hata oluştu', true);
+            }
+        }
+
+        // Open Puantaj Modal
+        function openPuantajModal(isciId, isciAd) {
+            selectedIsciId = isciId;
+            document.getElementById('modalIsciAd').textContent = isciAd;
+            document.getElementById('puantajModal').classList.add('active');
+        }
+
+        // Close Modal
+        function closeModal() {
+            document.getElementById('puantajModal').classList.remove('active');
+            selectedIsciId = null;
+        }
+
+        // Save Puantaj (detailed)
+        async function savePuantaj() {
+            if (!selectedIsciId) return;
+
+            const tarih = document.getElementById('selectedDate').value;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/puantaj`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({
+                        isci_id: selectedIsciId,
+                        tarih: tarih,
+                        calisma_durumu: document.getElementById('modalDurum').value,
+                        giris_saati: document.getElementById('modalGiris').value,
+                        cikis_saati: document.getElementById('modalCikis').value,
+                        mesai_saat: parseFloat(document.getElementById('modalMesai').value) || 0,
+                        yapilan_is: document.getElementById('modalYapilanIs').value
+                    })
+                });
+
+                const data = await res.json();
+                showToast(data.message || 'Kaydedildi');
+                closeModal();
+                loadPuantaj();
+                loadStats();
+
+            } catch (e) {
+                showToast('Hata oluştu', true);
+            }
+        }
+
+        // Load Workers
+        async function loadIsciler() {
+            try {
+                const res = await fetch(`${API_BASE}/api/isci`, {
+                    headers: getAuthHeaders()
+                });
+                const isciler = await res.json();
+
+                const container = document.getElementById('isciList');
+                container.innerHTML = isciler.map(isci => {
+                    const initials = isci.ad_soyad.split(' ').map(n => n[0]).join('').substring(0, 2);
+                    return `
+                        <div class="worker-card">
+                            <div class="worker-avatar">${initials}</div>
+                            <div class="worker-info">
+                                <div class="worker-name">${isci.ad_soyad}</div>
+                                <div class="worker-role">${isci.ustalik} • ${isci.gunluk_ucret || 0} TL/gün</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                // Update avans dropdown
+                const avansSelect = document.getElementById('avansIsci');
+                avansSelect.innerHTML = isciler.map(i =>
+                    `<option value="${i.id}">${i.ad_soyad}</option>`
+                ).join('');
+
+            } catch (e) {
+                console.error('Isciler error:', e);
+            }
+        }
+
+        // Add Worker
+        async function addIsci() {
+            const ad = document.getElementById('yeniIsciAd').value.trim();
+            if (!ad) {
+                showToast('Ad soyad gerekli', true);
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/isci`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({
+                        ad_soyad: ad,
+                        ustalik: document.getElementById('yeniIsciUstalik').value,
+                        gunluk_ucret: parseFloat(document.getElementById('yeniIsciUcret').value) || 0,
+                        telefon: document.getElementById('yeniIsciTel').value
+                    })
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    showToast('İşçi eklendi');
+                    document.getElementById('yeniIsciAd').value = '';
+                    document.getElementById('yeniIsciUcret').value = '';
+                    document.getElementById('yeniIsciTel').value = '';
+                    loadIsciler();
+                    loadPuantaj();
+                } else {
+                    showToast(data.error || 'Hata', true);
+                }
+
+            } catch (e) {
+                showToast('Bağlantı hatası', true);
+            }
+        }
+
+        // Load Weekly Summary
+        async function loadOzet() {
+            try {
+                const res = await fetch(`${API_BASE}/api/ozet/haftalik`, {
+                    headers: getAuthHeaders()
+                });
+                const data = await res.json();
+
+                const tbody = document.querySelector('#ozetTable tbody');
+                tbody.innerHTML = data.isciler.map(i => `
+                    <tr>
+                        <td>${i.ad_soyad}</td>
+                        <td>${i.yevmiye}</td>
+                        <td>${i.mesai_saat}s</td>
+                        <td style="color:var(--success)">${i.hakedis.toLocaleString()} ₺</td>
+                    </tr>
+                `).join('');
+
+            } catch (e) {
+                console.error('Ozet error:', e);
+            }
+        }
+
+        // Add Avans
+        async function addAvans() {
+            const isciId = document.getElementById('avansIsci').value;
+            const miktar = document.getElementById('avansMiktar').value;
+
+            if (!isciId || !miktar) {
+                showToast('Tüm alanları doldurun', true);
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/avans`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({
+                        isci_id: parseInt(isciId),
+                        miktar: parseFloat(miktar),
+                        aciklama: document.getElementById('avansAciklama').value
+                    })
+                });
+
+                const data = await res.json();
+                showToast(data.message || 'Avans kaydedildi');
+                document.getElementById('avansMiktar').value = '';
+                document.getElementById('avansAciklama').value = '';
+
+            } catch (e) {
+                showToast('Hata oluştu', true);
+            }
+        }
+
+        // Show Section
+        function showSection(name) {
+            // Update tabs
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+            event.target.classList.add('active');
+
+            // Update sections
+            document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+            document.getElementById(`section-${name}`).classList.add('active');
+        }
+
+        // Toast notification
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast' + (isError ? ' error' : '');
+            toast.classList.add('show');
+
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        // Register Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(e => console.log('SW error:', e));
+        }
+    </script>
+</body>
+</html>

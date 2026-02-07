@@ -148,24 +148,37 @@ class DemirEngine:
     def parse_demir_text(text: str) -> Optional[Tuple[int, int, float]]:
         """
         Demir textini parse et
-        Format: 56Ø12 l=1200 veya 12@10 l=4000 vb.
-        
+        Format örnekleri: 56Ø12 l=1200, 12@10 l=4000, 56ƒ12/20 l=1200, 6ƒ12/33 l=425
+
         Returns: (adet, çap, uzunluk) veya None
         """
-        # Çeşitli format desteği
+        if not text:
+            return None
+
+        # Normalize: bazı DXF'lerde özel karakterler veya büyük/küçük farklılıkları olabilir
+        text_norm = text.replace('\u2013', '-')  # en dash -> hyphen
+        text_norm = text_norm.replace('\uFFFD', '')  # replacement char
+
+        # Çeşitli ayracı kabul et: Ø, @, ƒ, x, × veya basit non-digit karakter
+        sep_chars = r'Ø@ƒx×\*'
         patterns = [
-            r'(\d+)[Ø@](\d+).*?l=(\d+)',  # 56Ø12 l=1200 veya 56@12 l=1200
-            r'(\d+)\s*[Ø@]\s*(\d+).*?l=(\d+)',  # Boşluk toleransı
+            rf"(\d+)\s*[{sep_chars}]\s*(\d+)(?:/\d+)?[^\d]*l\s*[=:]?\s*(\d+)",
+            rf"(\d+)\s*[{sep_chars}]\s*(\d+).*?l\s*[=:]?\s*(\d+)",
+            # Daha genel: iki sayı arası non-digit ve ardından l= uzunluk
+            r"(\d+)\D+(\d+).*?l\s*[=:]?\s*(\d+)"
         ]
-        
+
         for pattern in patterns:
-            match = re.search(pattern, text)
+            match = re.search(pattern, text_norm, flags=re.IGNORECASE)
             if match:
-                adet = int(match.group(1))
-                cap = int(match.group(2))
-                uzunluk = float(match.group(3))
-                return (adet, cap, uzunluk)
-        
+                try:
+                    adet = int(match.group(1))
+                    cap = int(match.group(2))
+                    uzunluk = float(match.group(3))
+                    return (adet, cap, uzunluk)
+                except Exception:
+                    continue
+
         return None
     
     @staticmethod

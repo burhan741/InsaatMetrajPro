@@ -6,14 +6,6 @@ Malzeme listesi ve raporlar için export işlemleri
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
-import pandas as pd
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
 
 class ExportManager:
@@ -23,20 +15,21 @@ class ExportManager:
         """Export yöneticisini başlat"""
         pass
     
-    def export_to_excel(self, materials: List[Dict[str, Any]], 
+    def export_to_excel(self, materials: List[Dict[str, Any]],
                        output_path: Path, proje_adi: str = "") -> bool:
         """
         Malzeme listesini Excel dosyasına export et.
-        
+
         Args:
             materials: Malzeme listesi
             output_path: Çıktı dosya yolu
             proje_adi: Proje adı
-            
+
         Returns:
             bool: Başarı durumu
         """
         try:
+            import pandas as pd
             # DataFrame oluştur
             data = []
             for material in materials:
@@ -90,11 +83,18 @@ class ExportManager:
             output_path: Çıktı dosya yolu
             proje_adi: Proje adı
             fire_orani: Fire oranı
-            
+
         Returns:
             bool: Başarı durumu
         """
         try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
             doc = SimpleDocTemplate(str(output_path), pagesize=A4)
             story = []
             styles = getSampleStyleSheet()
@@ -219,6 +219,7 @@ class ExportManager:
             bool: Başarı durumu
         """
         try:
+            import pandas as pd
             # DataFrame oluştur
             data = []
             for offer in offers:
@@ -277,20 +278,25 @@ class ExportManager:
             print(f"Taşeron Excel export hatası: {e}")
             return False
     
-    def export_taseron_offers_to_pdf(self, offers: List[Dict[str, Any]], 
+    def export_taseron_offers_to_pdf(self, offers: List[Dict[str, Any]],
                                     output_path: Path, proje_adi: str = "") -> bool:
         """
         Taşeron tekliflerini PDF dosyasına export et.
-        
+
         Args:
             offers: Taşeron teklifleri listesi
             output_path: Çıktı dosya yolu
             proje_adi: Proje adı
-            
+
         Returns:
             bool: Başarı durumu
         """
         try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
             doc = SimpleDocTemplate(str(output_path), pagesize=A4)
             story = []
             styles = getSampleStyleSheet()

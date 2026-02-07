@@ -1,0 +1,44 @@
+=====================================================
+   PYTHONANYWHERE KURULUM TALİMATLARI
+   Ücretsiz - Bilgisayar kapalı olsa da çalışır
+=====================================================
+
+1. HESAP AÇ
+   - https://www.pythonanywhere.com adresine git
+   - "Start for free" tıkla
+   - Hesap oluştur (ücretsiz)
+
+2. DOSYAYI YÜKLE
+   - Dashboard'da "Files" sekmesine git
+   - "mysite" klasörüne gir (yoksa oluştur)
+   - "Upload a file" ile app.py dosyasını yükle
+
+3. WEB APP OLUŞTUR
+   - "Web" sekmesine git
+   - "Add a new web app" tıkla
+   - "Flask" seç
+   - Python 3.10 seç
+   - Path olarak: /home/KULLANICIADIN/mysite/app.py yaz
+
+4. ŞİFRE DEĞİŞTİR (ÖNEMLİ!)
+   - Files > mysite > app.py dosyasını aç
+   - Satır 15-16'daki şifreyi değiştir:
+     API_USERNAME = "santiye"
+     API_PASSWORD = "2024"  # KENDİ ŞİFRENİ YAZ!
+
+5. ÇALIŞTIR
+   - Web sekmesinde yeşil "Reload" butonuna tıkla
+   - Adresin: https://KULLANICIADIN.pythonanywhere.com
+
+6. TELEFONA EKLE
+   - iPhone'da Safari'yi aç
+   - Adresi gir: https://KULLANICIADIN.pythonanywhere.com
+   - Kullanıcı adı ve şifreni gir
+   - Paylaş butonu > "Ana Ekrana Ekle"
+
+=====================================================
+   ARTIK HER YERDEN ERİŞEBİLİRSİN!
+   - Bilgisayar kapalı olsa da çalışır
+   - WiFi gerekmez, mobil veri ile de çalışır
+   - Şantiyeden, evden, her yerden giriş yapabilirsin
+=====================================================

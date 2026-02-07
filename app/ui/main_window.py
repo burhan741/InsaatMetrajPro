@@ -2,6 +2,7 @@
 Ana Pencere
 PyQt6 ile modern kullanıcı arayüzü
 """
+from __future__ import annotations
 
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -23,17 +24,15 @@ from PyQt6.QtGui import QIcon, QFont, QColor
 
 from app.core.database import DatabaseManager
 from app.core.calculator import Calculator
-from app.core.material_calculator import MaterialCalculator
-from app.core.dxf_engine import DXFAnaliz
-from app.core.demir_engine import DemirEngine
 from app.utils.data_loader import (
     initialize_database_data, check_pozlar_loaded,
     initialize_material_data, check_malzemeler_loaded, check_formuller_loaded
 )
-from app.utils.export_manager import ExportManager
-from app.utils.pdf_importer import PDFBirimFiyatImporter
 from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
-from app.ui.demir_hesaplama_window import DemirHesaplamaWindow
+
+# Ağır modüller lazy import ile yüklenir (başlangıç hızı için)
+# MaterialCalculator, DXFAnaliz, DemirEngine, ExportManager, PDFBirimFiyatImporter
+# ve tüm UI pencere modülleri sadece kullanıldığında import edilir
 
 logger = logging.getLogger(__name__)
 # Logger seviyesini açıkça DEBUG'a ayarla (modül import edilirken logging konfigürasyonu aktif olmalı)
@@ -111,7 +110,7 @@ class InitialDataLoaderThread(QThread):
 class MainWindow(QMainWindow):
     """Ana uygulama penceresi"""
     
-    def __init__(self, splash: Optional[Any] = None, user_type: str = 'muteahhit') -> None:
+    def __init__(self, db: Optional[DatabaseManager] = None, splash: Optional[Any] = None, user_type: str = 'muteahhit') -> None:
         """Ana pencereyi başlat"""
         super().__init__()
         
@@ -119,12 +118,13 @@ class MainWindow(QMainWindow):
         self.user_type = user_type  # 'muteahhit' veya 'taseron'
         
         # Core modüller (hafif olanlar hemen yükle)
-        self.db = DatabaseManager()
+        # Eğer dışarıdan bir DatabaseManager verildiyse kullan, yoksa yenisini oluştur
+        self.db = db if db is not None else DatabaseManager()
         self.calculator = Calculator()
-        self.export_manager = ExportManager()
-        
+
         # Ağır modüller lazy loading ile (sadece gerektiğinde yüklenecek)
-        self._material_calculator: Optional[MaterialCalculator] = None
+        self._material_calculator = None
+        self._export_manager = None
         
         # UI durumu
         self.current_project_id: Optional[int] = None
@@ -178,16 +178,38 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
     
     @property
-    def material_calculator(self) -> MaterialCalculator:
+    def material_calculator(self):
         """MaterialCalculator'ı lazy loading ile yükle"""
         if self._material_calculator is None:
+            from app.core.material_calculator import MaterialCalculator
             self._material_calculator = MaterialCalculator(self.db)
         return self._material_calculator
-        
+
+    @property
+    def export_manager(self):
+        """ExportManager'ı lazy loading ile yükle"""
+        if self._export_manager is None:
+            from app.utils.export_manager import ExportManager
+            self._export_manager = ExportManager()
+        return self._export_manager
+
     def init_ui(self) -> None:
         """Arayüzü başlat"""
         self.setWindowTitle("InsaatMetrajPro - İnşaat Metraj Uygulaması")
-        self.setGeometry(100, 100, 1400, 900)
+
+        # Ekran boyutuna göre pencere boyutunu ayarla
+        from PyQt6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_size = screen.availableGeometry()
+            # Ekranın %85'i kadar genişlik ve yükseklik
+            width = min(1400, int(screen_size.width() * 0.85))
+            height = min(900, int(screen_size.height() * 0.85))
+            x = (screen_size.width() - width) // 2
+            y = (screen_size.height() - height) // 2
+            self.setGeometry(x, y, width, height)
+        else:
+            self.setGeometry(100, 100, 1400, 900)
         
         # Uygulama ikonunu ayarla
         icon_path = Path(__file__).parent.parent.parent / "assets" / "app_icon.ico"
@@ -340,7 +362,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(QWidget(), "Şablonlar")
         self.tabs.addTab(QWidget(), "Birim Fiyat Yönetimi")
         self.tabs.addTab(QWidget(), "İhale Dosyası Hazırlama")
-        
+        self.tabs.addTab(QWidget(), "Enflasyon ve Fiyat Farkı")
+        self.tabs.addTab(QWidget(), "Tedarikçi Fiyat Karşılaştırma")
+        self.tabs.addTab(QWidget(), "BI Dashboard")
+        self.tabs.addTab(QWidget(), "Çevre ve Sürdürülebilirlik")
+        self.tabs.addTab(QWidget(), "Gantt Chart ve İş Programı")
+
         parent.addWidget(self.tabs)
         
     def create_metraj_tab(self) -> None:
@@ -363,12 +390,7 @@ class MainWindow(QMainWindow):
         btn_delete = QPushButton("Sil")
         btn_delete.clicked.connect(self.delete_metraj_item)
         btn_layout.addWidget(btn_delete)
-        
-        # DXF Yükleme butonu
-        btn_dxf = QPushButton("📐 DXF Yükle")
-        btn_dxf.clicked.connect(self.load_dxf_for_metraj)
-        btn_layout.addWidget(btn_dxf)
-        
+
         btn_layout.addStretch()
         
         # KDV oranı seçimi
@@ -1734,8 +1756,17 @@ class MainWindow(QMainWindow):
         # PDF Import Temizle
         pdf_clear_action = data_menu.addAction("PDF'den Eklenen Pozları Temizle")
         pdf_clear_action.triggered.connect(self.clear_pdf_imported_data)
-        
+
+        # Tüm Pozları Temizle
+        clear_all_action = data_menu.addAction("⚠️ TÜM Pozları ve Fiyatları Temizle")
+        clear_all_action.triggered.connect(self.clear_all_poz_data)
+
         data_menu.addSeparator()
+
+        # Fiyatsız Pozları Göster
+        show_missing_prices_action = data_menu.addAction("🔍 Fiyatsız Pozları Göster")
+        show_missing_prices_action.triggered.connect(self.show_missing_prices)
+
         check_pozlar_action = data_menu.addAction("Poz Durumunu Kontrol Et")
         check_pozlar_action.triggered.connect(self.check_pozlar_status)
         
@@ -1745,9 +1776,87 @@ class MainWindow(QMainWindow):
         # Demir Hesaplama
         demir_hesaplama_action = tools_menu.addAction("Yapısal Demir Hesaplama")
         demir_hesaplama_action.triggered.connect(self.open_demir_hesaplama)
-        
+
+        # Saha Demiri Hesabı
+        saha_demiri_action = tools_menu.addAction("Saha Demiri Hesabı")
+        saha_demiri_action.triggered.connect(self.open_saha_demiri)
+
+        # Duvar Maliyet Hesaplama
+        duvar_maliyet_action = tools_menu.addAction("Duvar Maliyet Hesaplama")
+        duvar_maliyet_action.triggered.connect(self.open_duvar_maliyet)
+
+        # Alçı (Sıva) Maliyet Hesaplama
+        alci_maliyet_action = tools_menu.addAction("Makine Alçı Maliyet Hesaplama")
+        alci_maliyet_action.triggered.connect(self.open_alci_maliyet)
+
+        # Kara Sıva (El ile) Maliyet Hesaplama
+        kara_siva_action = tools_menu.addAction("Kara Sıva (El ile) Maliyet Hesaplama")
+        kara_siva_action.triggered.connect(self.open_kara_siva)
+
+        # Boya Maliyet Hesaplama (Gelişmiş)
+        boya_maliyet_action = tools_menu.addAction("Boya Maliyet Hesaplama (Gelişmiş)")
+        boya_maliyet_action.triggered.connect(self.open_boya_maliyet)
+
+        # Fayans Hesaplama (Oda Bazli)
+        fayans_hesaplama_action = tools_menu.addAction("Fayans Hesaplama (Oda Bazli)")
+        fayans_hesaplama_action.triggered.connect(self.open_fayans_hesaplama)
+
+        # Sap (Tesviye Betonu) Maliyet Hesaplama
+        sap_maliyet_action = tools_menu.addAction("Sap (Tesviye Betonu) Maliyet Hesaplama")
+        sap_maliyet_action.triggered.connect(self.open_sap_maliyet)
+
+        # Laminat Parke ve Supurgelik Hesaplama
+        parke_maliyet_action = tools_menu.addAction("Laminat Parke ve Supurgelik Hesaplama")
+        parke_maliyet_action.triggered.connect(self.open_parke_maliyet)
+
+        # Dış Cephe Mantolama Hesaplama (Minha Kuralı)
+        mantolama_action = tools_menu.addAction("Dış Cephe Mantolama Hesaplama (Minha)")
+        mantolama_action.triggered.connect(self.open_mantolama_hesaplama)
+
+        # Mermer İşleri Hesaplama (Merdiven, Denizlik, Harç)
+        mermer_action = tools_menu.addAction("Mermer İşleri Hesaplama (Merdiven/Denizlik)")
+        mermer_action.triggered.connect(self.open_mermer_hesaplama)
+
+        # PVC Doğrama Hesaplama (Pencere/Kapı)
+        pvc_action = tools_menu.addAction("PVC Doğrama Hesaplama (Pencere/Kapı)")
+        pvc_action.triggered.connect(self.open_pvc_dograma_hesaplama)
+
+        # Mobilya Maliyet Hesaplama (Mutfak/Vestiyer/Banyo/Kapi)
+        mobilya_action = tools_menu.addAction("Mobilya Maliyet Hesaplama (Mutfak/Vestiyer/Banyo/Kapi)")
+        mobilya_action.triggered.connect(self.open_mobilya_maliyet)
+
+        # Su Yalitim Maliyet Hesaplama (Bez/Toz/Surme)
+        yalitim_action = tools_menu.addAction("Su Yalitim Maliyet Hesaplama (Bez/Toz/Surme)")
+        yalitim_action.triggered.connect(self.open_yalitim_maliyet)
+
+        # Elektrik Tesisat Maliyet Hesaplama
+        elektrik_action = tools_menu.addAction("Elektrik Tesisat Maliyet Hesaplama")
+        elektrik_action.triggered.connect(self.open_elektrik_maliyet)
+
+        # Vitrifiye ve Armatur Maliyet Hesaplama
+        vitrifiye_action = tools_menu.addAction("Vitrifiye ve Armatur Maliyet Hesaplama")
+        vitrifiye_action.triggered.connect(self.open_vitrifiye_maliyet)
+
+        # Kaba Yapi Maliyet Hesaplama (Hafriyat/Demir/Beton)
+        kaba_yapi_action = tools_menu.addAction("Kaba Yapi Maliyet Hesaplama (Hafriyat/Demir/Beton)")
+        kaba_yapi_action.triggered.connect(self.open_kaba_yapi_maliyet)
+
+        # Akilli Metraj Analizi (Kiris/Duvar Cakisma Tespiti)
+        metraj_analiz_action = tools_menu.addAction("Akilli Metraj Analizi")
+        metraj_analiz_action.triggered.connect(self.open_metraj_analiz)
+
         tools_menu.addSeparator()
-        
+
+        # Mobil Puantaj Sunucusu
+        puantaj_server_action = tools_menu.addAction("📱 Mobil Puantaj Sunucusu")
+        puantaj_server_action.triggered.connect(self.open_puantaj_server)
+
+        # Puantaj Raporu
+        puantaj_rapor_action = tools_menu.addAction("📊 Puantaj Raporu")
+        puantaj_rapor_action.triggered.connect(self.open_puantaj_rapor)
+
+        tools_menu.addSeparator()
+
         # Birim dönüştürücü
         unit_converter_action = tools_menu.addAction("Birim Dönüştürücü")
         unit_converter_action.triggered.connect(self.show_unit_converter)
@@ -1766,8 +1875,11 @@ class MainWindow(QMainWindow):
         auto_fire_action.triggered.connect(self.calculate_auto_fire_rates)
         
         # Yardım menüsü
-        help_menu = menubar.addMenu("Yardım")
-        about_action = help_menu.addAction("Hakkında")
+        help_menu = menubar.addMenu("Yardim")
+        guide_action = help_menu.addAction("Kullanim Kilavuzu")
+        guide_action.triggered.connect(self.show_kullanim_kilavuzu)
+        help_menu.addSeparator()
+        about_action = help_menu.addAction("Hakkinda")
         about_action.triggered.connect(self.show_about)
         
     # Proje İşlemleri
@@ -1869,7 +1981,6 @@ class MainWindow(QMainWindow):
         # Proje sil
         delete_action = menu.addAction("Projeyi Sil")
         delete_action.triggered.connect(lambda: self.delete_project(item))
-        delete_action.setStyleSheet("color: #c9184a;")
         
         menu.exec(self.project_tree.mapToGlobal(position))
         
@@ -1910,10 +2021,14 @@ class MainWindow(QMainWindow):
                     # Eğer silinen proje seçiliyse, seçimi temizle
                     if self.current_project_id == project_id:
                         self.current_project_id = None
-                        self.metraj_table.setRowCount(0)
-                        self.taseron_table.setRowCount(0)
-                        self.total_label.setText("Toplam: 0.00 ₺")
-                        
+                        # Tabloları temizle (lazy loading kontrolü ile)
+                        if hasattr(self, 'metraj_table') and self._tabs_created.get('metraj', False):
+                            self.metraj_table.setRowCount(0)
+                        if hasattr(self, 'taseron_table') and self._tabs_created.get('taseron', False):
+                            self.taseron_table.setRowCount(0)
+                        if hasattr(self, 'total_label'):
+                            self.total_label.setText("Toplam: 0.00 ₺")
+
                     # Proje listesini yenile
                     self.load_projects()
                     self.statusBar().showMessage(f"Proje silindi: {project_name}")
@@ -2272,6 +2387,7 @@ class MainWindow(QMainWindow):
         
         try:
             # DXF dosyasını yükle
+            from app.core.dxf_engine import DXFAnaliz
             dxf_analiz = DXFAnaliz(file_path, cizim_birimi=cizim_birimi)
             katmanlar = dxf_analiz.katmanlari_listele()
             
@@ -3592,7 +3708,107 @@ class MainWindow(QMainWindow):
                     import traceback
                     traceback.print_exc()
                     raise
-            
+            elif index == 7 and not self._tabs_created.get('enflasyon', False):
+                try:
+                    # Enflasyon ve Fiyat Farkı sekmesi
+                    placeholder = self.tabs.widget(7)
+                    from app.ui.enflasyon_window import EnflasyonWindow
+                    enflasyon_widget = EnflasyonWindow(self.db)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(7)
+                    self.tabs.insertTab(7, enflasyon_widget, "📊 Enflasyon ve Fiyat Farkı")
+                    self.tabs.setCurrentIndex(7)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['enflasyon'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"Enflasyon sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 8 and not self._tabs_created.get('tedarikci', False):
+                try:
+                    # Tedarikçi Fiyat Karşılaştırma sekmesi
+                    placeholder = self.tabs.widget(8)
+                    from app.ui.tedarikci_window import TedarikciWindow
+                    tedarikci_widget = TedarikciWindow(self.db)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(8)
+                    self.tabs.insertTab(8, tedarikci_widget, "🏪 Tedarikçi Fiyat Karşılaştırma")
+                    self.tabs.setCurrentIndex(8)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['tedarikci'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"Tedarikçi sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 9 and not self._tabs_created.get('bi_dashboard', False):
+                try:
+                    # BI Dashboard sekmesi
+                    placeholder = self.tabs.widget(9)
+                    from app.ui.bi_dashboard_window import BIDashboardWindow
+                    bi_widget = BIDashboardWindow(self.db)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(9)
+                    self.tabs.insertTab(9, bi_widget, "📊 BI Dashboard")
+                    self.tabs.setCurrentIndex(9)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['bi_dashboard'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"BI Dashboard sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 10 and not self._tabs_created.get('surdurulebilirlik', False):
+                try:
+                    # Çevre ve Sürdürülebilirlik sekmesi
+                    placeholder = self.tabs.widget(10)
+                    from app.ui.surdurulebilirlik_window import SurdurulebilirlikWindow
+                    surdurulebilirlik_widget = SurdurulebilirlikWindow(self.db)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(10)
+                    self.tabs.insertTab(10, surdurulebilirlik_widget, "🌍 Çevre ve Sürdürülebilirlik")
+                    self.tabs.setCurrentIndex(10)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['surdurulebilirlik'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"Sürdürülebilirlik sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            elif index == 11 and not self._tabs_created.get('gantt', False):
+                try:
+                    # Gantt Chart ve İş Programı sekmesi
+                    placeholder = self.tabs.widget(11)
+                    from app.ui.gantt_window import GanttWindow
+                    gantt_widget = GanttWindow(self.db)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(11)
+                    self.tabs.insertTab(11, gantt_widget, "📅 Gantt Chart")
+                    self.tabs.setCurrentIndex(11)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['gantt'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"Gantt Chart sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+
             # Proje Özeti sekmesine geçildiğinde güncelle (sadece sekme zaten oluşturulmuşsa)
             if index == 1 and self._tabs_created['ozet']:
                 try:
@@ -4314,11 +4530,15 @@ class MainWindow(QMainWindow):
     
     def load_project_notes(self) -> None:
         """Proje notlarını yükle"""
+        # Lazy loading kontrolü
+        if not hasattr(self, 'project_notes_text'):
+            return
+
         if not self.current_project_id:
             self.project_notes_text.clear()
             self.project_notes_text.setEnabled(False)
             return
-        
+
         project = self.db.get_project(self.current_project_id)
         if project:
             notes = project.get('notlar', '') or ''
@@ -4705,6 +4925,7 @@ class MainWindow(QMainWindow):
                 return True
             
             # PDF'i işle
+            from app.utils.pdf_importer import PDFBirimFiyatImporter
             importer = PDFBirimFiyatImporter()
             extracted_data = importer.extract_from_pdf(Path(file_path), progress_callback)
             
@@ -4732,16 +4953,17 @@ class MainWindow(QMainWindow):
             layout.addWidget(info_label)
             
             preview_table = QTableWidget()
-            preview_table.setColumnCount(4)
-            preview_table.setHorizontalHeaderLabels(["Poz No", "Tanım", "Birim Fiyat", "Kaynak"])
+            preview_table.setColumnCount(5)
+            preview_table.setHorizontalHeaderLabels(["Poz No", "Tanım", "Birim", "Birim Fiyat", "Kaynak"])
             preview_table.setRowCount(min(len(extracted_data), 100))  # İlk 100 kayıt
-            
+
             for row, item in enumerate(extracted_data[:100]):
                 preview_table.setItem(row, 0, QTableWidgetItem(item.get('poz_no', '')))
                 preview_table.setItem(row, 1, QTableWidgetItem(item.get('tanim', '')[:50]))
+                preview_table.setItem(row, 2, QTableWidgetItem(item.get('birim', '') or '-'))
                 fiyat = item.get('birim_fiyat', 0)
-                preview_table.setItem(row, 2, QTableWidgetItem(f"{fiyat:,.2f} ₺" if fiyat else "Bulunamadı"))
-                preview_table.setItem(row, 3, QTableWidgetItem(item.get('kaynak', '')))
+                preview_table.setItem(row, 3, QTableWidgetItem(f"{fiyat:,.2f} ₺" if fiyat else "Bulunamadı"))
+                preview_table.setItem(row, 4, QTableWidgetItem(item.get('kaynak', '')))
             
             preview_table.horizontalHeader().setStretchLastSection(True)
             layout.addWidget(preview_table)
@@ -4777,7 +4999,7 @@ class MainWindow(QMainWindow):
                                 'Poz No': item.get('poz_no', ''),
                                 'Tanım': item.get('tanim', ''),
                                 'Miktar': 1.0,  # Varsayılan miktar (kullanıcı düzenleyebilir)
-                                'Birim': '',  # Kullanıcı dolduracak
+                                'Birim': item.get('birim', '') or '',  # PDF'den gelen birim
                                 'Birim Fiyat': item.get('birim_fiyat', 0) if item.get('birim_fiyat') else '',
                                 'Kategori': '',  # Kullanıcı dolduracak
                                 'Kaynak': item.get('kaynak', 'PDF Import')
@@ -4890,7 +5112,10 @@ class MainWindow(QMainWindow):
                 
                 try:
                     poz_no = item.get('poz_no', '').strip()
-                    birim_fiyat = item.get('birim_fiyat', 0)
+                    birim_fiyat = item.get('birim_fiyat') or 0  # None ise 0 yap
+                    if birim_fiyat is None:
+                        birim_fiyat = 0
+                    birim_fiyat = float(birim_fiyat) if birim_fiyat else 0
                     tanim = item.get('tanim', '') or "PDF'den içe aktarıldı"
                     
                     if not poz_no:
@@ -4902,18 +5127,21 @@ class MainWindow(QMainWindow):
                     if not poz:
                         # Poz yoksa ekle
                         try:
-                            # Birim bilgisini tahmin et (tanımdan veya varsayılan)
-                            birim = "m²"  # Varsayılan birim
-                            if "m³" in tanim.lower() or "metreküp" in tanim.lower():
-                                birim = "m³"
-                            elif "m²" in tanim.lower() or "metrekare" in tanim.lower():
-                                birim = "m²"
-                            elif "kg" in tanim.lower() or "kilogram" in tanim.lower():
-                                birim = "kg"
-                            elif "adet" in tanim.lower() or "ad." in tanim.lower():
-                                birim = "adet"
-                            elif "m" in tanim.lower() and "m²" not in tanim.lower() and "m³" not in tanim.lower():
-                                birim = "m"
+                            # Birim bilgisi: Önce PDF'den gelen, yoksa tanımdan tahmin et
+                            birim = item.get('birim', '') or ''
+                            if not birim:
+                                # PDF'den birim gelmemişse tanımdan tahmin et
+                                birim = "m²"  # Varsayılan birim
+                                if "m³" in tanim.lower() or "metreküp" in tanim.lower():
+                                    birim = "m³"
+                                elif "m²" in tanim.lower() or "metrekare" in tanim.lower():
+                                    birim = "m²"
+                                elif "kg" in tanim.lower() or "kilogram" in tanim.lower():
+                                    birim = "kg"
+                                elif "adet" in tanim.lower() or "ad." in tanim.lower():
+                                    birim = "adet"
+                                elif "m" in tanim.lower() and "m²" not in tanim.lower() and "m³" not in tanim.lower():
+                                    birim = "m"
                             
                             # Kategoriyi poz numarasından tahmin et
                             kategori = ""
@@ -4932,7 +5160,7 @@ class MainWindow(QMainWindow):
                                 poz_no=poz_no,
                                 tanim=tanim[:200],  # İlk 200 karakter
                                 birim=birim,
-                                resmi_fiyat=birim_fiyat if birim_fiyat > 0 else 0,
+                                resmi_fiyat=birim_fiyat if birim_fiyat and birim_fiyat > 0 else 0,
                                 kategori=kategori,
                                 fire_orani=0.05  # Varsayılan fire oranı
                             )
@@ -5055,7 +5283,191 @@ class MainWindow(QMainWindow):
             )
             import traceback
             traceback.print_exc()
-    
+
+    def clear_all_poz_data(self) -> None:
+        """TÜM pozları ve birim fiyatları temizle"""
+        # Çift onay mesajı (kritik işlem)
+        reply = QMessageBox.warning(
+            self,
+            "⚠️ TÜM VERİLERİ TEMİZLE",
+            "DİKKAT: Bu işlem TÜM pozları ve birim fiyatları silecektir!\n\n"
+            "• Tüm poz kayıtları silinecek\n"
+            "• Tüm birim fiyat kayıtları silinecek\n"
+            "• Bu işlem GERİ ALINAMAZ!\n\n"
+            "Devam etmek istediğinizden emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # İkinci onay
+        reply2 = QMessageBox.critical(
+            self,
+            "⛔ SON ONAY",
+            "Bu işlem tüm poz ve fiyat verilerini kalıcı olarak silecek!\n\n"
+            "EMIN MISINIZ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply2 != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Mevcut sayıları al
+                cursor.execute('SELECT COUNT(*) FROM birim_fiyatlar')
+                fiyat_count = cursor.fetchone()[0]
+
+                cursor.execute('SELECT COUNT(*) FROM pozlar')
+                poz_count = cursor.fetchone()[0]
+
+                # Tabloları temizle
+                cursor.execute('DELETE FROM birim_fiyatlar')
+                cursor.execute('DELETE FROM pozlar')
+
+            message = f"TÜM veriler temizlendi!\n\n"
+            message += f"🗑️ Silinen poz sayısı: {poz_count}\n"
+            message += f"🗑️ Silinen birim fiyat sayısı: {fiyat_count}\n\n"
+            message += "Artık yeni PDF yükleyebilirsiniz."
+
+            QMessageBox.information(self, "Temizlendi", message)
+
+            # İlgili sekmeleri güncelle
+            if hasattr(self, 'fiyat_filter_combo') and self._tabs_created.get('birim_fiyat', False):
+                self.load_birim_fiyatlar()
+
+            self.statusBar().showMessage(f"TÜM VERİLER TEMİZLENDİ: {poz_count} poz, {fiyat_count} fiyat silindi")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Hata",
+                f"Veriler temizlenirken hata oluştu:\n{str(e)}"
+            )
+            import traceback
+            traceback.print_exc()
+
+    def show_missing_prices(self) -> None:
+        """Fiyatı olmayan pozları göster"""
+        try:
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QLabel, QFileDialog, QHBoxLayout
+            from PyQt6.QtCore import Qt
+
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Fiyatı 0 veya NULL olan pozları bul
+                cursor.execute("""
+                    SELECT poz_no, tanim, birim, resmi_fiyat
+                    FROM pozlar
+                    WHERE resmi_fiyat IS NULL OR resmi_fiyat = 0 OR resmi_fiyat = ''
+                    ORDER BY poz_no
+                """)
+                rows = cursor.fetchall()
+
+                # Toplam poz sayısını al
+                cursor.execute("SELECT COUNT(*) FROM pozlar")
+                total_count = cursor.fetchone()[0]
+
+            if not rows:
+                QMessageBox.information(
+                    self,
+                    "Tamamlandı",
+                    f"Tüm pozların fiyatı mevcut!\n\nToplam poz: {total_count}"
+                )
+                return
+
+            # Dialog oluştur
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Fiyatsız Pozlar")
+            dialog.setMinimumSize(900, 600)
+
+            layout = QVBoxLayout(dialog)
+
+            # Bilgi etiketi
+            info_label = QLabel(
+                f"⚠️ Fiyatı olmayan poz sayısı: {len(rows)} / {total_count}\n\n"
+                f"Bu pozların PDF'deki fiyatları okunamadı. Format sorunu olabilir."
+            )
+            info_label.setStyleSheet("font-size: 12px; padding: 10px; background-color: #fff3cd; border-radius: 5px;")
+            layout.addWidget(info_label)
+
+            # Tablo
+            table = QTableWidget()
+            table.setColumnCount(4)
+            table.setHorizontalHeaderLabels(["Poz No", "Tanım", "Birim", "Fiyat"])
+            table.setRowCount(len(rows))
+
+            for row_idx, row in enumerate(rows):
+                poz_no, tanim, birim, fiyat = row
+                table.setItem(row_idx, 0, QTableWidgetItem(poz_no or ''))
+                table.setItem(row_idx, 1, QTableWidgetItem((tanim or '')[:80]))
+                table.setItem(row_idx, 2, QTableWidgetItem(birim or ''))
+                table.setItem(row_idx, 3, QTableWidgetItem(str(fiyat) if fiyat else '0'))
+
+            table.horizontalHeader().setStretchLastSection(True)
+            table.setColumnWidth(0, 120)
+            table.setColumnWidth(1, 500)
+            table.setColumnWidth(2, 80)
+            layout.addWidget(table)
+
+            # Butonlar
+            btn_layout = QHBoxLayout()
+
+            # Excel'e aktar butonu
+            btn_export = QPushButton("📊 Excel'e Aktar")
+            btn_export.setStyleSheet("background-color: #28a745; color: white; padding: 8px;")
+
+            def export_to_excel():
+                try:
+                    import pandas as pd
+                    excel_path, _ = QFileDialog.getSaveFileName(
+                        dialog, "Excel Dosyası Kaydet",
+                        f"fiyatsiz_pozlar.xlsx",
+                        "Excel Dosyaları (*.xlsx)"
+                    )
+                    if excel_path:
+                        data = []
+                        for row in rows:
+                            data.append({
+                                'Poz No': row[0],
+                                'Tanım': row[1],
+                                'Birim': row[2],
+                                'Fiyat': row[3] or 0
+                            })
+                        df = pd.DataFrame(data)
+                        df.to_excel(excel_path, index=False)
+                        QMessageBox.information(dialog, "Başarılı", f"Excel'e aktarıldı:\n{excel_path}")
+                except Exception as e:
+                    QMessageBox.critical(dialog, "Hata", f"Excel aktarım hatası:\n{str(e)}")
+
+            btn_export.clicked.connect(export_to_excel)
+            btn_layout.addWidget(btn_export)
+
+            btn_layout.addStretch()
+
+            btn_close = QPushButton("Kapat")
+            btn_close.clicked.connect(dialog.close)
+            btn_layout.addWidget(btn_close)
+
+            layout.addLayout(btn_layout)
+
+            dialog.exec()
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Hata",
+                f"Fiyatsız pozlar listelenirken hata oluştu:\n{str(e)}"
+            )
+            import traceback
+            traceback.print_exc()
+
     def on_search_text_changed(self) -> None:
         """Gelişmiş arama ve filtreleme - Tüm modüllerde arama"""
         search_text = self.search_input.text().strip()
@@ -7234,13 +7646,326 @@ class MainWindow(QMainWindow):
     def open_demir_hesaplama(self) -> None:
         """Demir hesaplama penceresini aç"""
         try:
+            from app.ui.demir_hesaplama_window import DemirHesaplamaWindow
             self.demir_window = DemirHesaplamaWindow(self)
             self.demir_window.show()
             logger.info("Demir hesaplama penceresi açıldı")
         except Exception as e:
             logger.error(f"Demir hesaplama penceresi açılamadı: {e}")
             QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
-    
+
+    def open_saha_demiri(self) -> None:
+        """Saha demiri hesabı penceresini aç"""
+        try:
+            from app.ui.saha_demiri_window import SahaDemiriWindow
+            self.saha_demiri_window = SahaDemiriWindow(self.db)
+            self.saha_demiri_window.setWindowTitle("Saha Demiri Hesabı")
+            self.saha_demiri_window.resize(1200, 800)
+            self.saha_demiri_window.show()
+            logger.info("Saha demiri hesabı penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Saha demiri hesabı penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_duvar_maliyet(self) -> None:
+        """Duvar maliyet hesaplama penceresini aç"""
+        try:
+            from app.ui.duvar_maliyet_window import DuvarMaliyetWindow
+            self.duvar_maliyet_window = DuvarMaliyetWindow(self)
+            self.duvar_maliyet_window.show()
+            logger.info("Duvar maliyet hesaplama penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Duvar maliyet penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_alci_maliyet(self) -> None:
+        """Makine alçı maliyet hesaplama penceresini aç"""
+        try:
+            from app.ui.alci_maliyet_window import AlciMaliyetWindow
+            self.alci_maliyet_window = AlciMaliyetWindow(self)
+            self.alci_maliyet_window.show()
+            logger.info("Alçı maliyet hesaplama penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Alçı maliyet penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_kara_siva(self) -> None:
+        """Kara sıva (el ile) maliyet hesaplama penceresini aç"""
+        try:
+            from app.ui.kara_siva_window import KaraSivaWindow
+            self.kara_siva_window = KaraSivaWindow(self)
+            self.kara_siva_window.show()
+            logger.info("Kara sıva maliyet hesaplama penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Kara sıva penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_boya_maliyet(self) -> None:
+        """Gelişmiş boya maliyet hesaplama penceresini aç"""
+        try:
+            from app.ui.boya_maliyet_window import BoyaMaliyetWindow
+            self.boya_maliyet_window = BoyaMaliyetWindow(self)
+            self.boya_maliyet_window.show()
+            logger.info("Boya maliyet hesaplama penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Boya maliyet penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_fayans_hesaplama(self) -> None:
+        """Oda bazli fayans hesaplama penceresini ac"""
+        try:
+            from app.ui.fayans_hesaplama_window import FayansHesaplamaWindow
+            self.fayans_hesaplama_window = FayansHesaplamaWindow(self)
+            self.fayans_hesaplama_window.show()
+            logger.info("Fayans hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Fayans hesaplama penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def open_sap_maliyet(self) -> None:
+        """Sap (tesviye betonu) maliyet hesaplama penceresini ac"""
+        try:
+            from app.ui.sap_maliyet_window import SapMaliyetWindow
+            self.sap_maliyet_window = SapMaliyetWindow(self)
+            self.sap_maliyet_window.show()
+            logger.info("Sap maliyet hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Sap maliyet penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def open_parke_maliyet(self) -> None:
+        """Laminat parke ve supurgelik maliyet hesaplama penceresini ac"""
+        try:
+            from app.ui.parke_maliyet_window import ParkeMaliyetWindow
+            self.parke_maliyet_window = ParkeMaliyetWindow(self)
+            self.parke_maliyet_window.show()
+            logger.info("Parke maliyet hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Parke maliyet penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def open_mantolama_hesaplama(self) -> None:
+        """Dis cephe mantolama (Minha kurali) hesaplama penceresini ac"""
+        try:
+            from app.ui.mantolama_dialog import MantolamaHesaplamaDialog
+            self.mantolama_dialog = MantolamaHesaplamaDialog(self, self.db)
+            self.mantolama_dialog.hesaplama_tamamlandi.connect(self.on_mantolama_hesaplandi)
+            self.mantolama_dialog.show()
+            logger.info("Mantolama hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Mantolama hesaplama penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def on_mantolama_hesaplandi(self, sonuc: Dict[str, Any]) -> None:
+        """Mantolama hesaplama tamamlandiginda metraja ekle"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyari", "Metraja eklemek icin once bir proje secin!")
+            return
+
+        try:
+            # Ana kalemi metraja ekle
+            item_data = {
+                'proje_id': self.current_project_id,
+                'poz_no': 'MANTOLAMA-001',
+                'tanim': f"Dis Cephe Mantolama ({sonuc['levha_tipi'].replace('_', ' ').title()}) - {sonuc['uygulamaya_esas_net_alan_m2']:.2f} m2",
+                'miktar': sonuc['uygulamaya_esas_net_alan_m2'],
+                'birim': 'm2',
+                'birim_fiyat': sonuc['maliyet_ozeti']['birim_maliyet_m2'],
+                'toplam': sonuc['maliyet_ozeti']['genel_toplam_tl'],
+                'kategori': 'Dis Cephe Isleri',
+                'notlar': f"Brut alan: {sonuc['girilen_brut_alan_m2']} m2, "
+                         f"Dusulen bosluk: {sonuc['dusulen_bosluk_alani_m2']} m2, "
+                         f"Denizlik donus: {sonuc['eklenen_denizlik_donus_m2']} m2"
+            }
+
+            self.db.add_metraj_item(**item_data)
+            self.load_metraj_items()
+            logger.info(f"Mantolama kalemi metraja eklendi: {sonuc['uygulamaya_esas_net_alan_m2']:.2f} m2")
+        except Exception as e:
+            logger.error(f"Mantolama kalemi eklenirken hata: {e}")
+
+    def open_mermer_hesaplama(self) -> None:
+        """Mermer isleri (merdiven, denizlik, harc) hesaplama penceresini ac"""
+        try:
+            from app.ui.mermer_dialog import MermerHesaplamaDialog
+            self.mermer_dialog = MermerHesaplamaDialog(self, self.db)
+            self.mermer_dialog.hesaplama_tamamlandi.connect(self.on_mermer_hesaplandi)
+            self.mermer_dialog.show()
+            logger.info("Mermer isleri hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Mermer hesaplama penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def on_mermer_hesaplandi(self, sonuc: Dict[str, Any]) -> None:
+        """Mermer hesaplama tamamlandiginda metraja ekle"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyari", "Metraja eklemek icin once bir proje secin!")
+            return
+
+        try:
+            # Merdiven kalemi
+            if sonuc['toplam_basamak_adet'] > 0:
+                md = sonuc['merdiven_detay']
+                merdiven_item = {
+                    'proje_id': self.current_project_id,
+                    'poz_no': 'MERMER-MRD-001',
+                    'tanim': f"Merdiven Tasi ({md['toplam_basamak']} basamak, {md['basamak_genisligi_cm']:.0f}cm)",
+                    'miktar': md['toplam_merdiven_m2'],
+                    'birim': 'm2',
+                    'birim_fiyat': sonuc['parametreler']['mermer_m2_fiyat'],
+                    'toplam': md['toplam_merdiven_m2'] * sonuc['parametreler']['mermer_m2_fiyat'],
+                    'kategori': 'Merdiven Isleri',
+                    'notlar': f"Basamak: {md['basamak_alani_m2']:.2f} m2, Supurgelik: {md['supurgelik_alani_m2']:.2f} m2, Sahanlik: {md['sahanlik_alani_m2']:.2f} m2"
+                }
+                self.db.add_metraj_item(**merdiven_item)
+
+            # Denizlik kalemi
+            if sonuc['toplam_denizlik_adet'] > 0:
+                denizlik_item = {
+                    'proje_id': self.current_project_id,
+                    'poz_no': 'MERMER-DNZ-001',
+                    'tanim': f"Mermer Denizlik ({sonuc['toplam_denizlik_adet']} adet, {sonuc['toplam_denizlik_mtul']:.2f} mtul)",
+                    'miktar': sonuc['toplam_denizlik_mtul'],
+                    'birim': 'mtul',
+                    'birim_fiyat': sonuc['parametreler']['mermer_iscilik_mtul_fiyat'],
+                    'toplam': sonuc['iscilik_detay']['denizlik_iscilik_tl'],
+                    'kategori': 'Pencere/Kapi Isleri',
+                    'notlar': f"Toplam {sonuc['toplam_denizlik_adet']} adet pencere denizligi"
+                }
+                self.db.add_metraj_item(**denizlik_item)
+
+            self.load_metraj_items()
+            logger.info(f"Mermer kalemleri metraja eklendi: {sonuc['gereken_mermer_m2']:.2f} m2")
+        except Exception as e:
+            logger.error(f"Mermer kalemleri eklenirken hata: {e}")
+
+    def open_pvc_dograma_hesaplama(self) -> None:
+        """PVC dograma (pencere/kapi) hesaplama penceresini ac"""
+        try:
+            from app.ui.pvc_dograma_dialog import PVCDogramaHesaplamaDialog
+            self.pvc_dialog = PVCDogramaHesaplamaDialog(self, self.db)
+            self.pvc_dialog.hesaplama_tamamlandi.connect(self.on_pvc_hesaplandi)
+            self.pvc_dialog.show()
+            logger.info("PVC dograma hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"PVC dograma penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def on_pvc_hesaplandi(self, sonuc: Dict[str, Any]) -> None:
+        """PVC dograma hesaplama tamamlandiginda metraja ekle"""
+        if not self.current_project_id:
+            QMessageBox.warning(self, "Uyari", "Metraja eklemek icin once bir proje secin!")
+            return
+
+        try:
+            # PVC Dograma kalemi
+            pvc_item = {
+                'proje_id': self.current_project_id,
+                'poz_no': 'PVC-DGR-001',
+                'tanim': f"PVC Dograma ({sonuc['profil_rengi']}, {sonuc['cam_tipi']}) - {sonuc['toplam_dograma_adet']} adet",
+                'miktar': sonuc['toplam_dograma_adet'],
+                'birim': 'adet',
+                'birim_fiyat': sonuc['genel_toplam_maliyet_tl'] / sonuc['toplam_dograma_adet'] if sonuc['toplam_dograma_adet'] > 0 else 0,
+                'toplam': sonuc['genel_toplam_maliyet_tl'],
+                'kategori': 'Kapi/Pencere',
+                'notlar': f"Profil: {sonuc['hesaplanan_toplam_profil_mtul']:.2f} mtul, Cam: {sonuc['hesaplanan_net_cam_m2']:.2f} m2, Sineklik: {sonuc['gereken_sineklik_adet']} adet"
+            }
+            self.db.add_metraj_item(**pvc_item)
+
+            self.load_metraj_items()
+            logger.info(f"PVC dograma metraja eklendi: {sonuc['toplam_dograma_adet']} adet")
+        except Exception as e:
+            logger.error(f"PVC dograma kalemi eklenirken hata: {e}")
+
+    def open_mobilya_maliyet(self) -> None:
+        """Mobilya maliyet hesaplama penceresini ac"""
+        try:
+            from app.ui.mobilya_maliyet_window import MobilyaMaliyetWindow
+            self.mobilya_maliyet_window = MobilyaMaliyetWindow(self)
+            self.mobilya_maliyet_window.show()
+            logger.info("Mobilya maliyet hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Mobilya maliyet penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def open_yalitim_maliyet(self) -> None:
+        """Su yalitim maliyet hesaplama penceresini ac"""
+        try:
+            from app.ui.yalitim_maliyet_window import YalitimMaliyetWindow
+            self.yalitim_maliyet_window = YalitimMaliyetWindow(self)
+            self.yalitim_maliyet_window.show()
+            logger.info("Su yalitim maliyet hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Su yalitim maliyet penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def open_elektrik_maliyet(self) -> None:
+        """Elektrik tesisat maliyet hesaplama penceresini ac"""
+        try:
+            from app.ui.elektrik_maliyet_window import ElektrikMaliyetWindow
+            self.elektrik_maliyet_window = ElektrikMaliyetWindow(self)
+            self.elektrik_maliyet_window.show()
+            logger.info("Elektrik tesisat maliyet hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Elektrik maliyet penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def open_vitrifiye_maliyet(self) -> None:
+        """Vitrifiye ve armatur maliyet hesaplama penceresini ac"""
+        try:
+            from app.ui.vitrifiye_maliyet_window import VitrifiyeMaliyetWindow
+            self.vitrifiye_maliyet_window = VitrifiyeMaliyetWindow(self)
+            self.vitrifiye_maliyet_window.show()
+            logger.info("Vitrifiye ve armatur maliyet hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Vitrifiye maliyet penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def open_kaba_yapi_maliyet(self) -> None:
+        """Kaba yapi maliyet hesaplama penceresini ac"""
+        try:
+            from app.ui.kaba_yapi_maliyet_window import KabaYapiMaliyetWindow
+            self.kaba_yapi_maliyet_window = KabaYapiMaliyetWindow(self)
+            self.kaba_yapi_maliyet_window.show()
+            logger.info("Kaba yapi maliyet hesaplama penceresi acildi")
+        except Exception as e:
+            logger.error(f"Kaba yapi maliyet penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+    def open_metraj_analiz(self) -> None:
+        """Akilli metraj analizi penceresini ac (Kiris/Duvar cakisma tespiti)"""
+        try:
+            from app.ui.metraj_analiz_window import MetrajAnalizWindow
+            self.metraj_analiz_window = MetrajAnalizWindow(self)
+            self.metraj_analiz_window.show()
+            logger.info("Akilli metraj analizi penceresi acildi")
+        except Exception as e:
+            logger.error(f"Metraj analizi penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere acilamadi:\n{str(e)}")
+
+
+    def open_puantaj_server(self) -> None:
+        """Mobil puantaj sunucusu penceresini aç"""
+        try:
+            from app.ui.puantaj_server_window import PuantajServerWindow
+            self.puantaj_server_window = PuantajServerWindow(self.db)
+            self.puantaj_server_window.show()
+            logger.info("Mobil puantaj sunucusu penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Puantaj sunucusu penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_puantaj_rapor(self) -> None:
+        """Puantaj rapor penceresini aç"""
+        try:
+            from app.ui.puantaj_rapor_window import PuantajRaporWindow
+            self.puantaj_rapor_window = PuantajRaporWindow(self.db)
+            self.puantaj_rapor_window.show()
+            logger.info("Puantaj rapor penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Puantaj rapor penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
     def calculate_auto_fire_rates(self) -> None:
         """Tüm pozlar için otomatik fire oranı hesapla"""
         if not self.current_project_id:
@@ -7292,97 +8017,92 @@ class MainWindow(QMainWindow):
         """Modülleri yeniden yükle ve UI'ı güncelle"""
         reply = QMessageBox.question(
             self, "Yenile",
-            "Modüller yeniden yüklenecek ve uygulama güncellenecek.\n"
-            "Bu işlem birkaç saniye sürebilir.\n\n"
+            "Tüm modüller yeniden yüklenecek.\n"
+            "Açık pencereler kapatılıp yeniden açılacak.\n\n"
             "Devam etmek istiyor musunuz?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes
         )
-        
+
         if reply != QMessageBox.StandardButton.Yes:
             return
-        
+
         try:
             from PyQt6.QtWidgets import QApplication
             self.statusBar().showMessage("Modüller yeniden yükleniyor...")
             QApplication.processEvents()
-            
-            # 1. Önce tüm core ve UI modüllerini yeniden yükle
-            modules_to_reload = [
-                'app.core.dxf_engine',
-                'app.core.database',
-                'app.core.calculator',
-                'app.core.material_calculator',
-                'app.core.cad_manager',
-                'app.ui.dialogs',  # Dialog sınıfları için
-            ]
-            
+
+            # 1. Açık alt pencereleri kaydet ve kapat
+            acik_pencereler = []
+            for child in QApplication.topLevelWidgets():
+                if child != self and child.isVisible():
+                    pencere_tipi = type(child).__name__
+                    acik_pencereler.append(pencere_tipi)
+                    child.close()
+                    logger.info(f"🔄 Pencere kapatıldı: {pencere_tipi}")
+
+            QApplication.processEvents()
+
+            # 2. Tüm app modüllerini yeniden yükle (sıralama önemli - önce core, sonra ui)
+            modules_to_reload = []
+
+            # Önce tüm app.* modüllerini bul
+            for module_name in list(sys.modules.keys()):
+                if module_name.startswith('app.'):
+                    modules_to_reload.append(module_name)
+
+            # Sıralama: önce core, sonra utils, sonra ui
+            def module_priority(name):
+                if 'core' in name:
+                    return 0
+                elif 'utils' in name:
+                    return 1
+                elif 'ui' in name:
+                    return 2
+                return 3
+
+            modules_to_reload.sort(key=module_priority)
+
             reloaded_count = 0
+            reload_errors = []
+
             for module_name in modules_to_reload:
                 try:
-                    if module_name in sys.modules:
+                    if module_name in sys.modules and sys.modules[module_name] is not None:
                         importlib.reload(sys.modules[module_name])
                         reloaded_count += 1
                         logger.info(f"✅ Modül yeniden yüklendi: {module_name}")
                 except Exception as e:
+                    reload_errors.append(f"{module_name}: {e}")
                     logger.warning(f"⚠️ Modül yeniden yüklenemedi {module_name}: {e}")
-            
+
             QApplication.processEvents()
-            
-            # 2. Database migration'larını çalıştır
+
+            # 3. Database migration'larını çalıştır
             try:
                 logger.info("🔄 Database migration'ları çalıştırılıyor...")
-                # Migration'ları manuel çalıştır
                 with self.db.get_connection() as conn:
                     cursor = conn.cursor()
-                    # Migration: Duvar cinsi ve kalınlığı kolonlarını ekle
                     try:
                         cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_cinsi TEXT")
                         logger.info("✅ Migration: duvar_cinsi kolonu eklendi")
                     except sqlite3.OperationalError:
-                        pass  # Kolon zaten varsa hata verme
-                    
+                        pass
+
                     try:
                         cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_kalinligi REAL")
                         logger.info("✅ Migration: duvar_kalinligi kolonu eklendi")
                     except sqlite3.OperationalError:
-                        pass  # Kolon zaten varsa hata verme
-                    
+                        pass
+
                     conn.commit()
                 logger.info("✅ Database migration'ları tamamlandı")
             except Exception as e:
                 logger.warning(f"⚠️ Database migration hatası: {e}")
-            
+
             QApplication.processEvents()
-            
-            # 3. Import'ları yeniden yap (yeniden yüklenen modüllerden)
-            try:
-                from app.core.dxf_engine import DXFAnaliz
-                from app.core.database import DatabaseManager
-                from app.core.calculator import Calculator
-                from app.core.material_calculator import MaterialCalculator
-                
-                # Sınıfları güncelle
-                self.DXFAnaliz = DXFAnaliz
-                
-                # Dialog modülünü yeniden import et (cache'i temizlemek için)
-                if 'app.ui.dialogs' in sys.modules:
-                    # Önce mevcut import'ları temizle
-                    import app.ui.dialogs
-                    # Modülü yeniden yükle
-                    importlib.reload(app.ui.dialogs)
-                    # Dialog sınıflarını yeniden import et
-                    from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
-                    logger.info("✅ Dialog sınıfları yeniden yüklendi")
-                
-                logger.info("✅ Import'lar yenilendi (core + dialogs)")
-            except Exception as e:
-                logger.warning(f"⚠️ Import yenileme hatası: {e}")
-            
-            QApplication.processEvents()
-            
+
             # 4. UI bileşenlerini güncelle
-            # Mevcut proje verilerini yeniden yükle
             if self.current_project_id:
                 try:
                     if hasattr(self, 'metraj_table') and self._tabs_created.get('metraj', False):
@@ -7396,37 +8116,59 @@ class MainWindow(QMainWindow):
                         self.update_proje_ozet()
                 except Exception as e:
                     logger.warning(f"⚠️ Veri yenileme hatası: {e}")
-            
+
             QApplication.processEvents()
-            
+
             # 5. Projeleri yeniden yükle
             try:
                 logger.info("🔄 Proje listesi yenileniyor...")
                 self.load_projects()
             except Exception as e:
                 logger.warning(f"⚠️ Proje listesi yenileme hatası: {e}")
-            
+
             QApplication.processEvents()
-            
-            # 6. Tab'ları kontrol et ve gerekirse yeniden oluştur
-            # (Özellikle metraj sekmesi için DXF işlemleri)
-            try:
-                if hasattr(self, 'metraj_tab') and self._tabs_created.get('metraj', False):
-                    logger.info("🔄 Metraj sekmesi kontrol ediliyor...")
-                    # Metraj sekmesindeki DXF butonlarını kontrol et
-                    # Eğer yoksa yeniden oluştur (lazy loading nedeniyle)
-                    pass
-            except Exception as e:
-                logger.warning(f"⚠️ Tab kontrolü hatası: {e}")
-            
-            QMessageBox.information(
-                self, "Başarılı",
-                f"✅ {reloaded_count} modül yeniden yüklendi.\n\n"
-                f"🔄 Database migration'ları çalıştırıldı.\n"
-                f"📊 Veriler yenilendi.\n\n"
-                f"Yeni güncellemeler aktif!\n"
-                f"Uygulamayı kullanmaya devam edebilirsiniz."
-            )
+
+            # 6. Kapatılan pencereleri yeniden aç
+            for pencere_tipi in acik_pencereler:
+                try:
+                    if pencere_tipi == 'MetrajAnalizWindow':
+                        self.show_metraj_analizi()
+                        logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
+                    elif pencere_tipi == 'GanttWindow':
+                        self.show_gantt_chart()
+                        logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
+                    elif pencere_tipi == 'BIDashboardWindow':
+                        self.show_bi_dashboard()
+                        logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
+                    elif pencere_tipi == 'TedarikciWindow':
+                        self.show_tedarikci_portal()
+                        logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
+                    elif pencere_tipi == 'EnflasyonWindow':
+                        self.show_enflasyon_analizi()
+                        logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
+                    elif pencere_tipi == 'SurdurulebilirlikWindow':
+                        self.show_surdurulebilirlik_raporu()
+                        logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
+
+                except Exception as e:
+                    logger.warning(f"⚠️ Pencere yeniden açılamadı {pencere_tipi}: {e}")
+
+            QApplication.processEvents()
+
+            # Sonuç mesajı
+            mesaj = f"✅ {reloaded_count} modül yeniden yüklendi.\n"
+            mesaj += f"🔄 Database migration'ları çalıştırıldı.\n"
+            mesaj += f"📊 Veriler yenilendi.\n"
+
+            if acik_pencereler:
+                mesaj += f"🪟 {len(acik_pencereler)} pencere yeniden açıldı.\n"
+
+            if reload_errors:
+                mesaj += f"\n⚠️ {len(reload_errors)} modül yüklenemedi (detaylar logda)."
+
+            mesaj += "\n\nYeni güncellemeler aktif!"
+
+            QMessageBox.information(self, "Başarılı", mesaj)
             self.statusBar().showMessage("✅ Modüller başarıyla yeniden yüklendi - Yeni özellikler aktif!", 5000)
             
         except Exception as e:
@@ -7438,14 +8180,531 @@ class MainWindow(QMainWindow):
                 f"Uygulamayı kapatıp tekrar açmanız önerilir."
             )
     
+    def show_kullanim_kilavuzu(self) -> None:
+        """Kategorili kullanim kilavuzu dialogu"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Kullanim Kilavuzu - InsaatMetrajPro")
+        dlg.resize(900, 650)
+        dlg.setStyleSheet("""
+            QDialog { background-color: #1a1a2e; }
+            QTreeWidget {
+                background-color: #16213e;
+                color: #e0e0e0;
+                border: 1px solid #0f3460;
+                font-size: 13px;
+                outline: none;
+            }
+            QTreeWidget::item {
+                padding: 4px 8px;
+                border-bottom: 1px solid #0f3460;
+            }
+            QTreeWidget::item:selected {
+                background-color: #0f3460;
+                color: #00e5ff;
+            }
+            QTreeWidget::branch { background-color: #16213e; }
+            QTextEdit {
+                background-color: #16213e;
+                color: #e0e0e0;
+                border: 1px solid #0f3460;
+                font-size: 13px;
+                padding: 12px;
+            }
+            QLabel {
+                color: #00e5ff;
+                font-size: 16px;
+                font-weight: bold;
+                padding: 8px 0;
+            }
+            QPushButton {
+                background-color: #0f3460;
+                color: white;
+                border: none;
+                padding: 8px 24px;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #1a5276; }
+        """)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        baslik = QLabel("INSAAT METRAJ PRO - KULLANIM KILAVUZU")
+        baslik.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(baslik)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Sol: Kategori agaci
+        tree = QTreeWidget()
+        tree.setHeaderHidden(True)
+        tree.setMinimumWidth(260)
+        tree.setMaximumWidth(320)
+
+        # Sag: Icerik alani
+        icerik = QTextEdit()
+        icerik.setReadOnly(True)
+
+        splitter.addWidget(tree)
+        splitter.addWidget(icerik)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        layout.addWidget(splitter, 1)
+
+        btn_kapat = QPushButton("Kapat")
+        btn_kapat.clicked.connect(dlg.close)
+        h_lay = QHBoxLayout()
+        h_lay.addStretch()
+        h_lay.addWidget(btn_kapat)
+        layout.addLayout(h_lay)
+
+        # --- KILAVUZ VERILERI ---
+        kilavuz = {
+            "BASLANGIC": {
+                "Programa Genel Bakis": (
+                    "InsaatMetrajPro, insaat sektorune ozel gelistirilmis profesyonel bir "
+                    "metraj ve maliyet analiz uygulamasidir.\n\n"
+                    "TEMEL OZELLIKLER:\n"
+                    "  - Konut yapisi icin 150+ is kalemi\n"
+                    "  - Offline-First yaklasim (internet gerektirmez)\n"
+                    "  - DXF (CAD) dosyalarindan otomatik metraj cikartma\n"
+                    "  - 25+ uzman hesaplama araci\n"
+                    "  - Excel/PDF iceaktarma ve disaaktarma\n"
+                    "  - Proje yedekleme ve versiyonlama\n"
+                    "  - Mobil puantaj destegi\n"
+                    "  - Gantt semalari ile is programi"
+                ),
+                "Klavye Kisayollari": (
+                    "KLAVYE KISAYOLLARI:\n\n"
+                    "  Ctrl + N    Yeni Proje Olustur\n"
+                    "  Ctrl + O    Proje Ac\n"
+                    "  Ctrl + R    Modulleri Yeniden Yukle\n"
+                    "  Ctrl + Q    Programdan Cik\n\n"
+                    "GENEL KULLANIM:\n"
+                    "  - Sol panelden proje secin veya yeni proje olusturun\n"
+                    "  - Ust sekmeleri kullanarak farkli modullere erisebilirsiniz\n"
+                    "  - Sag tikla menuleri ek islemler sunar"
+                ),
+                "Arayuz Yapisi": (
+                    "ARAYUZ BOLUMLERI:\n\n"
+                    "1. SOL PANEL:\n"
+                    "   - Proje agaci (tum projeleriniz listelenir)\n"
+                    "   - Yeni Proje / Proje Sil / Yenile butonlari\n"
+                    "   - Hizli arama kutusu (proje, kalem, poz arama)\n"
+                    "   - Proje notlari alani\n\n"
+                    "2. UST MENU CUBUGU:\n"
+                    "   - Dosya: Proje islemleri, yedekleme, versiyonlama\n"
+                    "   - Veri: Poz yukleme, Excel/PDF iceaktarma\n"
+                    "   - Araclar: 25+ hesaplama araci\n"
+                    "   - Yardim: Kilavuz ve hakkinda\n\n"
+                    "3. ANA ALAN (SEKMELER):\n"
+                    "   - 13 farkli sekme ile tum islemlere erisim\n"
+                    "   - Sekmeler ilk tiklamada yuklenir (hizli acilis)"
+                ),
+            },
+            "PROJE YONETIMI": {
+                "Yeni Proje Olusturma": (
+                    "YENI PROJE OLUSTURMA:\n\n"
+                    "1. Sol paneldeki 'Yeni Proje' butonuna basin\n"
+                    "   veya Dosya > Yeni Proje (Ctrl+N)\n"
+                    "2. Proje adini girin\n"
+                    "3. Proje otomatik olarak kaydedilir\n\n"
+                    "NOT: Her proje bagimsiz bir veritabani kaydidir.\n"
+                    "Projeler arasi gecis icin sol paneldeki agactan\n"
+                    "istediginiz projeye cift tiklayin."
+                ),
+                "Proje Yedekleme": (
+                    "YEDEKLEME ISLEMLERI:\n\n"
+                    "Dosya > Yedekleme menusunden:\n\n"
+                    "  - Projeyi Yedekle: Secili projeyi yedekler\n"
+                    "  - Tum Projeleri Yedekle: Tum projeleri tek seferde yedekler\n"
+                    "  - Yedekten Geri Yukle: Onceki bir yedekten projeyi geri getirir\n\n"
+                    "ONERI: Onemli degisikliklerden once mutlaka yedek alin."
+                ),
+                "Proje Versiyonlama": (
+                    "VERSIYONLAMA:\n\n"
+                    "Dosya > Versiyonlama menusunden:\n\n"
+                    "  - Versiyon Olustur: Projenin mevcut halini bir versiyon\n"
+                    "    olarak kaydeder (isim ve aciklama ile)\n"
+                    "  - Versiyonlari Goruntule: Tum versiyonlarin listesi\n"
+                    "  - Versiyondan Geri Yukle: Secilen versiyona geri doner\n\n"
+                    "Versiyonlar projenin farkli asamalarini takip etmenizi saglar."
+                ),
+            },
+            "METRAJ CETVELI": {
+                "Kalem Ekleme": (
+                    "METRAJ CETVELINDE KALEM EKLEME:\n\n"
+                    "1. 'Kalem Ekle' butonuna basin\n"
+                    "2. Poz listesinden is kalemini secin\n"
+                    "3. Miktari girin\n"
+                    "4. Birim ve birim fiyat otomatik gelir\n"
+                    "5. Toplam tutar hesaplanir\n\n"
+                    "TABLO SUTUNLARI:\n"
+                    "  ID | Poz No | Aciklama | Miktar | Birim | Birim Fiyat | Toplam"
+                ),
+                "Duzenleme ve Silme": (
+                    "KALEM DUZENLEME:\n"
+                    "  - Tablodan kalemi secin\n"
+                    "  - 'Duzenle' butonuna basin\n"
+                    "  - Miktar, birim fiyat gibi alanlari degistirin\n\n"
+                    "KALEM SILME:\n"
+                    "  - Tablodan kalemi secin\n"
+                    "  - 'Sil' butonuna basin\n"
+                    "  - Onay verdikten sonra kalem silinir\n\n"
+                    "KDV AYARI:\n"
+                    "  - KDV orani secimi: %1, %10, %20\n"
+                    "  - Toplam tutar KDV dahil/haric gosterilir"
+                ),
+                "Malzeme Hesaplama": (
+                    "MALZEME IHTIYAC HESABI:\n\n"
+                    "Her is kalemi eklendiginde otomatik olarak\n"
+                    "gereken malzemeler hesaplanir.\n\n"
+                    "  - Malzeme adi ve miktari tabloda goruntulenir\n"
+                    "  - Fire (israf) oranlari otomatik uygulanir\n"
+                    "  - Malzeme birim fiyatlari duzenlenebilir\n\n"
+                    "FIRE ORANLARI:\n"
+                    "  Araclar > Otomatik Fire Orani Hesapla ile\n"
+                    "  kategorilere gore fire oranlari otomatik belirlenir."
+                ),
+            },
+            "VERI YONETIMI": {
+                "Poz Yukleme": (
+                    "POZ (IS KALEMI) YUKLEME:\n\n"
+                    "Veri > Pozlari Yukle ile hazir is kalemlerini\n"
+                    "sisteme yukleyebilirsiniz.\n\n"
+                    "Sistem 150+ konut yapisi is kalemi icerir:\n"
+                    "  - Kaba yapi (hafriyat, demir, beton)\n"
+                    "  - Duvar imalatlari\n"
+                    "  - Siva ve boya\n"
+                    "  - Doseme kaplamalari\n"
+                    "  - Tesisat\n"
+                    "  - Dis cephe\n"
+                    "  ve daha fazlasi..."
+                ),
+                "Excel Iceaktarma": (
+                    "EXCEL'DEN KALEM ICEAKTARMA:\n\n"
+                    "Veri > Excel'den Kalem Ice Aktar\n\n"
+                    "Excel dosyanizdan is kalemlerini dogrudan\n"
+                    "iceaktarabilirsiniz.\n\n"
+                    "DESTEKLENEN FORMAT:\n"
+                    "  - .xlsx ve .xls dosyalari\n"
+                    "  - Sutunlar: Poz No, Aciklama, Miktar, Birim, Fiyat"
+                ),
+                "PDF Birim Fiyat": (
+                    "PDF'DEN BIRIM FIYAT ICEAKTARMA:\n\n"
+                    "Veri > PDF'den Birim Fiyat Ice Aktar\n\n"
+                    "Resmi birim fiyat cetvellerinden (PDF) fiyatlari\n"
+                    "otomatik olarak sisteme aktarabilirsiniz.\n\n"
+                    "  - PDF dosyasini secin\n"
+                    "  - Sistem fiyatlari otomatik tanir\n"
+                    "  - Eslesen pozlara fiyatlar atanir\n\n"
+                    "TEMIZLEME:\n"
+                    "  Veri > PDF'den Eklenen Pozlari Temizle\n"
+                    "  ile PDF'den gelen verileri kaldirilabilir."
+                ),
+            },
+            "HESAPLAMA ARACLARI": {
+                "Yapi Hesaplamalari": (
+                    "YAPI HESAPLAMA ARACLARI:\n\n"
+                    "Araclar menusunden erisilebilir:\n\n"
+                    "  - Yapisal Demir Hesaplama\n"
+                    "    Betonarme demir ihtiyaci hesabi\n\n"
+                    "  - Saha Demiri Hesabi\n"
+                    "    Sahada kullanilan demir miktarlari\n\n"
+                    "  - Kaba Yapi Maliyet Hesaplama\n"
+                    "    Hafriyat, demir, beton maliyetleri\n\n"
+                    "Her arac ayri pencerede acilir ve sonuclar\n"
+                    "dogrudan metraj cetvelina aktarilabilir."
+                ),
+                "Duvar ve Siva": (
+                    "DUVAR VE SIVA ARACLARI:\n\n"
+                    "  - Duvar Maliyet Hesaplama\n"
+                    "    Tugla, bims, ytong, gazbeton secenekleri\n"
+                    "    Otomatik malzeme sarfiyat hesabi\n\n"
+                    "  - Makine Alci Maliyet Hesaplama\n"
+                    "    Makine ile alci siva maliyeti\n\n"
+                    "  - Kara Siva (El ile) Maliyet Hesaplama\n"
+                    "    Geleneksel el sivasi maliyeti"
+                ),
+                "Kaplama ve Boya": (
+                    "KAPLAMA VE BOYA ARACLARI:\n\n"
+                    "  - Boya Maliyet Hesaplama (Gelismis)\n"
+                    "    Ic/dis cephe boya hesabi\n\n"
+                    "  - Fayans Hesaplama (Oda Bazli)\n"
+                    "    Oda oda fayans ihtiyaci\n\n"
+                    "  - Sap (Tesviye Betonu) Maliyet Hesaplama\n"
+                    "    Zemin tesviye maliyeti\n\n"
+                    "  - Laminat Parke ve Supurgelik Hesaplama\n"
+                    "    Doseme kaplama maliyeti\n\n"
+                    "  - Dis Cephe Mantolama Hesaplama\n"
+                    "    Isil yalitim (minha kurali ile)"
+                ),
+                "Diger Hesaplamalar": (
+                    "DIGER HESAPLAMA ARACLARI:\n\n"
+                    "  - Mermer Isleri (Merdiven/Denizlik)\n"
+                    "  - PVC Dograma (Pencere/Kapi)\n"
+                    "  - Mobilya Maliyet (Mutfak/Vestiyer/Banyo/Kapi)\n"
+                    "  - Su Yalitim (Bez/Toz/Surme)\n"
+                    "  - Elektrik Tesisat Maliyet\n"
+                    "  - Vitrifiye ve Armatur Maliyet\n"
+                    "  - Birim Donusturucu\n\n"
+                    "Her arac icin:\n"
+                    "  1. Parametreleri girin\n"
+                    "  2. Hesapla butonuna basin\n"
+                    "  3. Sonuclari inceleyin\n"
+                    "  4. Metraj cetvelina aktarin"
+                ),
+            },
+            "AKILLI METRAJ ANALIZI": {
+                "DXF Dosyasi Yukleme": (
+                    "AKILLI METRAJ ANALIZI - DXF YUKLEME:\n\n"
+                    "Araclar > Akilli Metraj Analizi\n\n"
+                    "Bu modul DXF (CAD) dosyalarindan otomatik\n"
+                    "metraj cikartma yapar.\n\n"
+                    "ADIMLAR:\n"
+                    "1. 'DXF Yukle' butonuna basin\n"
+                    "2. DXF dosyanizi secin\n"
+                    "3. Katman secim dialogunda katmanlari eslestin:\n"
+                    "   - Kiris katmani (S_KIRIS_H60 gibi)\n"
+                    "   - Duvar katmani (M_DUVAR gibi)\n"
+                    "   - Kolon katmani\n"
+                    "   - Kapi/Pencere (minha) katmani\n"
+                    "   - Oda isimleri katmani\n"
+                    "   - Kat isimleri katmani\n"
+                    "   - m2 (alan) katmani\n"
+                    "4. Birim secimi yapin (mm, cm, m)\n"
+                    "5. Duvar malzemesi secin (Tugla, Bims, Ytong...)"
+                ),
+                "Gorsel Kat Plani": (
+                    "GORSEL KAT PLANI:\n\n"
+                    "DXF yuklendikten sonra otomatik olarak\n"
+                    "profesyonel bir kat plani cizilir:\n\n"
+                    "RENK KODLAMASI:\n"
+                    "  Cyan/Turkuaz  : Duvarlar\n"
+                    "  Beyaz Kareler : Kolonlar\n"
+                    "  Kahverengi    : Kapilar (acilma yayi ile)\n"
+                    "  Mavi          : Pencereler\n\n"
+                    "ODA ETIKETLERI:\n"
+                    "  Sari   : Kuru hacimler (Salon, Yatak Odasi)\n"
+                    "  Yesil  : Koridor, Antre, Hol\n"
+                    "  Mor    : Islak hacimler (Banyo, WC)\n\n"
+                    "Her oda etiketi m2 degerini de gosterir.\n"
+                    "Alt kisimda lejant cubugu bulunur."
+                ),
+                "Duvar Metraj Hesabi": (
+                    "DUVAR METRAJ HESABI:\n\n"
+                    "Sistem otomatik olarak:\n\n"
+                    "  1. Duvarlari tespit eder\n"
+                    "  2. Kiris-duvar cakismalarini bulur\n"
+                    "  3. Kapi/pencere boslugu duser\n"
+                    "  4. Net duvar alanini hesaplar\n\n"
+                    "PARAMETRELER:\n"
+                    "  - Kat Yuksekligi (cm)\n"
+                    "  - Doseme Kalinligi (cm)\n"
+                    "  - Duvar Malzemesi\n\n"
+                    "SONUCLAR:\n"
+                    "  - Duvar ID, kalinlik, brut/net alan\n"
+                    "  - Malzeme ihtiyac listesi\n"
+                    "  - Excel'e aktarim (coklu sayfa)"
+                ),
+                "Excel Ciktisi": (
+                    "EXCEL AKTARIM:\n\n"
+                    "Akilli Metraj sonuclari Excel'e aktarilabilir.\n\n"
+                    "EXCEL SAYFALARI:\n"
+                    "  1. Duvar Olculeri - Tum duvarlarin detaylari\n"
+                    "  2. Alan Hesaplari - Oda bazli m2 degerleri\n"
+                    "  3. Imalat Listesi - Yapilacak isler\n"
+                    "  4. Malzeme Ozeti - Toplam malzeme ihtiyaci\n"
+                    "  5. Tedarik Siparisi - Satin alma listesi\n"
+                    "  6. Duvar Malzeme - Duvar malzeme detayi"
+                ),
+            },
+            "RAPORLAMA": {
+                "Proje Ozeti": (
+                    "PROJE OZETI SEKMESI:\n\n"
+                    "Projenin genel durumunu gosteren ozet kartlar:\n"
+                    "  - Toplam kalem sayisi\n"
+                    "  - Toplam maliyet (KDV haric)\n"
+                    "  - Toplam maliyet (KDV dahil)\n"
+                    "  - Taseron teklif sayisi\n\n"
+                    "GRAFIKLER:\n"
+                    "  - Kategori bazli dagilim\n"
+                    "  - En pahali 5 kalem\n\n"
+                    "DISAAKTARMA:\n"
+                    "  - PDF raporu olusturma\n"
+                    "  - Excel raporu olusturma"
+                ),
+                "Taseron Analizi": (
+                    "TASERON ANALIZI SEKMESI:\n\n"
+                    "Taseron tekliflerini yonetme ve karsilastirma.\n\n"
+                    "  - Taseron teklifleri ekleme\n"
+                    "  - Teklif karsilastirma\n"
+                    "  - En uygun teklif secimi\n"
+                    "  - Excel ve PDF disaaktarma"
+                ),
+                "Malzeme Listesi": (
+                    "MALZEME LISTESI SEKMESI:\n\n"
+                    "Tum projenin malzeme ihtiyac ozeti.\n\n"
+                    "  - Malzeme adi ve toplam miktar\n"
+                    "  - Birim fiyat ve toplam tutar\n"
+                    "  - Fire oranlari dahil hesaplama\n\n"
+                    "DISAAKTARMA FORMATLARI:\n"
+                    "  - Excel (.xlsx)\n"
+                    "  - PDF\n"
+                    "  - Tedarikci formati"
+                ),
+            },
+            "IHALE VE FINANS": {
+                "Ihale Dosyasi Hazirlama": (
+                    "IHALE DOSYASI HAZIRLAMA SEKMESI:\n\n"
+                    "Resmi ihale dokumanlari olusturma.\n\n"
+                    "  - Kalem listesi duzenleme\n"
+                    "  - Aciklama, miktar, birim, fiyat\n"
+                    "  - PDF ve Excel ciktisi\n\n"
+                    "SUTUNLAR:\n"
+                    "  Sira | Poz No | Aciklama | Miktar | Birim | "
+                    "Birim Fiyat | Toplam"
+                ),
+                "Enflasyon ve Fiyat Farki": (
+                    "ENFLASYON VE FIYAT FARKI SEKMESI:\n\n"
+                    "Enflasyon takibi ve fiyat farki analizi.\n\n"
+                    "  - Baslangic ve bitis donemi karsilastirma\n"
+                    "  - Fiyat artis oranlari\n"
+                    "  - Fiyat farki hesaplama"
+                ),
+                "Tedarikci Fiyat Karsilastirma": (
+                    "TEDARIKCI FIYAT KARSILASTIRMA SEKMESI:\n\n"
+                    "Farkli tedarikcilerden fiyat karsilastirma.\n\n"
+                    "  - Birden fazla tedarikci fiyati girme\n"
+                    "  - En uygun fiyat secimi\n"
+                    "  - Fiyat gecmisi takibi"
+                ),
+                "Birim Fiyatlar": (
+                    "BIRIM FIYATLAR SEKMESI:\n\n"
+                    "Birim fiyat yonetimi.\n\n"
+                    "  - Tum pozlarin birim fiyatlari\n"
+                    "  - Fiyat guncelleme\n"
+                    "  - Fiyat gecmisi karsilastirma"
+                ),
+            },
+            "DIGER MODULLER": {
+                "Gantt Semasi": (
+                    "GANTT SEMASI VE IS PROGRAMI:\n\n"
+                    "Proje zamanlama ve is programi olusturma.\n\n"
+                    "  - Gorsel zaman cizelgesi\n"
+                    "  - Is kalemlerini zamana yayma\n"
+                    "  - Baslangic/bitis tarihleri\n"
+                    "  - Ilerleme takibi"
+                ),
+                "Mobil Puantaj": (
+                    "MOBIL PUANTAJ SUNUCUSU:\n\n"
+                    "Araclar > Mobil Puantaj Sunucusu\n\n"
+                    "Saha personelinin yoklama/puantaj islemlerini\n"
+                    "mobil cihazlardan yapmasini saglar.\n\n"
+                    "  - Sunucuyu baslatma/durdurma\n"
+                    "  - QR kod ile erisim\n"
+                    "  - Puantaj raporu olusturma"
+                ),
+                "BI Dashboard": (
+                    "BI DASHBOARD (IS ZEKASI):\n\n"
+                    "Proje verilerinin gorsel analizi.\n\n"
+                    "  - Ozet kartlar ve grafikler\n"
+                    "  - Performans metrikleri\n"
+                    "  - Veri gorsellestirme"
+                ),
+                "Cevre ve Surdurulebilirlik": (
+                    "CEVRE VE SURDURULEBILIRLIK:\n\n"
+                    "Projenin cevre etkisi ve surdurulebilirlik analizi.\n\n"
+                    "  - Karbon ayak izi hesaplama\n"
+                    "  - Yesil bina kriterleri\n"
+                    "  - Cevre dostu malzeme onerileri"
+                ),
+                "Sablonlar": (
+                    "SABLONLAR SEKMESI:\n\n"
+                    "Tekrar kullanilabilir proje sablonlari.\n\n"
+                    "  - Mevcut projeden sablon olusturma\n"
+                    "  - Sablon kopyalama\n"
+                    "  - Yeni projeye sablon uygulama\n\n"
+                    "Benzer projelerde zaman kazandirici."
+                ),
+            },
+        }
+
+        item_contents = {}
+
+        for kategori, alt_basliklar in kilavuz.items():
+            parent = QTreeWidgetItem(tree, [kategori])
+            parent.setExpanded(True)
+            f = parent.font(0)
+            f.setBold(True)
+            f.setPointSize(11)
+            parent.setFont(0, f)
+            parent.setForeground(0, QColor("#00e5ff"))
+
+            for baslik, icerik_text in alt_basliklar.items():
+                child = QTreeWidgetItem(parent, [baslik])
+                child.setForeground(0, QColor("#e0e0e0"))
+                item_contents[id(child)] = icerik_text
+
+        def on_item_clicked(item, column):
+            cid = id(item)
+            if cid in item_contents:
+                icerik.setPlainText(item_contents[cid])
+            else:
+                # Kategori basligina tiklandiginda alt baslik listesi goster
+                alt_list = []
+                for i in range(item.childCount()):
+                    alt_list.append(f"  - {item.child(i).text(0)}")
+                if alt_list:
+                    icerik.setPlainText(
+                        f"{item.text(0)} KATEGORISI\n"
+                        f"{'=' * 40}\n\n"
+                        f"Bu kategorideki konular:\n\n" +
+                        "\n".join(alt_list) +
+                        "\n\nDetay icin alt basliklara tiklayin."
+                    )
+
+        tree.itemClicked.connect(on_item_clicked)
+
+        # Baslangic icerigi
+        icerik.setPlainText(
+            "INSAAT METRAJ PRO - KULLANIM KILAVUZU\n"
+            "=" * 44 + "\n\n"
+            "Hosgeldiniz!\n\n"
+            "Sol taraftaki kategori agacindan bir konu\n"
+            "secerek detayli bilgiye ulasabilirsiniz.\n\n"
+            "KATEGORILER:\n\n"
+            "  BASLANGIC\n"
+            "    Programa genel bakis ve arayuz yapisi\n\n"
+            "  PROJE YONETIMI\n"
+            "    Proje olusturma, yedekleme, versiyonlama\n\n"
+            "  METRAJ CETVELI\n"
+            "    Kalem ekleme, duzenleme, malzeme hesabi\n\n"
+            "  VERI YONETIMI\n"
+            "    Poz yukleme, Excel/PDF iceaktarma\n\n"
+            "  HESAPLAMA ARACLARI\n"
+            "    25+ uzman hesaplama araci\n\n"
+            "  AKILLI METRAJ ANALIZI\n"
+            "    DXF'den otomatik metraj cikartma\n\n"
+            "  RAPORLAMA\n"
+            "    Proje ozeti, taseron, malzeme raporlari\n\n"
+            "  IHALE VE FINANS\n"
+            "    Ihale dosyasi, enflasyon, fiyat takibi\n\n"
+            "  DIGER MODULLER\n"
+            "    Gantt, puantaj, BI, cevre ve daha fazlasi"
+        )
+
+        dlg.exec()
+
     def show_about(self) -> None:
-        """Hakkında dialogu"""
+        """Hakkinda dialogu"""
         QMessageBox.about(
-            self, "Hakkında",
+            self, "Hakkinda",
             "InsaatMetrajPro v1.0.0\n\n"
-            "İnşaat sektörü için profesyonel metraj uygulaması\n"
-            "Python ve PyQt6 ile geliştirilmiştir.\n\n"
-            "Offline-First yaklaşım ile çalışır.\n\n"
-            "Konut yapısı için 150+ iş kalemi içerir."
+            "Insaat sektoru icin profesyonel metraj uygulamasi\n"
+            "Python ve PyQt6 ile gelistirilmistir.\n\n"
+            "Offline-First yaklasim ile calisir.\n\n"
+            "Konut yapisi icin 150+ is kalemi icerir."
         )
 

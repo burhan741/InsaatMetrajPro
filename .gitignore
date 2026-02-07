@@ -54,3 +54,13 @@ desktop.ini
 # Temporary files
 *.tmp
 *.temp
+
+# Claude Code temp files
+claude-*-cwd
+nul
+
+# Error logs
+error_log.txt
+
+# Git push script
+git_push.bat
