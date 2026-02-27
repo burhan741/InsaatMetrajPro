@@ -24,23 +24,23 @@ try:
             tanim_short = str(tanim)[:60] if tanim else ''
             f.write(f"{poz_no} | {tanim_short}\n")
 
-        f.write("\n" + "=" * 80 + "\n")
+            f.write("\n" + "=" * 80 + "\n")
 
-        # Poz numarası desenlerini analiz et
-        f.write("\nPOZ NUMARASI DESENLERİ:\n")
-        f.write("-" * 80 + "\n")
+            # Poz numarası desenlerini analiz et
+            f.write("\nPOZ NUMARASI DESENLERİ:\n")
+            f.write("-" * 80 + "\n")
 
-        poz_col = df.columns[0]  # İlk sütun poz no
-        poz_prefixes = {}
-        for poz in df[poz_col]:
-            if pd.notna(poz):
-                prefix = str(poz).split('.')[0] if '.' in str(poz) else str(poz)[:2]
-                poz_prefixes[prefix] = poz_prefixes.get(prefix, 0) + 1
+            poz_col = df.columns[0] # İlk sütun poz no
+            poz_prefixes = {}
+            for poz in df[poz_col]:
+                if pd.notna(poz):
+                    prefix = str(poz).split('.')[0] if '.' in str(poz) else str(poz)[:2]
+                    poz_prefixes[prefix] = poz_prefixes.get(prefix, 0) + 1
 
-        for prefix, count in sorted(poz_prefixes.items(), key=lambda x: -x[1]):
-            f.write(f"  {prefix}.xxx.xxxx: {count} adet\n")
+                    for prefix, count in sorted(poz_prefixes.items(), key=lambda x: -x[1]):
+                        f.write(f" {prefix}.xxx.xxxx: {count} adet\n")
 
-    print(f"Analiz kaydedildi: {output_path}")
+                        print(f"Analiz kaydedildi: {output_path}")
 
 except Exception as e:
     print(f"Hata: {e}")

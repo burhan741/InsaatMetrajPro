@@ -1,12 +1,21 @@
 """
-Business Intelligence Dashboard Sekmesi
-Grafikler, KPI kartları ve trend analizi ile profesyonel dashboard
+Business Intelligence Dashboard
+3 matplotlib grafik + KPI kartları + tablolar — tamamen dark temalı
+
+Neyi çözer?
+ Eski tablo-tabanlı BI Dashboard yerine görsel grafik tabanlı analiz sunar.
+ Müteahhide tek bakışta proje durumunu okuma imkânı verir.
+
+Grafikler:
+ 1. Donut Chart — Kategori bazlı maliyet dağılımı
+ 2. HBar Chart — En pahalı 5 iş kalemi
+ 3. Line Chart — Son 12 aylık maliyet trendi (alan dolgulu)
 """
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QGroupBox, QScrollArea,
-    QGridLayout, QComboBox, QFrame
+ QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+ QTableWidget, QTableWidgetItem, QGroupBox, QScrollArea,
+ QGridLayout, QComboBox, QFrame, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QFont
@@ -18,394 +27,583 @@ from app.core.bi_engine import BIEngine
 
 logger = logging.getLogger(__name__)
 
+# ── Dark Tema Sabitleri ────────────────────────────────────────────────────────
+_BG = '#1a1a2e' # Figure / canvas arka planı
+_AX = '#16213e' # Axes arka planı
+_TEXT = '#d4d4d4' # Genel metin rengi
+_TITLE = '#e0e0e0' # Başlık rengi
+_GRID = '#2a3a5a' # Grid ve spine rengi
+_ACCENT = '#00BFFF' # Ana vurgu rengi (cyan)
+
+# Grafik renk paleti (10 renk — fazla kategori için döngüsel)
+_COLORS = [
+ '#00BFFF', '#4CAF50', '#FF9800', '#E91E63',
+ '#9C27B0', '#F44336', '#2196F3', '#FFC107',
+ '#00BCD4', '#8BC34A',
+]
+
+
+# ── Yardımcı: Dark Figure Oluşturucu ─────────────────────────────────────────
+
+def _make_dark_canvas(figsize=(6, 3.5)):
+ """
+ Dark temalı Figure + Axes + FigureCanvasQTAgg üçlüsü döndürür.
+
+ Neyi çözer?
+ Her grafik için tekrar eden dark tema kodunu tek yerde toplar.
+
+ Nasıl test edilir?
+ fig, ax, canvas = _make_dark_canvas()
+ assert fig.get_facecolor() != (1,1,1,1) # beyaz değil
+ """
+ try:
+ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+ from matplotlib.figure import Figure
+
+ fig = Figure(figsize=figsize, facecolor=_BG)
+ ax = fig.add_subplot(111)
+ ax.set_facecolor(_AX)
+ ax.tick_params(colors=_TEXT, labelsize=8)
+ ax.title.set_color(_TITLE)
+ ax.xaxis.label.set_color(_TEXT)
+ ax.yaxis.label.set_color(_TEXT)
+ for spine in ax.spines.values():
+ spine.set_edgecolor(_GRID)
+
+ canvas = FigureCanvasQTAgg(fig)
+ canvas.setStyleSheet(
+ f"background-color: {_BG}; border-radius: 8px; border: 1px solid {_GRID};"
+ )
+ return fig, ax, canvas
+
+ except ImportError:
+ return None, None, None
+
+
+def _reset_ax(fig, ax):
+ """Axes'i temizleyip dark temayı yeniden uygula."""
+ ax.clear()
+ fig.patch.set_facecolor(_BG)
+ ax.set_facecolor(_AX)
+ ax.tick_params(colors=_TEXT, labelsize=8)
+ for spine in ax.spines.values():
+ spine.set_edgecolor(_GRID)
+
+
+# ── KPI Kartı ────────────────────────────────────────────────────────────────
 
 class KPICard(QFrame):
-    """KPI Kartı widget'i"""
+ """Renk kodlu KPI kartı bileşeni."""
 
-    def __init__(self, baslik: str, deger: str, ikon: str = "📊", renk: str = "#2196F3"):
-        super().__init__()
-        self.init_ui(baslik, deger, ikon, renk)
+ def __init__(self, baslik: str, deger: str, ikon: str = "", renk: str = "#2196F3"):
+ super().__init__()
+ self._build(baslik, deger, ikon, renk)
 
-    def init_ui(self, baslik: str, deger: str, ikon: str, renk: str):
-        """KPI kartını oluştur"""
-        self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
-        self.setStyleSheet(f"""
-            QFrame {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {renk}, stop:1 #1a1a2e);
-                border-radius: 10px;
-                border: 2px solid {renk};
-                padding: 15px;
-            }}
-        """)
+ def _build(self, baslik: str, deger: str, ikon: str, renk: str):
+ self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
+ self.setMinimumHeight(110)
+ self.setStyleSheet(f"""
+ QFrame {{
+ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+ stop:0 {renk}55, stop:1 #1a1a2e);
+ border-radius: 10px;
+ border: 1px solid {renk};
+ padding: 12px;
+ }}
+ """)
 
-        layout = QVBoxLayout()
+ layout = QVBoxLayout(self)
+ layout.setContentsMargins(10, 8, 10, 8)
+ layout.setSpacing(4)
 
-        # İkon ve başlık
-        header_layout = QHBoxLayout()
+ header = QHBoxLayout()
+ ikon_lbl = QLabel(ikon)
+ ikon_lbl.setStyleSheet("font-size: 22pt; border: none; background: transparent;")
+ header.addWidget(ikon_lbl)
 
-        ikon_label = QLabel(ikon)
-        ikon_label.setStyleSheet("font-size: 28pt; border: none;")
-        header_layout.addWidget(ikon_label)
+ baslik_lbl = QLabel(baslik)
+ baslik_lbl.setStyleSheet(
+ "font-size: 9pt; font-weight: bold; color: #aaaaaa; border: none; background: transparent;"
+ )
+ baslik_lbl.setWordWrap(True)
+ header.addWidget(baslik_lbl, 1)
+ layout.addLayout(header)
 
-        baslik_label = QLabel(baslik)
-        baslik_label.setStyleSheet("""
-            font-size: 11pt;
-            font-weight: bold;
-            color: #e0e0e0;
-            border: none;
-        """)
-        header_layout.addWidget(baslik_label)
-        header_layout.addStretch()
+ self.deger_lbl = QLabel(deger)
+ self.deger_lbl.setStyleSheet(
+ f"font-size: 18pt; font-weight: bold; color: {renk};"
+ " border: none; background: transparent;"
+ )
+ self.deger_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+ layout.addWidget(self.deger_lbl)
 
-        layout.addLayout(header_layout)
+ def update_deger(self, yeni: str):
+ self.deger_lbl.setText(yeni)
 
-        # Değer
-        self.deger_label = QLabel(deger)
-        self.deger_label.setStyleSheet("""
-            font-size: 24pt;
-            font-weight: bold;
-            color: white;
-            margin-top: 10px;
-            border: none;
-        """)
-        self.deger_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.deger_label)
 
-        self.setLayout(layout)
-
-    def update_deger(self, yeni_deger: str):
-        """Değeri güncelle"""
-        self.deger_label.setText(yeni_deger)
-
+# ── Ana Dashboard ─────────────────────────────────────────────────────────────
 
 class BIDashboardWindow(QWidget):
-    """Business Intelligence Dashboard widget'i"""
-
-    def __init__(self, db: DatabaseManager):
-        super().__init__()
-        self.db = db
-        self.engine = BIEngine(db)
-        self.current_proje_id = None
-        self.init_ui()
-        self.load_dashboard()
-
-        # Otomatik yenileme (5 dakikada bir)
-        self.refresh_timer = QTimer()
-        self.refresh_timer.timeout.connect(self.load_dashboard)
-        self.refresh_timer.start(300000)  # 5 dakika
-
-    def init_ui(self):
-        """UI elementlerini oluştur"""
-        main_layout = QVBoxLayout()
-
-        # Başlık ve proje seçici
-        header_layout = QHBoxLayout()
-
-        baslik = QLabel("📊 Business Intelligence Dashboard")
-        baslik.setStyleSheet("font-size: 20pt; font-weight: bold; margin: 10px;")
-        header_layout.addWidget(baslik)
-
-        header_layout.addStretch()
-
-        # Proje filtresi
-        proje_label = QLabel("Proje:")
-        header_layout.addWidget(proje_label)
-
-        self.proje_combo = QComboBox()
-        self.proje_combo.addItem("Tüm Projeler", None)
-        self.load_projeler()
-        self.proje_combo.currentIndexChanged.connect(self.on_proje_changed)
-        header_layout.addWidget(self.proje_combo)
-
-        # Yenile butonu
-        yenile_btn = QPushButton("🔄 Yenile")
-        yenile_btn.clicked.connect(self.load_dashboard)
-        header_layout.addWidget(yenile_btn)
-
-        main_layout.addLayout(header_layout)
-
-        # Scroll area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("""
-            QScrollArea {
-                border: none;
-                background-color: transparent;
-            }
-        """)
-
-        # Ana içerik
-        content_widget = QWidget()
-        content_layout = QVBoxLayout(content_widget)
-
-        # KPI Kartları
-        kpi_group = self._create_kpi_cards()
-        content_layout.addWidget(kpi_group)
-
-        # Kategori dağılımı ve top kalemler
-        charts_layout = QHBoxLayout()
-
-        kategori_group = self._create_kategori_table()
-        charts_layout.addWidget(kategori_group, 1)
-
-        top_kalemler_group = self._create_top_kalemler_table()
-        charts_layout.addWidget(top_kalemler_group, 1)
-
-        content_layout.addLayout(charts_layout)
-
-        # Taşeron karşılaştırma
-        taseron_group = self._create_taseron_table()
-        content_layout.addWidget(taseron_group)
-
-        # Trend tablosu
-        trend_group = self._create_trend_table()
-        content_layout.addWidget(trend_group)
-
-        scroll.setWidget(content_widget)
-        main_layout.addWidget(scroll)
-
-        self.setLayout(main_layout)
-
-    def _create_kpi_cards(self) -> QGroupBox:
-        """KPI kartlarını oluştur"""
-        group = QGroupBox("Ana Göstergeler (KPI)")
-        layout = QGridLayout()
-
-        # Boş kartlar oluştur (veriler load_dashboard'da doldurulacak)
-        self.kpi_proje = KPICard("Toplam Proje", "0", "📁", "#4CAF50")
-        layout.addWidget(self.kpi_proje, 0, 0)
-
-        self.kpi_maliyet = KPICard("Toplam Maliyet", "0 TL", "💰", "#2196F3")
-        layout.addWidget(self.kpi_maliyet, 0, 1)
-
-        self.kpi_kalem = KPICard("Toplam Kalem", "0", "📋", "#FF9800")
-        layout.addWidget(self.kpi_kalem, 0, 2)
-
-        self.kpi_ortalama = KPICard("Ortalama Maliyet", "0 TL", "📊", "#9C27B0")
-        layout.addWidget(self.kpi_ortalama, 1, 0)
-
-        self.kpi_taseron = KPICard("Taşeron Sayısı", "0", "👷", "#F44336")
-        layout.addWidget(self.kpi_taseron, 1, 1)
-
-        self.kpi_pahali_proje = KPICard("En Pahalı Proje", "N/A", "🏆", "#00BCD4")
-        layout.addWidget(self.kpi_pahali_proje, 1, 2)
-
-        group.setLayout(layout)
-        return group
-
-    def _create_kategori_table(self) -> QGroupBox:
-        """Kategori dağılımı tablosu"""
-        group = QGroupBox("📊 Kategori Bazında Maliyet Dağılımı")
-        layout = QVBoxLayout()
-
-        self.kategori_table = QTableWidget()
-        self.kategori_table.setColumnCount(4)
-        self.kategori_table.setHorizontalHeaderLabels([
-            "Kategori", "Maliyet (TL)", "Kalem Sayısı", "Oran (%)"
-        ])
-        self.kategori_table.setAlternatingRowColors(True)
-        self.kategori_table.horizontalHeader().setStretchLastSection(True)
-
-        layout.addWidget(self.kategori_table)
-
-        group.setLayout(layout)
-        return group
-
-    def _create_top_kalemler_table(self) -> QGroupBox:
-        """En pahalı kalemler tablosu"""
-        group = QGroupBox("🔝 En Pahalı 10 Kalem")
-        layout = QVBoxLayout()
-
-        self.top_kalemler_table = QTableWidget()
-        self.top_kalemler_table.setColumnCount(4)
-        self.top_kalemler_table.setHorizontalHeaderLabels([
-            "Poz No", "Tanım", "Miktar", "Toplam (TL)"
-        ])
-        self.top_kalemler_table.setAlternatingRowColors(True)
-        self.top_kalemler_table.horizontalHeader().setStretchLastSection(True)
-
-        layout.addWidget(self.top_kalemler_table)
-
-        group.setLayout(layout)
-        return group
-
-    def _create_taseron_table(self) -> QGroupBox:
-        """Taşeron karşılaştırma tablosu"""
-        group = QGroupBox("💼 Taşeron Performans Analizi")
-        layout = QVBoxLayout()
-
-        self.taseron_table = QTableWidget()
-        self.taseron_table.setColumnCount(3)
-        self.taseron_table.setHorizontalHeaderLabels([
-            "Firma", "Ortalama Fiyat (TL)", "Teklif Sayısı"
-        ])
-        self.taseron_table.setAlternatingRowColors(True)
-        self.taseron_table.horizontalHeader().setStretchLastSection(True)
-        self.taseron_table.setMaximumHeight(250)
-
-        layout.addWidget(self.taseron_table)
-
-        group.setLayout(layout)
-        return group
-
-    def _create_trend_table(self) -> QGroupBox:
-        """Aylık trend tablosu"""
-        group = QGroupBox("📈 Aylık Trend Analizi (Son 12 Ay)")
-        layout = QVBoxLayout()
-
-        self.trend_table = QTableWidget()
-        self.trend_table.setColumnCount(3)
-        self.trend_table.setHorizontalHeaderLabels([
-            "Ay", "Proje Sayısı", "Toplam Maliyet (TL)"
-        ])
-        self.trend_table.setAlternatingRowColors(True)
-        self.trend_table.horizontalHeader().setStretchLastSection(True)
-        self.trend_table.setMaximumHeight(300)
-
-        layout.addWidget(self.trend_table)
-
-        group.setLayout(layout)
-        return group
-
-    def load_projeler(self):
-        """Projeleri combobox'a yükle"""
-        try:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, ad FROM projects WHERE durum = 'aktif' ORDER BY ad")
-                rows = cursor.fetchall()
-
-                for row in rows:
-                    self.proje_combo.addItem(row['ad'], row['id'])
-
-        except Exception as e:
-            logger.error(f"Proje yükleme hatası: {e}")
-
-    def on_proje_changed(self, index: int):
-        """Proje değiştiğinde"""
-        self.current_proje_id = self.proje_combo.itemData(index)
-        self.load_dashboard()
-
-    def load_dashboard(self):
-        """Dashboard verilerini yükle"""
-        try:
-            # KPI'ları yükle
-            kpis = self.engine.get_dashboard_kpis(self.current_proje_id)
-
-            self.kpi_proje.update_deger(str(kpis['toplam_proje']))
-            self.kpi_maliyet.update_deger(f"{kpis['toplam_maliyet']:,.2f} TL")
-            self.kpi_kalem.update_deger(str(kpis['toplam_kalem']))
-            self.kpi_ortalama.update_deger(f"{kpis['ortalama_maliyet']:,.2f} TL")
-            self.kpi_taseron.update_deger(str(kpis['taseron_sayisi']))
-
-            if kpis['en_pahali_proje'] != 'N/A':
-                self.kpi_pahali_proje.update_deger(
-                    f"{kpis['en_pahali_proje'][:15]}...\n{kpis['en_pahali_proje_maliyet']:,.0f} TL"
-                )
-            else:
-                self.kpi_pahali_proje.update_deger("N/A")
-
-            # Kategori dağılımını yükle
-            self.load_kategori_dagilimi()
-
-            # Top kalemleri yükle
-            self.load_top_kalemler()
-
-            # Taşeron karşılaştırmasını yükle
-            self.load_taseron_karsilastirma()
-
-            # Trend analizini yükle
-            if not self.current_proje_id:  # Sadece tüm projeler için
-                self.load_trend_analizi()
-
-        except Exception as e:
-            logger.error(f"Dashboard yükleme hatası: {e}")
-
-    def load_kategori_dagilimi(self):
-        """Kategori dağılımını yükle"""
-        try:
-            kategoriler = self.engine.get_kategori_dagilimi(self.current_proje_id)
-
-            self.kategori_table.setRowCount(len(kategoriler))
-
-            for row_idx, kat in enumerate(kategoriler):
-                self.kategori_table.setItem(row_idx, 0, QTableWidgetItem(kat['kategori']))
-                self.kategori_table.setItem(row_idx, 1, QTableWidgetItem(f"{kat['maliyet']:,.2f}"))
-                self.kategori_table.setItem(row_idx, 2, QTableWidgetItem(str(kat['kalem_sayisi'])))
-
-                oran_item = QTableWidgetItem(f"%{kat['oran']:.2f}")
-                oran_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
-                # Yüksek oranlara renk ver
-                if kat['oran'] > 30:
-                    oran_item.setBackground(QColor(244, 67, 54, 100))  # Kırmızı
-                elif kat['oran'] > 15:
-                    oran_item.setBackground(QColor(255, 152, 0, 100))  # Turuncu
-                else:
-                    oran_item.setBackground(QColor(76, 175, 80, 100))  # Yeşil
-
-                self.kategori_table.setItem(row_idx, 3, oran_item)
-
-        except Exception as e:
-            logger.error(f"Kategori dağılımı yükleme hatası: {e}")
-
-    def load_top_kalemler(self):
-        """En pahalı kalemleri yükle"""
-        try:
-            top_kalemler = self.engine.get_top_kalemler(self.current_proje_id, limit=10)
-
-            self.top_kalemler_table.setRowCount(len(top_kalemler))
-
-            for row_idx, kalem in enumerate(top_kalemler):
-                self.top_kalemler_table.setItem(row_idx, 0, QTableWidgetItem(kalem['poz_no']))
-
-                tanim = kalem['tanim'][:50] + "..." if len(kalem['tanim']) > 50 else kalem['tanim']
-                self.top_kalemler_table.setItem(row_idx, 1, QTableWidgetItem(tanim))
-
-                self.top_kalemler_table.setItem(row_idx, 2,
-                    QTableWidgetItem(f"{kalem['miktar']} {kalem['birim']}"))
-
-                toplam_item = QTableWidgetItem(f"{kalem['toplam']:,.2f}")
-                toplam_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-                self.top_kalemler_table.setItem(row_idx, 3, toplam_item)
-
-        except Exception as e:
-            logger.error(f"Top kalemler yükleme hatası: {e}")
-
-    def load_taseron_karsilastirma(self):
-        """Taşeron karşılaştırmasını yükle"""
-        try:
-            taseron_data = self.engine.get_taseron_karsilastirma(self.current_proje_id)
-
-            self.taseron_table.setRowCount(len(taseron_data))
-
-            for row_idx, taseron in enumerate(taseron_data):
-                self.taseron_table.setItem(row_idx, 0, QTableWidgetItem(taseron['firma']))
-                self.taseron_table.setItem(row_idx, 1, QTableWidgetItem(f"{taseron['ortalama_fiyat']:,.2f}"))
-                self.taseron_table.setItem(row_idx, 2, QTableWidgetItem(str(taseron['teklif_sayisi'])))
-
-                # En ucuza yeşil renk
-                if row_idx == 0:
-                    for col in range(3):
-                        item = self.taseron_table.item(row_idx, col)
-                        if item:
-                            item.setBackground(QColor(76, 175, 80, 50))
-
-        except Exception as e:
-            logger.error(f"Taşeron karşılaştırma yükleme hatası: {e}")
-
-    def load_trend_analizi(self):
-        """Aylık trend analizini yükle"""
-        try:
-            trend_data = self.engine.get_aylik_trend(12)
-
-            self.trend_table.setRowCount(len(trend_data))
-
-            for row_idx, ay_data in enumerate(trend_data):
-                self.trend_table.setItem(row_idx, 0, QTableWidgetItem(ay_data['ay']))
-                self.trend_table.setItem(row_idx, 1, QTableWidgetItem(str(ay_data['proje_sayisi'])))
-                self.trend_table.setItem(row_idx, 2, QTableWidgetItem(f"{ay_data['toplam_maliyet']:,.2f}"))
-
-        except Exception as e:
-            logger.error(f"Trend analizi yükleme hatası: {e}")
+ """
+ Business Intelligence Dashboard — grafik tabanlı versiyon.
+
+ Layout (yukarıdan aşağıya):
+ 1. Başlık çubuğu + proje filtresi
+ 2. KPI kartları (6 adet, 2×3)
+ 3. Donut Chart (sol) | HBar Chart (sağ)
+ 4. Line Chart (tam genişlik — aylık trend)
+ 5. Taşeron tablosu (kompakt)
+
+ Nasıl test edilir?
+ window = BIDashboardWindow(db)
+ window.show()
+ # → Grafikler boş ama hata vermemeli
+ window.load_dashboard()
+ # → Grafikler verilerle dolmalı
+ """
+
+ def __init__(self, db: DatabaseManager):
+ super().__init__()
+ self.db = db
+ self.engine = BIEngine(db)
+ self.current_proje_id: Optional[int] = None
+
+ # Grafik referansları (matplotlib yoksa None)
+ self.donut_fig = self.donut_ax = self.donut_canvas = None
+ self.bar_fig = self.bar_ax = self.bar_canvas = None
+ self.line_fig = self.line_ax = self.line_canvas = None
+
+ self._init_ui()
+ self.load_dashboard()
+
+ # 5 dakikada bir otomatik yenileme
+ self._timer = QTimer()
+ self._timer.timeout.connect(self.load_dashboard)
+ self._timer.start(300_000)
+
+ # ── UI Kurulumu ───────────────────────────────────────────────────────────
+
+ def _init_ui(self):
+ root = QVBoxLayout(self)
+ root.setContentsMargins(12, 10, 12, 10)
+ root.setSpacing(10)
+
+ root.addWidget(self._build_header())
+
+ # Kaydırılabilir içerik
+ scroll = QScrollArea()
+ scroll.setWidgetResizable(True)
+ scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+ content = QWidget()
+ content.setStyleSheet("background: transparent;")
+ cl = QVBoxLayout(content)
+ cl.setSpacing(12)
+ cl.setContentsMargins(0, 0, 0, 0)
+
+ cl.addWidget(self._build_kpi_group()) # Satır 1: KPI kartları
+ cl.addLayout(self._build_charts_row()) # Satır 2: Donut + HBar
+ cl.addWidget(self._build_trend_group()) # Satır 3: Line chart
+ cl.addWidget(self._build_taseron_group()) # Satır 4: Taşeron tablosu
+
+ scroll.setWidget(content)
+ root.addWidget(scroll)
+
+ def _build_header(self) -> QWidget:
+ w = QWidget()
+ w.setStyleSheet("background: transparent;")
+ layout = QHBoxLayout(w)
+ layout.setContentsMargins(0, 0, 0, 0)
+
+ title = QLabel(" Business Intelligence Dashboard")
+ title.setStyleSheet(
+ "font-size: 16pt; font-weight: bold; color: #00BFFF; background: transparent;"
+ )
+ layout.addWidget(title)
+ layout.addStretch()
+
+ layout.addWidget(QLabel("Proje:"))
+
+ self.proje_combo = QComboBox()
+ self.proje_combo.addItem("Tüm Projeler", None)
+ self._load_projeler()
+ self.proje_combo.currentIndexChanged.connect(self._on_proje_changed)
+ layout.addWidget(self.proje_combo)
+
+ btn = QPushButton(" Yenile")
+ btn.setFixedWidth(90)
+ btn.clicked.connect(self.load_dashboard)
+ layout.addWidget(btn)
+
+ return w
+
+ def _build_kpi_group(self) -> QGroupBox:
+ group = QGroupBox("Ana Göstergeler")
+ grid = QGridLayout(group)
+ grid.setSpacing(10)
+
+ self.kpi_proje = KPICard("Toplam Proje", "—", "", "#4CAF50")
+ self.kpi_maliyet = KPICard("Toplam Maliyet", "—", "", "#2196F3")
+ self.kpi_kalem = KPICard("Toplam Kalem", "—", "", "#FF9800")
+ self.kpi_ort = KPICard("Ort. Maliyet", "—", "", "#9C27B0")
+ self.kpi_taseron = KPICard("Taşeron Sayısı", "—", "", "#F44336")
+ self.kpi_pahali = KPICard("En Pahalı Proje", "N/A", "", "#00BCD4")
+
+ for col, card in enumerate([self.kpi_proje, self.kpi_maliyet, self.kpi_kalem]):
+ grid.addWidget(card, 0, col)
+ for col, card in enumerate([self.kpi_ort, self.kpi_taseron, self.kpi_pahali]):
+ grid.addWidget(card, 1, col)
+
+ return group
+
+ def _build_charts_row(self) -> QHBoxLayout:
+ """Donut (sol) + HBar (sağ) yan yana."""
+ layout = QHBoxLayout()
+ layout.setSpacing(12)
+
+ # — Donut: Kategori Dağılımı —
+ donut_group = QGroupBox(" Kategori Bazlı Maliyet Dağılımı")
+ donut_layout = QVBoxLayout(donut_group)
+
+ self.donut_fig, self.donut_ax, self.donut_canvas = _make_dark_canvas(figsize=(5, 3.8))
+ if self.donut_canvas:
+ self.donut_canvas.setMinimumHeight(280)
+ donut_layout.addWidget(self.donut_canvas)
+ else:
+ donut_layout.addWidget(QLabel(" Matplotlib bulunamadı."))
+
+ layout.addWidget(donut_group, 5)
+
+ # — HBar: En Pahalı 5 Kalem —
+ bar_group = QGroupBox(" En Pahalı 5 İş Kalemi")
+ bar_layout = QVBoxLayout(bar_group)
+
+ self.bar_fig, self.bar_ax, self.bar_canvas = _make_dark_canvas(figsize=(5, 3.8))
+ if self.bar_canvas:
+ self.bar_canvas.setMinimumHeight(280)
+ bar_layout.addWidget(self.bar_canvas)
+ else:
+ bar_layout.addWidget(QLabel(" Matplotlib bulunamadı."))
+
+ layout.addWidget(bar_group, 5)
+
+ return layout
+
+ def _build_trend_group(self) -> QGroupBox:
+ """Tam genişlik aylık trend çizgi grafiği."""
+ group = QGroupBox(" Aylık Maliyet Trendi (Son 12 Ay)")
+ layout = QVBoxLayout(group)
+
+ self.line_fig, self.line_ax, self.line_canvas = _make_dark_canvas(figsize=(12, 3.2))
+ if self.line_canvas:
+ self.line_canvas.setMinimumHeight(220)
+ layout.addWidget(self.line_canvas)
+ else:
+ layout.addWidget(QLabel(" Matplotlib bulunamadı."))
+
+ return group
+
+ def _build_taseron_group(self) -> QGroupBox:
+ """Kompakt taşeron performans tablosu."""
+ group = QGroupBox(" Taşeron Performans Analizi")
+ layout = QVBoxLayout(group)
+
+ self.taseron_table = QTableWidget()
+ self.taseron_table.setColumnCount(3)
+ self.taseron_table.setHorizontalHeaderLabels(["Firma", "Ort. Teklif (₺)", "Teklif Sayısı"])
+ self.taseron_table.setAlternatingRowColors(True)
+ self.taseron_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+ self.taseron_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+ self.taseron_table.horizontalHeader().setStretchLastSection(True)
+ self.taseron_table.setMaximumHeight(200)
+ layout.addWidget(self.taseron_table)
+
+ return group
+
+ # ── Veri Yükleme ──────────────────────────────────────────────────────────
+
+ def _load_projeler(self):
+ try:
+ with self.db.get_connection() as conn:
+ rows = conn.execute(
+ "SELECT id, ad FROM projects WHERE durum='aktif' ORDER BY ad"
+ ).fetchall()
+ for r in rows:
+ self.proje_combo.addItem(r['ad'], r['id'])
+ except Exception as e:
+ logger.error(f"Proje combo yükleme hatası: {e}")
+
+ def _on_proje_changed(self, index: int):
+ self.current_proje_id = self.proje_combo.itemData(index)
+ self.load_dashboard()
+
+ def load_dashboard(self):
+ """Tüm grafik ve tabloları güncelle."""
+ try:
+ kpis = self.engine.get_dashboard_kpis(self.current_proje_id)
+ self.kpi_proje.update_deger(str(kpis['toplam_proje']))
+ self.kpi_maliyet.update_deger(f"{kpis['toplam_maliyet']:,.0f} ₺")
+ self.kpi_kalem.update_deger(str(kpis['toplam_kalem']))
+ self.kpi_ort.update_deger(f"{kpis['ortalama_maliyet']:,.0f} ₺")
+ self.kpi_taseron.update_deger(str(kpis['taseron_sayisi']))
+
+ if kpis['en_pahali_proje'] != 'N/A':
+ ad = kpis['en_pahali_proje']
+ kisalt = ad[:18] + ('…' if len(ad) > 18 else '')
+ self.kpi_pahali.update_deger(
+ f"{kisalt}\n{kpis['en_pahali_proje_maliyet']:,.0f} ₺"
+ )
+ else:
+ self.kpi_pahali.update_deger("N/A")
+
+ # Grafikleri güncelle
+ kat_data = self.engine.get_kategori_dagilimi(self.current_proje_id)
+ self._draw_donut(kat_data)
+
+ top_data = self.engine.get_top_kalemler(self.current_proje_id, limit=5)
+ self._draw_hbar(top_data)
+
+ trend_data = self.engine.get_aylik_trend(12, proje_id=self.current_proje_id)
+ self._draw_line(trend_data)
+
+ self._load_taseron()
+
+ except Exception as e:
+ logger.error(f"Dashboard yükleme hatası: {e}")
+
+ # ── Grafik Çizim Metodları ────────────────────────────────────────────────
+
+ def _draw_donut(self, data: list):
+ """
+ Donut (halka) grafiği — kategori bazlı maliyet dağılımı.
+
+ Neyi çözer?
+ Müteahhide paranın hangi kategoriye gittiğini
+ tek bakışta gösterir (Beton %42, Duvar %18 gibi).
+ """
+ if not self.donut_canvas or not data:
+ return
+ try:
+ _reset_ax(self.donut_fig, self.donut_ax)
+
+ # Maksimum 8 dilim — fazlasını "Diğer" olarak topla
+ sorted_data = sorted(data, key=lambda x: x['maliyet'], reverse=True)
+ if len(sorted_data) > 8:
+ top = sorted_data[:7]
+ diger = sum(d['maliyet'] for d in sorted_data[7:])
+ labels = [d['kategori'] for d in top] + ['Diğer']
+ vals = [d['maliyet'] for d in top] + [diger]
+ else:
+ labels = [d['kategori'] for d in sorted_data]
+ vals = [d['maliyet'] for d in sorted_data]
+
+ renk_list = (_COLORS * 3)[:len(labels)]
+
+ wedges, texts, autotexts = self.donut_ax.pie(
+ vals,
+ labels=None, # etiketler legend'da
+ autopct='%1.1f%%',
+ colors=renk_list,
+ startangle=90,
+ pctdistance=0.75,
+ wedgeprops=dict(width=0.55, edgecolor=_BG, linewidth=1.5)
+ )
+
+ # Yüzde metinleri
+ for at in autotexts:
+ at.set_color('white')
+ at.set_fontsize(7)
+ at.set_fontweight('bold')
+
+ # Merkez metin: toplam tutar
+ toplam = sum(vals)
+ self.donut_ax.text(
+ 0, 0,
+ f"Toplam\n{toplam:,.0f}₺",
+ ha='center', va='center',
+ fontsize=8, fontweight='bold',
+ color=_TITLE
+ )
+
+ # Legend (sağ tarafta)
+ self.donut_ax.legend(
+ wedges, labels,
+ loc='center left',
+ bbox_to_anchor=(1.02, 0.5),
+ fontsize=7,
+ frameon=True,
+ framealpha=0.15,
+ facecolor=_AX,
+ edgecolor=_GRID,
+ labelcolor=_TEXT
+ )
+
+ self.donut_ax.set_title(
+ 'Maliyet Kategorileri', fontsize=10,
+ fontweight='bold', color=_TITLE, pad=8
+ )
+
+ self.donut_fig.tight_layout(pad=1.0)
+ self.donut_canvas.draw()
+
+ except Exception as e:
+ logger.error(f"Donut çizim hatası: {e}")
+
+ def _draw_hbar(self, data: list):
+ """
+ Yatay çubuk grafik — en pahalı 5 iş kalemi.
+
+ Neyi çözer?
+ Bütçeyi en çok tüketen kalemleri vurgular.
+ Müteahhit bu kalemlerde pazarlık yapacağını bilir.
+ """
+ if not self.bar_canvas or not data:
+ return
+ try:
+ _reset_ax(self.bar_fig, self.bar_ax)
+
+ items = data[:5]
+ isimler = [
+ (d.get('tanim') or '')[:28] + ('…' if len(d.get('tanim', '')) > 28 else '')
+ for d in items
+ ]
+ toplamlar = [d.get('toplam', 0) for d in items]
+
+ # Cyan → koyu mavi gradyan
+ bar_colors = ['#00BFFF', '#0099cc', '#007799', '#005566', '#003344']
+ bars = self.bar_ax.barh(
+ isimler[::-1], toplamlar[::-1],
+ color=bar_colors[:len(items)],
+ height=0.55,
+ edgecolor=_BG, linewidth=0.8
+ )
+
+ # Değer etiketleri
+ max_val = max(toplamlar) if toplamlar else 1
+ for bar, val in zip(bars, toplamlar[::-1]):
+ offset = max_val * 0.01
+ self.bar_ax.text(
+ bar.get_width() + offset,
+ bar.get_y() + bar.get_height() / 2,
+ f'{val:,.0f} ₺',
+ va='center', ha='left',
+ fontsize=7, fontweight='bold', color=_TEXT
+ )
+
+ self.bar_ax.set_xlabel('Toplam Maliyet (₺)', fontsize=8, color='#888888')
+ self.bar_ax.set_title(
+ 'En Pahalı 5 İş Kalemi', fontsize=10,
+ fontweight='bold', color=_TITLE, pad=8
+ )
+ self.bar_ax.tick_params(colors=_TEXT, labelsize=7)
+ self.bar_ax.grid(axis='x', alpha=0.12, color=_GRID, linestyle='--')
+ for spine in self.bar_ax.spines.values():
+ spine.set_edgecolor(_GRID)
+ # X eksenini düzelt — etiketler için yer bırak
+ self.bar_ax.set_xlim(0, max_val * 1.22)
+
+ self.bar_fig.tight_layout(pad=1.0)
+ self.bar_canvas.draw()
+
+ except Exception as e:
+ logger.error(f"HBar çizim hatası: {e}")
+
+ def _draw_line(self, data: list):
+ """
+ Alan dolgulu çizgi grafik — aylık maliyet trendi.
+
+ Neyi çözer?
+ İşin büyüdüğünü mü küçüldüğünü mü görsel olarak kanıtlar.
+ Yatırımcıya veya bankaya gösterilebilir profesyonel trend grafiği.
+
+ Nasıl test edilir?
+ 12 aylık veri ile çağrıldığında çizgi + dolgu alanı görünmeli.
+ Veri yoksa "Veri bekleniyor..." mesajı görünmeli.
+ """
+ if not self.line_canvas:
+ return
+ try:
+ _reset_ax(self.line_fig, self.line_ax)
+
+ if not data:
+ self.line_ax.text(
+ 0.5, 0.5, 'Trend verisi bekleniyor…',
+ ha='center', va='center', transform=self.line_ax.transAxes,
+ fontsize=11, color='#555577'
+ )
+ self.line_canvas.draw()
+ return
+
+ aylar = [d['ay'] for d in data]
+ maliyetler = [d['toplam_maliyet'] for d in data]
+
+ # Çizgi + alan dolgu
+ self.line_ax.plot(
+ aylar, maliyetler,
+ color=_ACCENT, linewidth=2.2,
+ marker='o', markersize=5,
+ markerfacecolor=_ACCENT, markeredgecolor=_BG,
+ markeredgewidth=1.5,
+ zorder=3
+ )
+ self.line_ax.fill_between(
+ aylar, maliyetler,
+ color=_ACCENT, alpha=0.12
+ )
+
+ # Değer etiketleri (her noktanın üstüne)
+ for i, (ay, mal) in enumerate(zip(aylar, maliyetler)):
+ if mal > 0:
+ self.line_ax.annotate(
+ f'{mal:,.0f}₺',
+ (ay, mal),
+ textcoords='offset points', xytext=(0, 8),
+ ha='center', fontsize=6.5, color=_TEXT, fontweight='bold'
+ )
+
+ # Eksen stilleri
+ self.line_ax.set_ylabel('Toplam Maliyet (₺)', fontsize=8, color='#888888')
+ self.line_ax.set_title(
+ 'Aylık Maliyet Trendi — Son 12 Ay',
+ fontsize=10, fontweight='bold', color=_TITLE, pad=8
+ )
+ self.line_ax.tick_params(
+ axis='x', rotation=35, colors=_TEXT, labelsize=7
+ )
+ self.line_ax.tick_params(axis='y', colors=_TEXT, labelsize=7)
+ self.line_ax.grid(
+ axis='y', alpha=0.12, color=_GRID, linestyle='--'
+ )
+ for spine in self.line_ax.spines.values():
+ spine.set_edgecolor(_GRID)
+
+ # Sıfır değerleri gösterme
+ max_y = max(maliyetler) if maliyetler else 1
+ self.line_ax.set_ylim(bottom=0, top=max_y * 1.25)
+
+ self.line_fig.tight_layout(pad=1.0)
+ self.line_canvas.draw()
+
+ except Exception as e:
+ logger.error(f"Line chart çizim hatası: {e}")
+
+ def _load_taseron(self):
+ """Taşeron performans tablosunu doldur."""
+ try:
+ data = self.engine.get_taseron_karsilastirma(self.current_proje_id)
+ self.taseron_table.setRowCount(len(data))
+ for i, t in enumerate(data):
+ self.taseron_table.setItem(i, 0, QTableWidgetItem(t['firma']))
+ fiyat_item = QTableWidgetItem(f"{t['ortalama_fiyat']:,.2f}")
+ fiyat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+ self.taseron_table.setItem(i, 1, fiyat_item)
+ self.taseron_table.setItem(i, 2, QTableWidgetItem(str(t['teklif_sayisi'])))
+
+ # En ucuz taşeron → yeşil vurgu
+ if i == 0:
+ for col in range(3):
+ item = self.taseron_table.item(i, col)
+ if item:
+ item.setBackground(QColor(76, 175, 80, 40))
+ except Exception as e:
+ logger.error(f"Taşeron tablo yükleme hatası: {e}")

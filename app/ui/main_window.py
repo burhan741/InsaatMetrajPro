@@ -110,12 +110,14 @@ class InitialDataLoaderThread(QThread):
 class MainWindow(QMainWindow):
     """Ana uygulama penceresi"""
     
-    def __init__(self, db: Optional[DatabaseManager] = None, splash: Optional[Any] = None, user_type: str = 'muteahhit') -> None:
+    def __init__(self, db: Optional[DatabaseManager] = None, splash: Optional[Any] = None, user_type: str = 'muteahhit', selected_package: str = 'kurumsal', enabled_modules: list = None) -> None:
         """Ana pencereyi başlat"""
         super().__init__()
-        
+
         self.splash = splash
         self.user_type = user_type  # 'muteahhit' veya 'taseron'
+        self.selected_package = selected_package
+        self.enabled_modules = enabled_modules if enabled_modules is not None else []
         
         # Core modüller (hafif olanlar hemen yükle)
         # Eğer dışarıdan bir DatabaseManager verildiyse kullan, yoksa yenisini oluştur

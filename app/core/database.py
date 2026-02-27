@@ -12,3197 +12,3394 @@ from contextlib import contextmanager
 
 
 class DatabaseManager:
-    """
-    SQLite veritabanı yönetim sınıfı.
-    
-    Offline-first yaklaşım ile yerel veritabanı işlemlerini yönetir.
-    İleride online senkronizasyon için genişletilebilir yapı.
-    """
-    
-    def __init__(self, db_path: Optional[Path] = None) -> None:
-        """
-        Veritabanı yöneticisini başlat.
-        
-        Args:
-            db_path: Veritabanı dosya yolu. None ise varsayılan konum kullanılır.
-        """
-        if db_path is None:
-            # Varsayılan: proje kök dizininde
-            db_path = Path(__file__).parent.parent.parent / "data" / "insaat_metraj.db"
-        
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_database()
-        
-    @contextmanager
-    def get_connection(self):
-        """
-        Veritabanı bağlantısı context manager.
-        
-        Yields:
-            sqlite3.Connection: Veritabanı bağlantısı
-        """
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row  # Sözlük benzeri erişim
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-            
-    def _init_database(self) -> None:
-        """Veritabanı tablolarını oluştur."""
-        with self.get_connection() as conn:
-            # WAL mode aktif et (daha hızlı okuma/yazma)
-            conn.execute("PRAGMA journal_mode=WAL")
-            # Synchronous mode'u optimize et (güvenlik vs hız dengesi)
-            conn.execute("PRAGMA synchronous=NORMAL")
-            # Cache size artır (daha hızlı sorgular)
-            conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
-            # Foreign key kontrolünü aktif et
-            conn.execute("PRAGMA foreign_keys=ON")
-
-            # Schema versiyonu kontrolü - migration'ları tekrar çalıştırmayı önler
-            current_version = conn.execute("PRAGMA user_version").fetchone()[0]
-            SCHEMA_VERSION = 2
-            
-            cursor = conn.cursor()
-            
-            # Projeler tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ad TEXT NOT NULL,
-                    aciklama TEXT,
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    durum TEXT DEFAULT 'aktif',
-                    toplam_maliyet REAL DEFAULT 0,
-                    notlar TEXT
-                )
-            """)
-            
-            # Migration'lar sadece eski schema versiyonlarında çalışır
-            if current_version < 1:
-                try:
-                    cursor.execute("ALTER TABLE projects ADD COLUMN notlar TEXT")
-                except sqlite3.OperationalError:
-                    pass
-            
-            # Şablonlar tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS sablonlar (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ad TEXT NOT NULL,
-                    aciklama TEXT,
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT
-                )
-            """)
-            
-            # Şablon kalemleri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS sablon_kalemleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sablon_id INTEGER NOT NULL,
-                    poz_no TEXT,
-                    tanim TEXT NOT NULL,
-                    kategori TEXT,
-                    miktar REAL DEFAULT 0,
-                    birim TEXT,
-                    birim_fiyat REAL DEFAULT 0,
-                    toplam REAL DEFAULT 0,
-                    FOREIGN KEY (sablon_id) REFERENCES sablonlar(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Birim fiyatlar tablosu (poz bazlı, tarihli fiyat takibi)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS birim_fiyatlar (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    poz_id INTEGER,
-                    poz_no TEXT,
-                    birim_fiyat REAL NOT NULL,
-                    tarih TEXT NOT NULL,
-                    kaynak TEXT,
-                    aciklama TEXT,
-                    aktif INTEGER DEFAULT 1,
-                    FOREIGN KEY (poz_id) REFERENCES pozlar(id) ON DELETE SET NULL
-                )
-            """)
-            
-            # İhaleler tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ihaleler (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ad TEXT NOT NULL,
-                    aciklama TEXT,
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    durum TEXT DEFAULT 'hazirlaniyor'
-                )
-            """)
-            
-            # İhale kalemleri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ihale_kalemleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ihale_id INTEGER NOT NULL,
-                    poz_no TEXT,
-                    poz_tanim TEXT,
-                    kategori TEXT,
-                    birim_miktar REAL DEFAULT 0,
-                    birim TEXT,
-                    birim_fiyat REAL DEFAULT 0,
-                    toplam REAL DEFAULT 0,
-                    sira_no INTEGER,
-                    FOREIGN KEY (ihale_id) REFERENCES ihaleler(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Pozlar tablosu (Çevre ve Şehircilik Bakanlığı verileri için)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS pozlar (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    poz_no TEXT NOT NULL UNIQUE,
-                    tanim TEXT NOT NULL,
-                    birim TEXT NOT NULL,
-                    resmi_fiyat REAL DEFAULT 0,
-                    kategori TEXT,
-                    aciklama TEXT,
-                    fire_orani REAL DEFAULT 0.05,
-                    guncelleme_tarihi TEXT
-                )
-            """)
-            
-            if current_version < 1:
-                try:
-                    cursor.execute("ALTER TABLE pozlar ADD COLUMN fire_orani REAL DEFAULT 0.05")
-                except sqlite3.OperationalError:
-                    pass
-            
-            # Metraj kalemleri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS metraj_kalemleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER NOT NULL,
-                    poz_no TEXT,
-                    tanim TEXT NOT NULL,
-                    miktar REAL NOT NULL DEFAULT 0,
-                    birim TEXT NOT NULL,
-                    birim_fiyat REAL DEFAULT 0,
-                    toplam REAL DEFAULT 0,
-                    kategori TEXT,
-                    notlar TEXT,
-                    olusturma_tarihi TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Taşeron teklifleri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS taseron_teklifleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER NOT NULL,
-                    firma_adi TEXT NOT NULL,
-                    kalem_id INTEGER,
-                    poz_no TEXT,
-                    tanim TEXT,
-                    miktar REAL,
-                    birim TEXT,
-                    fiyat REAL NOT NULL,
-                    toplam REAL,
-                    teklif_tarihi TEXT,
-                    durum TEXT DEFAULT 'beklemede',
-                    notlar TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE,
-                    FOREIGN KEY (kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE SET NULL
-                )
-            """)
-            
-            # Malzemeler tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS malzemeler (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ad TEXT NOT NULL UNIQUE,
-                    birim TEXT NOT NULL,
-                    kategori TEXT,
-                    aciklama TEXT,
-                    birim_fiyat REAL DEFAULT 0,
-                    olusturma_tarihi TEXT
-                )
-            """)
-            
-            if current_version < 1:
-                try:
-                    cursor.execute("ALTER TABLE malzemeler ADD COLUMN birim_fiyat REAL DEFAULT 0")
-                except sqlite3.OperationalError:
-                    pass
-            
-            # Malzeme formülleri tablosu (Poz → Malzeme ilişkileri)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS malzeme_formulleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    poz_id INTEGER NOT NULL,
-                    malzeme_id INTEGER NOT NULL,
-                    miktar REAL NOT NULL,
-                    birim TEXT NOT NULL,
-                    formul_tipi TEXT DEFAULT 'direkt',
-                    aciklama TEXT,
-                    FOREIGN KEY (poz_id) REFERENCES pozlar(id) ON DELETE CASCADE,
-                    FOREIGN KEY (malzeme_id) REFERENCES malzemeler(id) ON DELETE CASCADE,
-                    UNIQUE(poz_id, malzeme_id)
-                )
-            """)
-            
-            # Birim dönüşümleri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS birim_donusumleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    malzeme_id INTEGER,
-                    kaynak_birim TEXT NOT NULL,
-                    hedef_birim TEXT NOT NULL,
-                    donusum_katsayisi REAL NOT NULL,
-                    FOREIGN KEY (malzeme_id) REFERENCES malzemeler(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Proje versiyonları tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS project_versions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    project_id INTEGER NOT NULL,
-                    version_name TEXT NOT NULL,
-                    version_number INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    created_by TEXT,
-                    description TEXT,
-                    snapshot_data TEXT NOT NULL,
-                    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-                    UNIQUE(project_id, version_number)
-                )
-            """)
-            
-            # İndeksler
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_projects_durum 
-                ON projects(durum)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_metraj_proje 
-                ON metraj_kalemleri(proje_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_taseron_proje 
-                ON taseron_teklifleri(proje_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_malzeme_formul_poz 
-                ON malzeme_formulleri(poz_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_malzeme_formul_malzeme 
-                ON malzeme_formulleri(malzeme_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_birim_fiyat_poz 
-                ON birim_fiyatlar(poz_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_birim_fiyat_poz_no 
-                ON birim_fiyatlar(poz_no)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_birim_fiyat_tarih 
-                ON birim_fiyatlar(tarih)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_ihale_kalem_ihale 
-                ON ihale_kalemleri(ihale_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_project_versions_project 
-                ON project_versions(project_id)
-            """)
-            
-            # Taşeron işleri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS taseron_isleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    is_adi TEXT NOT NULL,
-                    aciklama TEXT,
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    durum TEXT DEFAULT 'aktif'
-                )
-            """)
-            
-            # Taşeron personel tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS taseron_personel (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    is_id INTEGER NOT NULL,
-                    ad_soyad TEXT NOT NULL,
-                    gunluk_ucret REAL DEFAULT 0,
-                    saatlik_ucret REAL DEFAULT 0,
-                    olusturma_tarihi TEXT NOT NULL,
-                    FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Taşeron puantaj tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS taseron_puantaj (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    personel_id INTEGER NOT NULL,
-                    tarih TEXT NOT NULL,
-                    calisma_saati REAL DEFAULT 0,
-                    calisma_gunu INTEGER DEFAULT 0,
-                    toplam_ucret REAL DEFAULT 0,
-                    FOREIGN KEY (personel_id) REFERENCES taseron_personel(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Taşeron gelir/gider tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS taseron_gelir_gider (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    is_id INTEGER NOT NULL,
-                    tip TEXT NOT NULL,  -- 'gelir' veya 'gider'
-                    kategori TEXT NOT NULL,  -- 'yemek', 'malzeme', 'personel', 'is', vb.
-                    aciklama TEXT,
-                    tutar REAL NOT NULL,
-                    tarih TEXT NOT NULL,
-                    FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Taşeron iş birim fiyatları tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS taseron_is_birim_fiyat (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    is_id INTEGER NOT NULL,
-                    is_adi TEXT NOT NULL,
-                    birim TEXT NOT NULL,
-                    birim_fiyat REAL NOT NULL,
-                    miktar REAL DEFAULT 0,
-                    toplam REAL DEFAULT 0,
-                    FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # AI Metraj Öğrenme tablosu (Duvar yüksekliği öğrenme)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ai_metraj_ogrenme (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    katman_adi TEXT NOT NULL,
-                    duvar_yuksekligi REAL NOT NULL,
-                    birim TEXT DEFAULT 'm',
-                    kaynak TEXT DEFAULT 'kullanici',  -- 'kullanici', 'katman_ismi', 'text_entity'
-                    kullanici_duzeltmesi INTEGER DEFAULT 0,  -- 1 ise kullanıcı düzeltmesi
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    kullanim_sayisi INTEGER DEFAULT 1,
-                    UNIQUE(katman_adi)
-                )
-            """)
-            
-            # İndeksler
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_taseron_personel_is 
-                ON taseron_personel(is_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_taseron_puantaj_personel 
-                ON taseron_puantaj(personel_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_taseron_gelir_gider_is 
-                ON taseron_gelir_gider(is_id)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_taseron_gelir_gider_tarih 
-                ON taseron_gelir_gider(tarih)
-            """)
-            
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_ai_metraj_katman 
-                ON ai_metraj_ogrenme(katman_adi)
-            """)
-            
-            if current_version < 2:
-                try:
-                    cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_cinsi TEXT")
-                except sqlite3.OperationalError:
-                    pass
-                try:
-                    cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_kalinligi REAL")
-                except sqlite3.OperationalError:
-                    pass
-
-            # Enflasyon verileri tablosu (TÜFE/ÜFE verilerini saklar)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS enflasyon_verileri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tarih TEXT NOT NULL,
-                    tufe REAL,
-                    ufe REAL,
-                    aylik_tufe REAL,
-                    aylik_ufe REAL,
-                    yillik_tufe REAL,
-                    yillik_ufe REAL,
-                    kaynak TEXT DEFAULT 'TCMB',
-                    olusturma_tarihi TEXT NOT NULL,
-                    UNIQUE(tarih)
-                )
-            """)
-
-            # Fiyat farkı hesaplamaları tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS fiyat_farki_hesaplamalari (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER,
-                    metraj_kalem_id INTEGER,
-                    baslangic_fiyat REAL NOT NULL,
-                    baslangic_tarihi TEXT NOT NULL,
-                    bitis_tarihi TEXT NOT NULL,
-                    endeks_tipi TEXT DEFAULT 'TUFE',
-                    enflasyon_orani REAL,
-                    guncel_fiyat REAL,
-                    fark REAL,
-                    fark_yuzde REAL,
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE,
-                    FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Tedarikçiler tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tedarikci_listesi (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ad TEXT NOT NULL,
-                    api_url TEXT,
-                    api_key TEXT,
-                    aktif INTEGER DEFAULT 1,
-                    telefon TEXT,
-                    email TEXT,
-                    adres TEXT,
-                    notlar TEXT,
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT
-                )
-            """)
-
-            # Tedarikçi fiyatları tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tedarikci_fiyatlari (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tedarikci_id INTEGER NOT NULL,
-                    malzeme_kodu TEXT NOT NULL,
-                    malzeme_adi TEXT,
-                    birim TEXT,
-                    birim_fiyat REAL NOT NULL,
-                    kdv_orani REAL DEFAULT 20,
-                    minimum_miktar REAL DEFAULT 1,
-                    indirim_orani REAL DEFAULT 0,
-                    teslimat_suresi TEXT,
-                    stok_durumu TEXT,
-                    gecerlilik_tarihi TEXT,
-                    notlar TEXT,
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    FOREIGN KEY (tedarikci_id) REFERENCES tedarikci_listesi(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Tedarikçi fiyat karşılaştırmaları tablosu (geçmiş karşılaştırmaları saklar)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tedarikci_karsilastirma (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    malzeme_kodu TEXT NOT NULL,
-                    miktar REAL NOT NULL,
-                    en_ucuz_tedarikci_id INTEGER,
-                    en_ucuz_fiyat REAL,
-                    en_pahali_tedarikci_id INTEGER,
-                    en_pahali_fiyat REAL,
-                    tasarruf REAL,
-                    tasarruf_yuzde REAL,
-                    karsilastirma_tarihi TEXT NOT NULL,
-                    tedarikci_sayisi INTEGER,
-                    FOREIGN KEY (en_ucuz_tedarikci_id) REFERENCES tedarikci_listesi(id),
-                    FOREIGN KEY (en_pahali_tedarikci_id) REFERENCES tedarikci_listesi(id)
-                )
-            """)
-
-            # İndeksler - Enflasyon ve Tedarikçi
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_enflasyon_tarih
-                ON enflasyon_verileri(tarih)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_fiyat_farki_proje
-                ON fiyat_farki_hesaplamalari(proje_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_tedarikci_fiyat_tedarikci
-                ON tedarikci_fiyatlari(tedarikci_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_tedarikci_fiyat_malzeme
-                ON tedarikci_fiyatlari(malzeme_kodu)
-            """)
-
-            # Hakediş gerçekleşme tablosu (QR kod bazlı takip)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS hakedis_gerceklesme (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER NOT NULL,
-                    metraj_kalem_id INTEGER NOT NULL,
-                    gerceklesen_miktar REAL NOT NULL,
-                    aciklama TEXT,
-                    foto_path TEXT,
-                    konum TEXT,
-                    gerceklesme_tarihi TEXT NOT NULL,
-                    olusturan_kisi TEXT,
-                    onay_durumu TEXT DEFAULT 'beklemede',
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE,
-                    FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Hakediş dönemleri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS hakedis_donemleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER NOT NULL,
-                    donem_adi TEXT NOT NULL,
-                    baslangic_tarihi TEXT NOT NULL,
-                    bitis_tarihi TEXT NOT NULL,
-                    toplam_tutar REAL DEFAULT 0,
-                    onay_durumu TEXT DEFAULT 'hazirlaniyor',
-                    olusturma_tarihi TEXT NOT NULL,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-
-            # İndeksler - Hakediş
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_hakedis_gerceklesme_proje
-                ON hakedis_gerceklesme(proje_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_hakedis_gerceklesme_kalem
-                ON hakedis_gerceklesme(metraj_kalem_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_hakedis_donem_proje
-                ON hakedis_donemleri(proje_id)
-            """)
-
-            # ============================================
-            # SÜRDÜRÜLEBİLİRLİK MODÜLÜ TABLOLARI
-            # ============================================
-
-            # Malzeme karbon ayak izi tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS malzeme_karbon_ayakizi (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    malzeme_adi TEXT NOT NULL,
-                    kategori TEXT,
-                    karbon_faktor REAL NOT NULL,
-                    birim TEXT NOT NULL,
-                    kaynak TEXT,
-                    guncelleme_tarihi TEXT,
-                    UNIQUE(malzeme_adi, birim)
-                )
-            """)
-
-            # Enerji verileri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS enerji_verileri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER,
-                    yillik_tuketim_kwh REAL NOT NULL,
-                    toplam_alan_m2 REAL NOT NULL,
-                    enerji_sinifi TEXT,
-                    puan REAL,
-                    tarih TEXT NOT NULL,
-                    aciklama TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Atık yönetimi tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS atik_yonetimi (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER NOT NULL,
-                    atik_turu TEXT NOT NULL,
-                    miktar_ton REAL NOT NULL,
-                    geri_donusturuldu INTEGER DEFAULT 0,
-                    tehlikeli INTEGER DEFAULT 0,
-                    aciklama TEXT,
-                    tarih TEXT NOT NULL,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Sürdürülebilirlik hesaplama tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS surdurulebilirlik_hesaplama (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER NOT NULL,
-                    toplam_karbon_kg REAL,
-                    enerji_sinifi TEXT,
-                    geri_donusum_orani REAL,
-                    leed_puani REAL,
-                    leed_seviye TEXT,
-                    hesaplama_tarihi TEXT NOT NULL,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Yeşil sertifika kriterleri tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS yesil_sertifika_kriterleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER NOT NULL,
-                    sertifika_tipi TEXT NOT NULL,
-                    kategori TEXT NOT NULL,
-                    kriter_adi TEXT NOT NULL,
-                    puan REAL DEFAULT 0,
-                    max_puan REAL NOT NULL,
-                    durum TEXT DEFAULT 'beklemede',
-                    aciklama TEXT,
-                    tarih TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-
-            # İndeksler - Sürdürülebilirlik
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_enerji_proje
-                ON enerji_verileri(proje_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_atik_proje
-                ON atik_yonetimi(proje_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_surdurulebilirlik_proje
-                ON surdurulebilirlik_hesaplama(proje_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_yesil_sertifika_proje
-                ON yesil_sertifika_kriterleri(proje_id)
-            """)
-
-            # ============================================
-            # GANTT CHART VE CPM MODÜLÜ TABLOLARI
-            # ============================================
-
-            # İş programı header tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS is_programi (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER NOT NULL,
-                    baslangic_tarihi TEXT NOT NULL,
-                    bitis_tarihi TEXT NOT NULL,
-                    toplam_sure_gun INTEGER DEFAULT 0,
-                    kritik_yol_sure_gun INTEGER DEFAULT 0,
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-
-            # İş programı kalemleri (task) tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS is_programi_kalemleri (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    program_id INTEGER NOT NULL,
-                    ad TEXT NOT NULL,
-                    sure_gun INTEGER NOT NULL,
-                    baslangic_tarihi TEXT,
-                    bitis_tarihi TEXT,
-                    early_start TEXT,
-                    early_finish TEXT,
-                    late_start TEXT,
-                    late_finish TEXT,
-                    float_gun INTEGER DEFAULT 0,
-                    kritik INTEGER DEFAULT 0,
-                    ilerleme REAL DEFAULT 0,
-                    milestone INTEGER DEFAULT 0,
-                    kaynak TEXT,
-                    metraj_kalem_id INTEGER,
-                    aciklama TEXT,
-                    olusturma_tarihi TEXT DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (program_id) REFERENCES is_programi(id) ON DELETE CASCADE,
-                    FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE SET NULL
-                )
-            """)
-
-            # Bağımlılıklar tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS is_programi_bagimliliklar (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    program_id INTEGER NOT NULL,
-                    onceki_is_id INTEGER NOT NULL,
-                    sonraki_is_id INTEGER NOT NULL,
-                    bagimliluk_tipi TEXT DEFAULT 'FS',
-                    lag_gun INTEGER DEFAULT 0,
-                    FOREIGN KEY (program_id) REFERENCES is_programi(id) ON DELETE CASCADE,
-                    FOREIGN KEY (onceki_is_id) REFERENCES is_programi_kalemleri(id) ON DELETE CASCADE,
-                    FOREIGN KEY (sonraki_is_id) REFERENCES is_programi_kalemleri(id) ON DELETE CASCADE
-                )
-            """)
-
-            # İndeksler - Gantt Chart
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_is_programi_proje
-                ON is_programi(proje_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_is_programi_kalemleri_program
-                ON is_programi_kalemleri(program_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_is_programi_kalemleri_metraj
-                ON is_programi_kalemleri(metraj_kalem_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_is_programi_bagimliliklar_program
-                ON is_programi_bagimliliklar(program_id)
-            """)
-
-            # Temel Demir Listesi tablosu
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS temel_demir_listesi (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER,
-                    temel_tipi TEXT,           -- RADYE, BAG_KIRISI, KOLON_FILIZI
-                    temel_adi TEXT,            -- PL1, PL2, BK1, S001 vb.
-                    pozisyon_no TEXT,          -- P36, P37 vb.
-                    donati_tipi TEXT,          -- BOYUNA, ENINE, UST, ALT, SEHPA
-                    demir_capi INTEGER,        -- 8, 10, 12, 14, 16... (mm)
-                    demir_uzunlugu REAL,       -- cm
-                    demir_adeti INTEGER,
-                    aralik_cm REAL,            -- Donatı aralığı (varsa)
-                    toplam_uzunluk REAL,       -- adet × uzunluk (cm)
-                    toplam_uzunluk_m REAL,     -- metre cinsinden
-                    birim_agirlik REAL,        -- kg/m
-                    toplam_agirlik REAL,       -- kg
-                    kaynak TEXT DEFAULT 'DXF', -- DXF, MANUEL
-                    dxf_layer TEXT,            -- Hangi layer'dan okundu
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Temel Özet tablosu (Çapa göre gruplandırılmış özet)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS temel_demir_ozet (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proje_id INTEGER,
-                    demir_capi INTEGER,
-                    toplam_uzunluk_m REAL,
-                    toplam_agirlik_kg REAL,
-                    toplam_agirlik_ton REAL,
-                    adet_sayisi INTEGER,       -- Toplam kaç adet demir var
-                    olusturma_tarihi TEXT NOT NULL,
-                    guncelleme_tarihi TEXT,
-                    FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
-                )
-            """)
-
-            # İndeksler - Temel Demir
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_proje
-                ON temel_demir_listesi(proje_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_capi
-                ON temel_demir_listesi(demir_capi)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_poz
-                ON temel_demir_listesi(pozisyon_no)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_temel_demir_ozet_proje
-                ON temel_demir_ozet(proje_id)
-            """)
-
-            # Schema versiyonunu güncelle
-            if current_version < SCHEMA_VERSION:
-                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-
-            conn.commit()
-
-    # Proje İşlemleri
-    def create_project(self, ad: str, aciklama: str = "") -> int:
-        """
-        Yeni proje oluştur.
-        
-        Args:
-            ad: Proje adı
-            aciklama: Proje açıklaması
-            
-        Returns:
-            int: Oluşturulan projenin ID'si
-        """
-        now = datetime.now().isoformat()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO projects (ad, aciklama, olusturma_tarihi, guncelleme_tarihi)
-                VALUES (?, ?, ?, ?)
-            """, (ad, aciklama, now, now))
-            return cursor.lastrowid
-            
-    def get_all_projects(self) -> List[Dict[str, Any]]:
-        """
-        Tüm projeleri getir.
-        
-        Returns:
-            List[Dict]: Proje listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM projects 
-                ORDER BY olusturma_tarihi DESC
-            """)
-            return [dict(row) for row in cursor.fetchall()]
-            
-    def get_project(self, project_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Belirli bir projeyi getir.
-        
-        Args:
-            project_id: Proje ID'si
-            
-        Returns:
-            Optional[Dict]: Proje bilgileri veya None
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-            
-    def update_project(self, project_id: int, **kwargs) -> bool:
-        """
-        Projeyi güncelle.
-        
-        Args:
-            project_id: Proje ID'si
-            **kwargs: Güncellenecek alanlar
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        if not kwargs:
-            return False
-            
-        now = datetime.now().isoformat()
-        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-        fields += ", guncelleme_tarihi = ?"
-        values = list(kwargs.values()) + [now, project_id]
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"UPDATE projects SET {fields} WHERE id = ?", values)
-            return cursor.rowcount > 0
-            
-    def delete_project(self, project_id: int) -> bool:
-        """
-        Projeyi sil.
-        
-        Args:
-            project_id: Proje ID'si
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-            return cursor.rowcount > 0
-            
-    # Poz İşlemleri
-    def add_poz(self, poz_no: str, tanim: str, birim: str, 
-                resmi_fiyat: float = 0, kategori: str = "", fire_orani: float = 0.05) -> int:
-        """
-        Yeni poz ekle.
-        
-        Args:
-            poz_no: Poz numarası
-            tanim: Poz tanımı
-            birim: Birim (m, m², m³, adet, vb.)
-            resmi_fiyat: Resmi birim fiyat
-            kategori: Poz kategorisi
-            fire_orani: Fire/atık oranı (0.05 = %5, varsayılan)
-            
-        Returns:
-            int: Oluşturulan pozun ID'si
-        """
-        now = datetime.now().isoformat()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO pozlar (poz_no, tanim, birim, resmi_fiyat, kategori, fire_orani, guncelleme_tarihi)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (poz_no, tanim, birim, resmi_fiyat, kategori, fire_orani, now))
-                return cursor.lastrowid
-            except sqlite3.IntegrityError:
-                # Poz zaten varsa güncelle
-                cursor.execute("""
-                    UPDATE pozlar 
-                    SET tanim = ?, birim = ?, resmi_fiyat = ?, kategori = ?, fire_orani = ?, guncelleme_tarihi = ?
-                    WHERE poz_no = ?
-                """, (tanim, birim, resmi_fiyat, kategori, fire_orani, now, poz_no))
-                cursor.execute("SELECT id FROM pozlar WHERE poz_no = ?", (poz_no,))
-                return cursor.fetchone()['id']
-                
-    def get_poz(self, poz_no: str) -> Optional[Dict[str, Any]]:
-        """
-        Poz bilgilerini getir.
-        
-        Args:
-            poz_no: Poz numarası
-            
-        Returns:
-            Optional[Dict]: Poz bilgileri veya None
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM pozlar WHERE poz_no = ?", (poz_no,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-            
-    def search_pozlar(self, search_term: str) -> List[Dict[str, Any]]:
-        """
-        Poz arama.
-        
-        Args:
-            search_term: Arama terimi
-            
-        Returns:
-            List[Dict]: Bulunan pozlar
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM pozlar 
-                WHERE poz_no LIKE ? OR tanim LIKE ?
-                ORDER BY poz_no
-                LIMIT 100
-            """, (f"%{search_term}%", f"%{search_term}%"))
-            return [dict(row) for row in cursor.fetchall()]
-            
-    # Metraj Kalemleri İşlemleri
-    def add_metraj_kalem(self, proje_id: int, tanim: str, miktar: float,
-                         birim: str, birim_fiyat: float = 0, 
-                         poz_no: str = "", kategori: str = "") -> int:
-        """
-        Metraj kalemi ekle.
-        
-        Args:
-            proje_id: Proje ID'si
-            tanim: Kalem tanımı
-            miktar: Miktar
-            birim: Birim
-            birim_fiyat: Birim fiyat
-            poz_no: Poz numarası (opsiyonel)
-            kategori: Kategori
-            
-        Returns:
-            int: Oluşturulan kalemin ID'si
-        """
-        toplam = miktar * birim_fiyat
-        now = datetime.now().isoformat()
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO metraj_kalemleri 
-                (proje_id, poz_no, tanim, miktar, birim, birim_fiyat, toplam, kategori, olusturma_tarihi)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (proje_id, poz_no, tanim, miktar, birim, birim_fiyat, toplam, kategori, now))
-            
-            # Proje toplam maliyetini güncelle
-            self._update_project_total(conn, proje_id)
-            
-            return cursor.lastrowid
-            
-    def get_project_metraj(self, proje_id: int) -> List[Dict[str, Any]]:
-        """
-        Projeye ait metraj kalemlerini getir.
-        
-        Args:
-            proje_id: Proje ID'si
-            
-        Returns:
-            List[Dict]: Metraj kalemleri listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM metraj_kalemleri
-                WHERE proje_id = ?
-                ORDER BY kategori, tanim
-            """, (proje_id,))
-            return [dict(row) for row in cursor.fetchall()]
-            
-    def update_metraj_kalem(self, item_id: int, **kwargs) -> bool:
-        """
-        Metraj kalemini güncelle.
-        
-        Args:
-            item_id: Kalem ID'si
-            **kwargs: Güncellenecek alanlar
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        if not kwargs:
-            return False
-            
-        # Toplam hesapla (eğer toplam parametresi verilmişse onu kullan, yoksa otomatik hesapla)
-        if 'toplam' not in kwargs:
-            if 'miktar' in kwargs and 'birim_fiyat' in kwargs:
-                kwargs['toplam'] = kwargs['miktar'] * kwargs['birim_fiyat']
-            elif 'miktar' in kwargs or 'birim_fiyat' in kwargs:
-                # Mevcut değerleri al
-                with self.get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT miktar, birim_fiyat FROM metraj_kalemleri WHERE id = ?", (item_id,))
-                    row = cursor.fetchone()
-                    if row:
-                        miktar = kwargs.get('miktar', row['miktar'])
-                        birim_fiyat = kwargs.get('birim_fiyat', row['birim_fiyat'])
-                        kwargs['toplam'] = miktar * birim_fiyat
-                    
-        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-        values = list(kwargs.values()) + [item_id]
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"UPDATE metraj_kalemleri SET {fields} WHERE id = ?", values)
-            
-            # Proje toplamını güncelle
-            cursor.execute("SELECT proje_id FROM metraj_kalemleri WHERE id = ?", (item_id,))
-            row = cursor.fetchone()
-            if row:
-                self._update_project_total(conn, row['proje_id'])
-                
-            return cursor.rowcount > 0
-            
-    def delete_item(self, item_id: int) -> bool:
-        """
-        Metraj kalemini sil.
-        
-        Args:
-            item_id: Kalem ID'si
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            # Önce proje ID'sini al
-            cursor.execute("SELECT proje_id FROM metraj_kalemleri WHERE id = ?", (item_id,))
-            row = cursor.fetchone()
-            
-            if row:
-                proje_id = row['proje_id']
-                # Kalemi sil
-                cursor.execute("DELETE FROM metraj_kalemleri WHERE id = ?", (item_id,))
-                # Proje toplamını güncelle
-                self._update_project_total(conn, proje_id)
-                return cursor.rowcount > 0
-            return False
-            
-    def _update_project_total(self, conn: sqlite3.Connection, proje_id: int) -> None:
-        """Proje toplam maliyetini güncelle."""
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT SUM(toplam) as toplam FROM metraj_kalemleri
-            WHERE proje_id = ?
-        """, (proje_id,))
-        result = cursor.fetchone()
-        toplam = result['toplam'] if result['toplam'] else 0
-        
-        cursor.execute("""
-            UPDATE projects SET toplam_maliyet = ? WHERE id = ?
-        """, (toplam, proje_id))
-        
-    # Taşeron Teklifleri İşlemleri
-    def add_taseron_teklif(self, proje_id: int, firma_adi: str, 
-                           kalem_id: Optional[int], fiyat: float,
-                           poz_no: str = "", tanim: str = "",
-                           miktar: float = 0, birim: str = "") -> int:
-        """
-        Taşeron teklifi ekle.
-        
-        Args:
-            proje_id: Proje ID'si
-            firma_adi: Firma adı
-            kalem_id: Metraj kalemi ID'si (opsiyonel)
-            fiyat: Teklif fiyatı
-            poz_no: Poz numarası
-            tanim: Kalem tanımı
-            miktar: Miktar
-            birim: Birim
-            
-        Returns:
-            int: Oluşturulan teklifin ID'si
-        """
-        toplam = miktar * fiyat if miktar > 0 else fiyat
-        now = datetime.now().isoformat()
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO taseron_teklifleri
-                (proje_id, firma_adi, kalem_id, poz_no, tanim, miktar, birim, fiyat, toplam, teklif_tarihi)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (proje_id, firma_adi, kalem_id, poz_no, tanim, miktar, birim, fiyat, toplam, now))
-            return cursor.lastrowid
-            
-    def get_taseron_teklifleri(self, proje_id: int) -> List[Dict[str, Any]]:
-        """
-        Projeye ait taşeron tekliflerini getir.
-        
-        Args:
-            proje_id: Proje ID'si
-            
-        Returns:
-            List[Dict]: Taşeron teklifleri listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM taseron_teklifleri
-                WHERE proje_id = ?
-                ORDER BY firma_adi, tanim
-            """, (proje_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def update_taseron_teklif(self, offer_id: int, **kwargs) -> bool:
-        """
-        Taşeron teklifini güncelle.
-        
-        Args:
-            offer_id: Teklif ID'si
-            **kwargs: Güncellenecek alanlar
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        if not kwargs:
-            return False
-            
-        # Toplam hesapla
-        if 'miktar' in kwargs and 'fiyat' in kwargs:
-            kwargs['toplam'] = kwargs['miktar'] * kwargs['fiyat']
-        elif 'miktar' in kwargs or 'fiyat' in kwargs:
-            # Mevcut değerleri al
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT miktar, fiyat FROM taseron_teklifleri WHERE id = ?", (offer_id,))
-                row = cursor.fetchone()
-                if row:
-                    miktar = kwargs.get('miktar', row['miktar'])
-                    fiyat = kwargs.get('fiyat', row['fiyat'])
-                    kwargs['toplam'] = miktar * fiyat if miktar and fiyat else 0
-                    
-        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-        values = list(kwargs.values()) + [offer_id]
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"UPDATE taseron_teklifleri SET {fields} WHERE id = ?", values)
-            return cursor.rowcount > 0
-            
-    def delete_taseron_teklif(self, offer_id: int) -> bool:
-        """
-        Taşeron teklifini sil.
-        
-        Args:
-            offer_id: Teklif ID'si
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM taseron_teklifleri WHERE id = ?", (offer_id,))
-            return cursor.rowcount > 0
-    
-    # Malzeme İşlemleri
-    def add_malzeme(self, ad: str, birim: str, kategori: str = "", aciklama: str = "", birim_fiyat: float = 0.0) -> int:
-        """
-        Yeni malzeme ekle.
-        
-        Args:
-            ad: Malzeme adı
-            birim: Birim (kg, m³, adet, vb.)
-            kategori: Malzeme kategorisi
-            aciklama: Açıklama
-            birim_fiyat: Birim fiyat (varsayılan 0)
-            
-        Returns:
-            int: Oluşturulan malzemenin ID'si
-        """
-        now = datetime.now().isoformat()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO malzemeler (ad, birim, kategori, aciklama, birim_fiyat, olusturma_tarihi)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (ad, birim, kategori, aciklama, birim_fiyat, now))
-                return cursor.lastrowid
-            except sqlite3.IntegrityError:
-                # Malzeme zaten varsa güncelle (birim fiyat hariç)
-                cursor.execute("""
-                    UPDATE malzemeler 
-                    SET birim = ?, kategori = ?, aciklama = ?
-                    WHERE ad = ? AND birim_fiyat = 0
-                """, (birim, kategori, aciklama, ad))
-                cursor.execute("SELECT id FROM malzemeler WHERE ad = ?", (ad,))
-                row = cursor.fetchone()
-                return row['id'] if row else 0
-                
-    def get_malzeme(self, malzeme_id: int) -> Optional[Dict[str, Any]]:
-        """Malzeme bilgilerini getir."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM malzemeler WHERE id = ?", (malzeme_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-            
-    def get_malzeme_by_name(self, ad: str) -> Optional[Dict[str, Any]]:
-        """Malzeme adına göre getir."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM malzemeler WHERE ad = ?", (ad,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-            
-    def get_all_malzemeler(self) -> List[Dict[str, Any]]:
-        """Tüm malzemeleri getir."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM malzemeler ORDER BY kategori, ad")
-            return [dict(row) for row in cursor.fetchall()]
-    
-    # Malzeme Formülü İşlemleri
-    def add_malzeme_formulu(self, poz_id: int, malzeme_id: int, miktar: float, 
-                           birim: str, formul_tipi: str = "direkt", aciklama: str = "") -> int:
-        """
-        Poz için malzeme formülü ekle.
-        
-        Args:
-            poz_id: Poz ID'si
-            malzeme_id: Malzeme ID'si
-            miktar: Birim poz başına malzeme miktarı
-            birim: Malzeme birimi
-            formul_tipi: Formül tipi (direkt, harç, beton_karisimi, vb.)
-            aciklama: Açıklama
-            
-        Returns:
-            int: Oluşturulan formülün ID'si
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("""
-                    INSERT INTO malzeme_formulleri 
-                    (poz_id, malzeme_id, miktar, birim, formul_tipi, aciklama)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (poz_id, malzeme_id, miktar, birim, formul_tipi, aciklama))
-                return cursor.lastrowid
-            except sqlite3.IntegrityError:
-                # Formül zaten varsa güncelle
-                cursor.execute("""
-                    UPDATE malzeme_formulleri 
-                    SET miktar = ?, birim = ?, formul_tipi = ?, aciklama = ?
-                    WHERE poz_id = ? AND malzeme_id = ?
-                """, (miktar, birim, formul_tipi, aciklama, poz_id, malzeme_id))
-                cursor.execute("""
-                    SELECT id FROM malzeme_formulleri 
-                    WHERE poz_id = ? AND malzeme_id = ?
-                """, (poz_id, malzeme_id))
-                row = cursor.fetchone()
-                return row['id'] if row else 0
-                
-    def get_poz_formulleri(self, poz_id: int) -> List[Dict[str, Any]]:
-        """
-        Poz için malzeme formüllerini getir.
-        
-        Args:
-            poz_id: Poz ID'si
-            
-        Returns:
-            List[Dict]: Formül listesi (malzeme bilgileri dahil)
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 
-                    mf.id,
-                    mf.poz_id,
-                    mf.malzeme_id,
-                    mf.miktar,
-                    mf.birim,
-                    mf.formul_tipi,
-                    mf.aciklama,
-                    m.ad as malzeme_adi,
-                    m.birim as malzeme_birim,
-                    m.kategori as malzeme_kategori
-                FROM malzeme_formulleri mf
-                JOIN malzemeler m ON mf.malzeme_id = m.id
-                WHERE mf.poz_id = ?
-                ORDER BY m.kategori, m.ad
-            """, (poz_id,))
-            return [dict(row) for row in cursor.fetchall()]
-            
-    def get_poz_formulleri_by_poz_no(self, poz_no: str) -> List[Dict[str, Any]]:
-        """Poz numarasına göre formülleri getir."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 
-                    mf.id,
-                    mf.poz_id,
-                    mf.malzeme_id,
-                    mf.miktar,
-                    mf.birim,
-                    mf.formul_tipi,
-                    mf.aciklama,
-                    m.ad as malzeme_adi,
-                    m.birim as malzeme_birim,
-                    m.kategori as malzeme_kategori
-                FROM malzeme_formulleri mf
-                JOIN malzemeler m ON mf.malzeme_id = m.id
-                JOIN pozlar p ON mf.poz_id = p.id
-                WHERE p.poz_no = ?
-                ORDER BY m.kategori, m.ad
-            """, (poz_no,))
-            return [dict(row) for row in cursor.fetchall()]
-    
-    # Birim Dönüşüm İşlemleri
-    def add_birim_donusum(self, malzeme_id: Optional[int], kaynak_birim: str, 
-                         hedef_birim: str, donusum_katsayisi: float) -> int:
-        """Birim dönüşümü ekle."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO birim_donusumleri 
-                (malzeme_id, kaynak_birim, hedef_birim, donusum_katsayisi)
-                VALUES (?, ?, ?, ?)
-            """, (malzeme_id, kaynak_birim, hedef_birim, donusum_katsayisi))
-            return cursor.lastrowid
-            
-    def get_birim_donusum(self, kaynak_birim: str, hedef_birim: str, 
-                         malzeme_id: Optional[int] = None) -> Optional[float]:
-        """Birim dönüşüm katsayısını getir."""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            if malzeme_id:
-                cursor.execute("""
-                    SELECT donusum_katsayisi FROM birim_donusumleri
-                    WHERE malzeme_id = ? AND kaynak_birim = ? AND hedef_birim = ?
-                """, (malzeme_id, kaynak_birim, hedef_birim))
-            else:
-                cursor.execute("""
-                    SELECT donusum_katsayisi FROM birim_donusumleri
-                    WHERE malzeme_id IS NULL AND kaynak_birim = ? AND hedef_birim = ?
-                """, (kaynak_birim, hedef_birim))
-            row = cursor.fetchone()
-            return row['donusum_katsayisi'] if row else None
-    
-    # Yedekleme ve Geri Yükleme İşlemleri
-    def backup_project(self, project_id: int, backup_path: Path) -> bool:
-        """
-        Projeyi yedekle (JSON formatında).
-        
-        Args:
-            project_id: Yedeklenecek proje ID'si
-            backup_path: Yedek dosyasının kaydedileceği yol
-            
-        Returns:
-            bool: Başarılı ise True
-        """
-        try:
-            # Proje bilgilerini al
-            project = self.get_project(project_id)
-            if not project:
-                return False
-            
-            # Metraj kalemlerini al
-            metraj_items = self.get_project_metraj(project_id)
-            
-            # Taşeron tekliflerini al
-            taseron_offers = self.get_taseron_teklifleri(project_id)
-            
-            # Yedek verisi oluştur
-            backup_data = {
-                'version': '1.0',
-                'backup_date': datetime.now().isoformat(),
-                'project': dict(project),
-                'metraj_items': [dict(item) for item in metraj_items],
-                'taseron_offers': [dict(offer) for offer in taseron_offers],
-                'taseron_teklifleri': [dict(offer) for offer in taseron_offers]  # Uyumluluk için
-            }
-            
-            # JSON dosyasına kaydet
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(backup_path, 'w', encoding='utf-8') as f:
-                json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            
-            return True
-            
-        except Exception as e:
-            print(f"Yedekleme hatası: {e}")
-            return False
-    
-    def restore_project(self, backup_path: Path, new_project_name: Optional[str] = None) -> Optional[int]:
-        """
-        Yedekten proje geri yükle.
-        
-        Args:
-            backup_path: Yedek dosyasının yolu
-            new_project_name: Yeni proje adı (None ise eski ad kullanılır)
-            
-        Returns:
-            Optional[int]: Geri yüklenen projenin ID'si, hata durumunda None
-        """
-        try:
-            # Yedek dosyasını oku
-            with open(backup_path, 'r', encoding='utf-8') as f:
-                backup_data = json.load(f)
-            
-            # Proje bilgilerini al
-            project_data = backup_data.get('project', {})
-            metraj_items = backup_data.get('metraj_items', [])
-            # Uyumluluk için hem 'taseron_offers' hem 'taseron_teklifleri' kontrol et
-            taseron_offers = backup_data.get('taseron_offers', backup_data.get('taseron_teklifleri', []))
-            
-            # Yeni proje oluştur
-            project_name = new_project_name or project_data.get('ad', 'Geri Yüklenen Proje')
-            project_id = self.create_project(
-                ad=project_name,
-                aciklama=project_data.get('aciklama', '')
-            )
-            
-            # Metraj kalemlerini geri yükle
-            for item in metraj_items:
-                try:
-                    self.add_item(
-                        proje_id=project_id,
-                        poz_no=item.get('poz_no', ''),
-                        tanim=item.get('tanim', ''),
-                        kategori=item.get('kategori', ''),
-                        miktar=item.get('miktar', 0),
-                        birim=item.get('birim', ''),
-                        birim_fiyat=item.get('birim_fiyat', 0),
-                        toplam=item.get('toplam', 0)
-                    )
-                except Exception as e:
-                    print(f"Metraj kalemi geri yükleme hatası: {e}")
-                    continue
-            
-            # Taşeron tekliflerini geri yükle
-            for offer in taseron_offers:
-                try:
-                    # Önce kalem ID'sini bul (poz_no'ya göre)
-                    kalem_id = None
-                    if offer.get('poz_no'):
-                        metraj = self.get_project_metraj(project_id)
-                        for item in metraj:
-                            if item.get('poz_no') == offer.get('poz_no'):
-                                kalem_id = item.get('id')
-                                break
-                    
-                    self.add_taseron_teklif(
-                        proje_id=project_id,
-                        firma_adi=offer.get('firma_adi', ''),
-                        kalem_id=kalem_id,
-                        fiyat=offer.get('fiyat', 0),
-                        poz_no=offer.get('poz_no', ''),
-                        tanim=offer.get('tanim', ''),
-                        miktar=offer.get('miktar', 0),
-                        birim=offer.get('birim', '')
-                    )
-                except Exception as e:
-                    print(f"Taşeron teklifi geri yükleme hatası: {e}")
-                    continue
-            
-            return project_id
-            
-        except Exception as e:
-            print(f"Geri yükleme hatası: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
-    def backup_all_projects(self, backup_path: Path) -> bool:
-        """
-        Tüm projeleri yedekle.
-        
-        Args:
-            backup_path: Yedek dosyasının kaydedileceği yol
-            
-        Returns:
-            bool: Başarılı ise True
-        """
-        try:
-            projects = self.get_all_projects()
-            backup_data = {
-                'version': '1.0',
-                'backup_date': datetime.now().isoformat(),
-                'backup_type': 'all_projects',
-                'projects': []
-            }
-            
-            for project in projects:
-                project_id = project['id']
-                project_backup = {
-                    'project': dict(project),
-                    'metraj_items': [dict(item) for item in self.get_project_metraj(project_id)],
-                    'taseron_offers': [dict(offer) for offer in self.get_taseron_teklifleri(project_id)]
-                }
-                backup_data['projects'].append(project_backup)
-            
-            # JSON dosyasına kaydet
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(backup_path, 'w', encoding='utf-8') as f:
-                json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            
-            return True
-            
-        except Exception as e:
-            print(f"Tüm projeleri yedekleme hatası: {e}")
-            return False
-    
-    # Şablon İşlemleri
-    def create_template(self, ad: str, aciklama: str = "") -> int:
-        """
-        Yeni şablon oluştur.
-        
-        Args:
-            ad: Şablon adı
-            aciklama: Şablon açıklaması
-            
-        Returns:
-            int: Oluşturulan şablonun ID'si
-        """
-        now = datetime.now().isoformat()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO sablonlar (ad, aciklama, olusturma_tarihi, guncelleme_tarihi)
-                VALUES (?, ?, ?, ?)
-            """, (ad, aciklama, now, now))
-            return cursor.lastrowid
-    
-    def get_all_templates(self) -> List[Dict[str, Any]]:
-        """
-        Tüm şablonları getir.
-        
-        Returns:
-            List[Dict]: Şablon listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM sablonlar
-                ORDER BY olusturma_tarihi DESC
-            """)
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def get_template(self, template_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Şablon bilgilerini getir.
-        
-        Args:
-            template_id: Şablon ID'si
-            
-        Returns:
-            Optional[Dict]: Şablon bilgileri
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM sablonlar WHERE id = ?", (template_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def get_template_items(self, template_id: int) -> List[Dict[str, Any]]:
-        """
-        Şablon kalemlerini getir.
-        
-        Args:
-            template_id: Şablon ID'si
-            
-        Returns:
-            List[Dict]: Şablon kalemleri listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM sablon_kalemleri
-                WHERE sablon_id = ?
-                ORDER BY id
-            """, (template_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def add_template_item(self, sablon_id: int, poz_no: str = "", tanim: str = "",
-                         kategori: str = "", miktar: float = 0, birim: str = "",
-                         birim_fiyat: float = 0, toplam: float = 0) -> int:
-        """
-        Şablona kalem ekle.
-        
-        Args:
-            sablon_id: Şablon ID'si
-            poz_no: Poz numarası
-            tanim: Kalem tanımı
-            kategori: Kategori
-            miktar: Miktar
-            birim: Birim
-            birim_fiyat: Birim fiyat
-            toplam: Toplam
-            
-        Returns:
-            int: Eklenen kalemin ID'si
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO sablon_kalemleri 
-                (sablon_id, poz_no, tanim, kategori, miktar, birim, birim_fiyat, toplam)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (sablon_id, poz_no, tanim, kategori, miktar, birim, birim_fiyat, toplam))
-            return cursor.lastrowid
-    
-    def create_project_from_template(self, template_id: int, project_name: str, 
-                                    project_description: str = "") -> Optional[int]:
-        """
-        Şablondan proje oluştur.
-        
-        Args:
-            template_id: Şablon ID'si
-            project_name: Yeni proje adı
-            project_description: Yeni proje açıklaması
-            
-        Returns:
-            Optional[int]: Oluşturulan projenin ID'si
-        """
-        try:
-            # Yeni proje oluştur
-            project_id = self.create_project(project_name, project_description)
-            
-            # Şablon kalemlerini al
-            template_items = self.get_template_items(template_id)
-            
-            # Kalemleri projeye ekle
-            for item in template_items:
-                self.add_item(
-                    proje_id=project_id,
-                    poz_no=item.get('poz_no', ''),
-                    tanim=item.get('tanim', ''),
-                    kategori=item.get('kategori', ''),
-                    miktar=item.get('miktar', 0),
-                    birim=item.get('birim', ''),
-                    birim_fiyat=item.get('birim_fiyat', 0),
-                    toplam=item.get('toplam', 0)
-                )
-            
-            return project_id
-            
-        except Exception as e:
-            print(f"Şablondan proje oluşturma hatası: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
-    def create_template_from_project(self, project_id: int, template_name: str, 
-                                    template_description: str = "") -> Optional[int]:
-        """
-        Projeden şablon oluştur.
-        
-        Args:
-            project_id: Proje ID'si
-            template_name: Şablon adı
-            template_description: Şablon açıklaması
-            
-        Returns:
-            Optional[int]: Oluşturulan şablonun ID'si
-        """
-        try:
-            # Yeni şablon oluştur
-            template_id = self.create_template(template_name, template_description)
-            
-            # Proje kalemlerini al
-            project_items = self.get_project_metraj(project_id)
-            
-            # Kalemleri şablona ekle
-            for item in project_items:
-                self.add_template_item(
-                    sablon_id=template_id,
-                    poz_no=item.get('poz_no', ''),
-                    tanim=item.get('tanim', ''),
-                    kategori=item.get('kategori', ''),
-                    miktar=item.get('miktar', 0),
-                    birim=item.get('birim', ''),
-                    birim_fiyat=item.get('birim_fiyat', 0),
-                    toplam=item.get('toplam', 0)
-                )
-            
-            return template_id
-            
-        except Exception as e:
-            print(f"Projeden şablon oluşturma hatası: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
-    def delete_template(self, template_id: int) -> bool:
-        """
-        Şablonu sil.
-        
-        Args:
-            template_id: Şablon ID'si
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM sablonlar WHERE id = ?", (template_id,))
-            return cursor.rowcount > 0
-    
-    def update_template(self, template_id: int, **kwargs) -> bool:
-        """
-        Şablonu güncelle.
-        
-        Args:
-            template_id: Şablon ID'si
-            **kwargs: Güncellenecek alanlar
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        if not kwargs:
-            return False
-            
-        now = datetime.now().isoformat()
-        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-        fields += ", guncelleme_tarihi = ?"
-        values = list(kwargs.values()) + [now, template_id]
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"UPDATE sablonlar SET {fields} WHERE id = ?", values)
-            return cursor.rowcount > 0
-    
-    def get_template_item(self, item_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Şablon kalemi bilgilerini getir.
-        
-        Args:
-            item_id: Kalem ID'si
-            
-        Returns:
-            Optional[Dict]: Kalem bilgileri
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM sablon_kalemleri WHERE id = ?", (item_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def update_template_item(self, item_id: int, **kwargs) -> bool:
-        """
-        Şablon kalemini güncelle.
-        
-        Args:
-            item_id: Kalem ID'si
-            **kwargs: Güncellenecek alanlar
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        if not kwargs:
-            return False
-        
-        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-        values = list(kwargs.values()) + [item_id]
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"UPDATE sablon_kalemleri SET {fields} WHERE id = ?", values)
-            return cursor.rowcount > 0
-    
-    def delete_template_item(self, item_id: int) -> bool:
-        """
-        Şablon kalemini sil.
-        
-        Args:
-            item_id: Kalem ID'si
-            
-        Returns:
-            bool: Başarı durumu
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM sablon_kalemleri WHERE id = ?", (item_id,))
-            return cursor.rowcount > 0
-    
-    def copy_template(self, template_id: int, new_name: str, new_description: str = "") -> Optional[int]:
-        """
-        Şablonu kopyala.
-        
-        Args:
-            template_id: Kopyalanacak şablon ID'si
-            new_name: Yeni şablon adı
-            new_description: Yeni şablon açıklaması
-            
-        Returns:
-            Optional[int]: Yeni şablonun ID'si
-        """
-        try:
-            # Orijinal şablonu al
-            original_template = self.get_template(template_id)
-            if not original_template:
-                return None
-            
-            # Yeni şablon oluştur
-            new_template_id = self.create_template(new_name, new_description or original_template.get('aciklama', ''))
-            
-            # Kalemleri kopyala
-            items = self.get_template_items(template_id)
-            for item in items:
-                self.add_template_item(
-                    sablon_id=new_template_id,
-                    poz_no=item.get('poz_no', ''),
-                    tanim=item.get('tanim', ''),
-                    kategori=item.get('kategori', ''),
-                    miktar=item.get('miktar', 0),
-                    birim=item.get('birim', ''),
-                    birim_fiyat=item.get('birim_fiyat', 0),
-                    toplam=item.get('toplam', 0)
-                )
-            
-            return new_template_id
-            
-        except Exception as e:
-            print(f"Şablon kopyalama hatası: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
-    def get_all_kategoriler(self) -> List[str]:
-        """
-        Tüm kategorileri getir (projelerden ve şablonlardan).
-        
-        Returns:
-            List[str]: Kategori listesi
-        """
-        kategoriler = set()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            # Projelerden kategoriler
-            cursor.execute("SELECT DISTINCT kategori FROM metraj WHERE kategori IS NOT NULL AND kategori != ''")
-            for row in cursor.fetchall():
-                kategoriler.add(row[0])
-            # Şablonlardan kategoriler
-            cursor.execute("SELECT DISTINCT kategori FROM sablon_kalemleri WHERE kategori IS NOT NULL AND kategori != ''")
-            for row in cursor.fetchall():
-                kategoriler.add(row[0])
-        return sorted(list(kategoriler))
-    
-    def get_items_by_kategoriler(self, kategoriler: List[str]) -> List[Dict[str, Any]]:
-        """
-        Belirtilen kategorilerdeki kalemleri getir (projelerden ve şablonlardan).
-        
-        Args:
-            kategoriler: Kategori listesi
-            
-        Returns:
-            List[Dict]: Kalem listesi
-        """
-        if not kategoriler:
-            return []
-        
-        items = []
-        placeholders = ','.join(['?'] * len(kategoriler))
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            # Projelerden kalemler
-            cursor.execute(f"""
-                SELECT DISTINCT poz_no, tanim, kategori, birim, 
-                       (SELECT birim_fiyat FROM birim_fiyatlar 
-                        WHERE birim_fiyatlar.poz_no = metraj.poz_no 
-                        AND birim_fiyatlar.aktif = 1 
-                        ORDER BY tarih DESC LIMIT 1) as birim_fiyat
-                FROM metraj
-                WHERE kategori IN ({placeholders})
-            """, kategoriler)
-            
-            for row in cursor.fetchall():
-                items.append({
-                    'poz_no': row[0] or '',
-                    'tanim': row[1] or '',
-                    'kategori': row[2] or '',
-                    'birim': row[3] or '',
-                    'birim_fiyat': row[4] or 0.0
-                })
-            
-            # Şablonlardan kalemler
-            cursor.execute(f"""
-                SELECT DISTINCT poz_no, tanim, kategori, birim, birim_fiyat
-                FROM sablon_kalemleri
-                WHERE kategori IN ({placeholders})
-            """, kategoriler)
-            
-            for row in cursor.fetchall():
-                # Aynı poz_no varsa atla
-                if not any(item.get('poz_no') == (row[0] or '') for item in items):
-                    items.append({
-                        'poz_no': row[0] or '',
-                        'tanim': row[1] or '',
-                        'kategori': row[2] or '',
-                        'birim': row[3] or '',
-                        'birim_fiyat': row[4] or 0.0
-                    })
-        
-        return items
-    
-    # Birim Fiyat İşlemleri
-    def add_birim_fiyat(self, poz_id: Optional[int] = None, poz_no: str = "",
-                       birim_fiyat: float = 0, tarih: Optional[str] = None,
-                       kaynak: str = "", aciklama: str = "", aktif: bool = True) -> int:
-        """
-        Birim fiyat ekle.
-        
-        Args:
-            poz_id: Poz ID'si (opsiyonel)
-            poz_no: Poz numarası
-            birim_fiyat: Birim fiyat
-            tarih: Tarih (None ise bugün)
-            kaynak: Fiyat kaynağı (ör: "Tedarikçi A", "Resmi Fiyat")
-            aciklama: Açıklama
-            aktif: Aktif mi (varsayılan: True)
-            
-        Returns:
-            int: Eklenen fiyatın ID'si
-        """
-        if tarih is None:
-            tarih = datetime.now().isoformat()
-        
-        # Eğer poz_id yoksa ama poz_no varsa, poz_id'yi bul
-        if not poz_id and poz_no:
-            poz = self.get_poz_by_no(poz_no)
-            if poz:
-                poz_id = poz['id']
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            # Yeni fiyat eklendiğinde eski fiyatları pasif yap (aynı poz için)
-            if poz_id:
-                cursor.execute("""
-                    UPDATE birim_fiyatlar SET aktif = 0
-                    WHERE poz_id = ? AND aktif = 1
-                """, (poz_id,))
-            elif poz_no:
-                cursor.execute("""
-                    UPDATE birim_fiyatlar SET aktif = 0
-                    WHERE poz_no = ? AND aktif = 1
-                """, (poz_no,))
-            
-            # Yeni fiyatı ekle
-            cursor.execute("""
-                INSERT INTO birim_fiyatlar 
-                (poz_id, poz_no, birim_fiyat, tarih, kaynak, aciklama, aktif)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (poz_id, poz_no, birim_fiyat, tarih, kaynak, aciklama, 1 if aktif else 0))
-            return cursor.lastrowid
-    
-    def get_birim_fiyat(self, poz_id: Optional[int] = None, poz_no: str = "",
-                        aktif_only: bool = True) -> Optional[Dict[str, Any]]:
-        """
-        Poz için aktif birim fiyatı getir.
-        
-        Args:
-            poz_id: Poz ID'si
-            poz_no: Poz numarası
-            aktif_only: Sadece aktif fiyatları getir
-            
-        Returns:
-            Optional[Dict]: Birim fiyat bilgisi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            if poz_id:
-                if aktif_only:
-                    cursor.execute("""
-                        SELECT * FROM birim_fiyatlar
-                        WHERE poz_id = ? AND aktif = 1
-                        ORDER BY tarih DESC
-                        LIMIT 1
-                    """, (poz_id,))
-                else:
-                    cursor.execute("""
-                        SELECT * FROM birim_fiyatlar
-                        WHERE poz_id = ?
-                        ORDER BY tarih DESC
-                        LIMIT 1
-                    """, (poz_id,))
-            elif poz_no:
-                if aktif_only:
-                    cursor.execute("""
-                        SELECT * FROM birim_fiyatlar
-                        WHERE poz_no = ? AND aktif = 1
-                        ORDER BY tarih DESC
-                        LIMIT 1
-                    """, (poz_no,))
-                else:
-                    cursor.execute("""
-                        SELECT * FROM birim_fiyatlar
-                        WHERE poz_no = ?
-                        ORDER BY tarih DESC
-                        LIMIT 1
-                    """, (poz_no,))
-            else:
-                return None
-            
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def get_birim_fiyat_gecmisi(self, poz_id: Optional[int] = None, poz_no: str = "",
-                                limit: int = 50) -> List[Dict[str, Any]]:
-        """
-        Poz için fiyat geçmişini getir.
-        
-        Args:
-            poz_id: Poz ID'si
-            poz_no: Poz numarası
-            limit: Maksimum kayıt sayısı
-            
-        Returns:
-            List[Dict]: Fiyat geçmişi listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            if poz_id:
-                cursor.execute("""
-                    SELECT * FROM birim_fiyatlar
-                    WHERE poz_id = ?
-                    ORDER BY tarih DESC
-                    LIMIT ?
-                """, (poz_id, limit))
-            elif poz_no:
-                cursor.execute("""
-                    SELECT * FROM birim_fiyatlar
-                    WHERE poz_no = ?
-                    ORDER BY tarih DESC
-                    LIMIT ?
-                """, (poz_no, limit))
-            else:
-                return []
-            
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def get_all_birim_fiyatlar(self, aktif_only: bool = True) -> List[Dict[str, Any]]:
-        """
-        Tüm birim fiyatları getir.
-        
-        Args:
-            aktif_only: Sadece aktif fiyatları getir
-            
-        Returns:
-            List[Dict]: Birim fiyat listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            if aktif_only:
-                cursor.execute("""
-                    SELECT bf.*, p.tanim as poz_tanim, p.birim as poz_birim
-                    FROM birim_fiyatlar bf
-                    LEFT JOIN pozlar p ON bf.poz_id = p.id
-                    WHERE bf.aktif = 1
-                    ORDER BY bf.tarih DESC
-                """)
-            else:
-                cursor.execute("""
-                    SELECT bf.*, p.tanim as poz_tanim, p.birim as poz_birim
-                    FROM birim_fiyatlar bf
-                    LEFT JOIN pozlar p ON bf.poz_id = p.id
-                    ORDER BY bf.tarih DESC
-                """)
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def compare_birim_fiyatlar(self, poz_no: str) -> Dict[str, Any]:
-        """
-        Poz için fiyat karşılaştırması yap.
-        
-        Args:
-            poz_no: Poz numarası
-            
-        Returns:
-            Dict: Karşılaştırma sonuçları (en düşük, en yüksek, ortalama, kaynaklar)
-        """
-        fiyatlar = self.get_birim_fiyat_gecmisi(poz_no=poz_no, limit=100)
-        
-        if not fiyatlar:
-            return {
-                'poz_no': poz_no,
-                'fiyat_sayisi': 0,
-                'en_dusuk': None,
-                'en_yuksek': None,
-                'ortalama': None,
-                'kaynaklar': []
-            }
-        
-        fiyat_degerleri = [f['birim_fiyat'] for f in fiyatlar if f.get('birim_fiyat')]
-        
-        if not fiyat_degerleri:
-            return {
-                'poz_no': poz_no,
-                'fiyat_sayisi': 0,
-                'en_dusuk': None,
-                'en_yuksek': None,
-                'ortalama': None,
-                'kaynaklar': []
-            }
-        
-        en_dusuk = min(fiyat_degerleri)
-        en_yuksek = max(fiyat_degerleri)
-        ortalama = sum(fiyat_degerleri) / len(fiyat_degerleri)
-        
-        # Kaynakları topla
-        kaynaklar = {}
-        for f in fiyatlar:
-            kaynak = f.get('kaynak', 'Belirtilmemiş')
-            if kaynak not in kaynaklar:
-                kaynaklar[kaynak] = []
-            kaynaklar[kaynak].append(f['birim_fiyat'])
-        
-        return {
-            'poz_no': poz_no,
-            'fiyat_sayisi': len(fiyatlar),
-            'en_dusuk': en_dusuk,
-            'en_yuksek': en_yuksek,
-            'ortalama': ortalama,
-            'kaynaklar': kaynaklar,
-            'fiyatlar': fiyatlar
-        }
-    
-    def delete_pdf_imported_data(self) -> Dict[str, int]:
-        """
-        PDF'den içe aktarılan tüm pozları ve birim fiyatları sil.
-        
-        Returns:
-            Dict: Silinen kayıt sayıları {'pozlar': int, 'birim_fiyatlar': int}
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # 1. Önce PDF Import kaynaklı birim fiyatların poz_no'larını topla
-            cursor.execute("""
-                SELECT DISTINCT poz_no 
-                FROM birim_fiyatlar 
-                WHERE kaynak = 'PDF Import' AND poz_no IS NOT NULL
-            """)
-            pdf_poz_nos = [row['poz_no'] for row in cursor.fetchall()]
-            
-            # 2. Bu poz numaralarına sahip pozları sil (sadece PDF'den eklenenleri)
-            # PDF'den eklenen pozlar genellikle tanımında "PDF'den içe aktarıldı" içerir
-            # veya sadece PDF Import kaynaklı birim fiyatları vardır
-            deleted_poz_count = 0
-            for poz_no in pdf_poz_nos:
-                # Pozun başka kaynaklı birim fiyatı var mı kontrol et
-                cursor.execute("""
-                    SELECT COUNT(*) as count 
-                    FROM birim_fiyatlar 
-                    WHERE poz_no = ? AND (kaynak != 'PDF Import' OR kaynak IS NULL)
-                """, (poz_no,))
-                other_sources = cursor.fetchone()['count']
-                
-                # Eğer başka kaynak yoksa, pozun PDF'den eklenmiş olma ihtimali yüksek
-                # Pozu sil (tanımı "PDF'den içe aktarıldı" içeriyorsa veya başka kaynak yoksa)
-                if other_sources == 0:
-                    cursor.execute("""
-                        DELETE FROM pozlar 
-                        WHERE poz_no = ? 
-                        AND (tanim LIKE '%PDF%içe aktarıldı%' OR tanim LIKE '%PDF Import%' OR tanim = '' OR tanim IS NULL)
-                    """, (poz_no,))
-                    deleted_poz_count += cursor.rowcount
-            
-            # 3. PDF Import kaynaklı tüm birim fiyatları sil
-            cursor.execute("""
-                DELETE FROM birim_fiyatlar 
-                WHERE kaynak = 'PDF Import'
-            """)
-            deleted_fiyat_count = cursor.rowcount
-            
-            return {
-                'pozlar': deleted_poz_count,
-                'birim_fiyatlar': deleted_fiyat_count
-            }
-    
-    def get_poz_by_no(self, poz_no: str) -> Optional[Dict[str, Any]]:
-        """
-        Poz numarasına göre poz bilgisini getir.
-        
-        Args:
-            poz_no: Poz numarası
-            
-        Returns:
-            Optional[Dict]: Poz bilgisi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM pozlar WHERE poz_no = ?", (poz_no,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    # İhale İşlemleri
-    def create_ihale(self, ad: str, aciklama: str = "") -> int:
-        """
-        Yeni ihale oluştur.
-        
-        Args:
-            ad: İhale adı
-            aciklama: İhale açıklaması
-            
-        Returns:
-            int: Oluşturulan ihale ID'si
-        """
-        now = datetime.now().isoformat()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO ihaleler (ad, aciklama, olusturma_tarihi, guncelleme_tarihi)
-                VALUES (?, ?, ?, ?)
-            """, (ad, aciklama, now, now))
-            return cursor.lastrowid
-    
-    def get_all_ihaleler(self) -> List[Dict[str, Any]]:
-        """Tüm ihaleleri getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM ihaleler
-                ORDER BY olusturma_tarihi DESC
-            """)
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def get_ihale(self, ihale_id: int) -> Optional[Dict[str, Any]]:
-        """İhale bilgilerini getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM ihaleler WHERE id = ?", (ihale_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def get_ihale_kalemleri(self, ihale_id: int) -> List[Dict[str, Any]]:
-        """İhale kalemlerini getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM ihale_kalemleri
-                WHERE ihale_id = ?
-                ORDER BY sira_no, id
-            """, (ihale_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def add_ihale_kalem(self, ihale_id: int, poz_no: str = "", poz_tanim: str = "",
-                       kategori: str = "", birim_miktar: float = 0, birim: str = "",
-                       birim_fiyat: float = 0, toplam: float = 0, sira_no: Optional[int] = None) -> int:
-        """
-        İhaleye kalem ekle.
-        
-        Args:
-            ihale_id: İhale ID'si
-            poz_no: Poz numarası
-            poz_tanim: Poz tanımı
-            kategori: Kategori
-            birim_miktar: Birim miktar (kullanıcı girer)
-            birim: Birim
-            birim_fiyat: Birim fiyat (otomatik veya kullanıcı düzenler)
-            toplam: Toplam (birim_miktar * birim_fiyat)
-            sira_no: Sıra numarası
-            
-        Returns:
-            int: Eklenen kalemin ID'si
-        """
-        # Sıra numarası yoksa, mevcut maksimum + 1
-        if sira_no is None:
-            kalemler = self.get_ihale_kalemleri(ihale_id)
-            sira_no = len(kalemler) + 1
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO ihale_kalemleri 
-                (ihale_id, poz_no, poz_tanim, kategori, birim_miktar, birim, birim_fiyat, toplam, sira_no)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (ihale_id, poz_no, poz_tanim, kategori, birim_miktar, birim, birim_fiyat, toplam, sira_no))
-            return cursor.lastrowid
-    
-    def update_ihale_kalem(self, kalem_id: int, **kwargs) -> bool:
-        """İhale kalemini güncelle"""
-        if not kwargs:
-            return False
-        
-        fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
-        values = list(kwargs.values()) + [kalem_id]
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"UPDATE ihale_kalemleri SET {fields} WHERE id = ?", values)
-            return cursor.rowcount > 0
-    
-    def delete_ihale_kalem(self, kalem_id: int) -> bool:
-        """İhale kalemini sil"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM ihale_kalemleri WHERE id = ?", (kalem_id,))
-            return cursor.rowcount > 0
-    
-    def delete_ihale(self, ihale_id: int) -> bool:
-        """İhaleyi sil (kalemleri de silinir - CASCADE)"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM ihaleler WHERE id = ?", (ihale_id,))
-            return cursor.rowcount > 0
-    
-    def search_pozlar(self, search_text: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """
-        Poz numarası veya tanımına göre arama yap.
-        Poz numarası formatı: 15.250.1011 (nokta ile ayrılmış)
-        
-        Args:
-            search_text: Arama metni
-            limit: Maksimum sonuç sayısı
-            
-        Returns:
-            List[Dict]: Bulunan pozlar
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            search_text = search_text.strip()
-            
-            # Eğer arama metni tam poz numarası formatındaysa (nokta içeriyorsa)
-            # önce tam eşleşme dene, sonra kısmi eşleşme
-            if '.' in search_text:
-                # Tam poz numarası araması - önce tam eşleşme
-                cursor.execute("""
-                    SELECT * FROM pozlar
-                    WHERE poz_no = ?
-                    ORDER BY poz_no
-                    LIMIT ?
-                """, (search_text, limit))
-                exact_matches = [dict(row) for row in cursor.fetchall()]
-                
-                # Eğer tam eşleşme varsa onları döndür
-                if exact_matches:
-                    return exact_matches
-                
-                # Tam eşleşme yoksa, başlangıçtan eşleşenleri ara (15.250.1011 -> 15.250 ile başlayanlar)
-                search_pattern = f"{search_text}%"
-                cursor.execute("""
-                    SELECT * FROM pozlar
-                    WHERE poz_no LIKE ? OR tanim LIKE ?
-                    ORDER BY poz_no
-                    LIMIT ?
-                """, (search_pattern, f"%{search_text}%", limit))
-                return [dict(row) for row in cursor.fetchall()]
-            else:
-                # Nokta yoksa, normal LIKE araması yap
-                search_pattern = f"%{search_text}%"
-                cursor.execute("""
-                    SELECT * FROM pozlar
-                    WHERE poz_no LIKE ? OR tanim LIKE ?
-                    ORDER BY poz_no
-                    LIMIT ?
-                """, (search_pattern, search_pattern, limit))
-                return [dict(row) for row in cursor.fetchall()]
-    
-    # Taşeron İşlemleri
-    def create_taseron_is(self, is_adi: str, aciklama: str = "") -> int:
-        """Yeni taşeron işi oluştur"""
-        now = datetime.now().isoformat()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO taseron_isleri (is_adi, aciklama, olusturma_tarihi, guncelleme_tarihi)
-                VALUES (?, ?, ?, ?)
-            """, (is_adi, aciklama, now, now))
-            return cursor.lastrowid
-    
-    def get_taseron_isleri(self) -> List[Dict[str, Any]]:
-        """Tüm taşeron işlerini getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM taseron_isleri
-                WHERE durum = 'aktif'
-                ORDER BY olusturma_tarihi DESC
-            """)
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def get_taseron_is(self, is_id: int) -> Optional[Dict[str, Any]]:
-        """Taşeron iş bilgilerini getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM taseron_isleri WHERE id = ?", (is_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def delete_taseron_is(self, is_id: int) -> bool:
-        """Taşeron işini sil (durumunu pasif yap)"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE taseron_isleri SET durum = 'pasif', guncelleme_tarihi = ?
-                    WHERE id = ?
-                """, (datetime.now().isoformat(), is_id))
-                return True
-        except Exception as e:
-            print(f"İş silme hatası: {e}")
-            return False
-    
-    def add_taseron_personel(self, is_id: int, ad_soyad: str, 
-                             gunluk_ucret: float = 0, saatlik_ucret: float = 0) -> int:
-        """Taşeron personel ekle"""
-        now = datetime.now().isoformat()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO taseron_personel 
-                (is_id, ad_soyad, gunluk_ucret, saatlik_ucret, olusturma_tarihi)
-                VALUES (?, ?, ?, ?, ?)
-            """, (is_id, ad_soyad, gunluk_ucret, saatlik_ucret, now))
-            return cursor.lastrowid
-    
-    def get_taseron_personel(self, is_id: int) -> List[Dict[str, Any]]:
-        """Taşeron personel listesini getir (sıralama UI'da yapılacak)"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM taseron_personel
-                WHERE is_id = ?
-            """, (is_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def add_taseron_puantaj(self, personel_id: int, tarih: str, 
-                            calisma_saati: float = 0, calisma_gunu: int = 0) -> int:
-        """Puantaj kaydı ekle"""
-        # Ücreti hesapla
-        personel = self.get_taseron_personel_by_id(personel_id)
-        if not personel:
-            return 0
-        
-        toplam_ucret = 0.0
-        if calisma_gunu > 0 and personel.get('gunluk_ucret', 0) > 0:
-            toplam_ucret = calisma_gunu * personel['gunluk_ucret']
-        elif calisma_saati > 0 and personel.get('saatlik_ucret', 0) > 0:
-            toplam_ucret = calisma_saati * personel['saatlik_ucret']
-        
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO taseron_puantaj 
-                (personel_id, tarih, calisma_saati, calisma_gunu, toplam_ucret)
-                VALUES (?, ?, ?, ?, ?)
-            """, (personel_id, tarih, calisma_saati, calisma_gunu, toplam_ucret))
-            return cursor.lastrowid
-    
-    def get_taseron_puantaj(self, is_id: int) -> List[Dict[str, Any]]:
-        """Puantaj kayıtlarını getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT p.*, per.ad_soyad
-                FROM taseron_puantaj p
-                JOIN taseron_personel per ON p.personel_id = per.id
-                WHERE per.is_id = ?
-                ORDER BY p.tarih DESC
-            """, (is_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def get_taseron_puantaj_by_id(self, puantaj_id: int) -> Optional[Dict[str, Any]]:
-        """Puantaj kaydını ID ile getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT p.*, per.ad_soyad
-                FROM taseron_puantaj p
-                JOIN taseron_personel per ON p.personel_id = per.id
-                WHERE p.id = ?
-            """, (puantaj_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def update_taseron_puantaj(self, puantaj_id: int, tarih: str,
-                               calisma_saati: float = 0, calisma_gunu: int = 0) -> bool:
-        """Puantaj kaydını güncelle"""
-        try:
-            # Personel bilgilerini al (ücret hesaplama için)
-            puantaj = self.get_taseron_puantaj_by_id(puantaj_id)
-            if not puantaj:
-                return False
-            
-            personel = self.get_taseron_personel_by_id(puantaj['personel_id'])
-            if not personel:
-                return False
-            
-            # Ücreti hesapla
-            toplam_ucret = 0.0
-            if calisma_gunu > 0 and personel.get('gunluk_ucret', 0) > 0:
-                toplam_ucret = calisma_gunu * personel['gunluk_ucret']
-            elif calisma_saati > 0 and personel.get('saatlik_ucret', 0) > 0:
-                toplam_ucret = calisma_saati * personel['saatlik_ucret']
-            
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE taseron_puantaj
-                    SET tarih = ?, calisma_saati = ?, calisma_gunu = ?, toplam_ucret = ?
-                    WHERE id = ?
-                """, (tarih, calisma_saati, calisma_gunu, toplam_ucret, puantaj_id))
-                return cursor.rowcount > 0
-        except Exception as e:
-            print(f"Puantaj güncelleme hatası: {e}")
-            return False
-    
-    def delete_taseron_puantaj(self, puantaj_id: int) -> bool:
-        """Puantaj kaydını sil"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM taseron_puantaj WHERE id = ?", (puantaj_id,))
-                return cursor.rowcount > 0
-        except Exception as e:
-            print(f"Puantaj silme hatası: {e}")
-            return False
-    
-    def get_taseron_personel_by_id(self, personel_id: int) -> Optional[Dict[str, Any]]:
-        """Personel bilgilerini ID ile getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM taseron_personel WHERE id = ?", (personel_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def update_taseron_personel(self, personel_id: int, ad_soyad: str,
-                                gunluk_ucret: float = 0, saatlik_ucret: float = 0) -> bool:
-        """Taşeron personel bilgilerini güncelle"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE taseron_personel
-                    SET ad_soyad = ?, gunluk_ucret = ?, saatlik_ucret = ?
-                    WHERE id = ?
-                """, (ad_soyad, gunluk_ucret, saatlik_ucret, personel_id))
-                return cursor.rowcount > 0
-        except Exception as e:
-            print(f"Personel güncelleme hatası: {e}")
-            return False
-    
-    def delete_taseron_personel(self, personel_id: int) -> bool:
-        """Taşeron personel sil"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM taseron_personel WHERE id = ?", (personel_id,))
-                return cursor.rowcount > 0
-        except Exception as e:
-            print(f"Personel silme hatası: {e}")
-            return False
-    
-    def add_taseron_is_birim_fiyat(self, is_id: int, is_adi: str, birim: str,
-                                   birim_fiyat: float, miktar: float = 0) -> int:
-        """İş birim fiyat ekle"""
-        toplam = birim_fiyat * miktar
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO taseron_is_birim_fiyat 
-                (is_id, is_adi, birim, birim_fiyat, miktar, toplam)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (is_id, is_adi, birim, birim_fiyat, miktar, toplam))
-            return cursor.lastrowid
-    
-    def get_taseron_is_birim_fiyat(self, is_id: int) -> List[Dict[str, Any]]:
-        """İş birim fiyat listesini getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM taseron_is_birim_fiyat
-                WHERE is_id = ?
-                ORDER BY id
-            """, (is_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def add_taseron_gelir_gider(self, is_id: int, tip: str, kategori: str,
-                                aciklama: str, tutar: float, tarih: str) -> int:
-        """Gelir/Gider ekle"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO taseron_gelir_gider 
-                (is_id, tip, kategori, aciklama, tutar, tarih)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (is_id, tip, kategori, aciklama, tutar, tarih))
-            return cursor.lastrowid
-    
-    def get_taseron_gelir_gider(self, is_id: int, start_date: str = None, 
-                                end_date: str = None) -> List[Dict[str, Any]]:
-        """Gelir/Gider listesini getir"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            query = """
-                SELECT * FROM taseron_gelir_gider
-                WHERE is_id = ?
-            """
-            params = [is_id]
-            
-            if start_date:
-                query += " AND tarih >= ?"
-                params.append(start_date)
-            if end_date:
-                query += " AND tarih <= ?"
-                params.append(end_date)
-            
-            query += " ORDER BY tarih DESC"
-            cursor.execute(query, params)
-            return [dict(row) for row in cursor.fetchall()]
-    
-    # Versiyonlama İşlemleri
-    def create_project_version(self, project_id: int, version_name: str, 
-                               description: str = "", created_by: str = "") -> int:
-        """
-        Proje versiyonu oluştur (snapshot).
-        
-        Args:
-            project_id: Proje ID'si
-            version_name: Versiyon adı
-            description: Versiyon açıklaması
-            created_by: Oluşturan kullanıcı
-            
-        Returns:
-            int: Oluşturulan versiyonun ID'si
-        """
-        # Mevcut versiyon numarasını al
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT MAX(version_number) as max_version 
-                FROM project_versions 
-                WHERE project_id = ?
-            """, (project_id,))
-            result = cursor.fetchone()
-            next_version = (result['max_version'] or 0) + 1
-            
-            # Proje snapshot'ını al
-            project = self.get_project(project_id)
-            metraj_items = self.get_project_metraj(project_id)
-            taseron_offers = self.get_taseron_teklifleri(project_id)
-            
-            snapshot_data = {
-                'project': dict(project) if project else {},
-                'metraj_items': [dict(item) for item in metraj_items],
-                'taseron_offers': [dict(offer) for offer in taseron_offers]
-            }
-            
-            # Versiyonu kaydet
-            now = datetime.now().isoformat()
-            cursor.execute("""
-                INSERT INTO project_versions 
-                (project_id, version_name, version_number, created_at, created_by, description, snapshot_data)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (project_id, version_name, next_version, now, created_by, description, 
-                  json.dumps(snapshot_data, ensure_ascii=False)))
-            
-            return cursor.lastrowid
-    
-    def get_project_versions(self, project_id: int) -> List[Dict[str, Any]]:
-        """
-        Projenin tüm versiyonlarını getir.
-        
-        Args:
-            project_id: Proje ID'si
-            
-        Returns:
-            List[Dict]: Versiyon listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM project_versions
-                WHERE project_id = ?
-                ORDER BY version_number DESC
-            """, (project_id,))
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def get_project_version(self, version_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Versiyon bilgilerini getir.
-        
-        Args:
-            version_id: Versiyon ID'si
-            
-        Returns:
-            Optional[Dict]: Versiyon bilgileri
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM project_versions WHERE id = ?", (version_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def restore_project_version(self, version_id: int, new_project_name: str = None) -> Optional[int]:
-        """
-        Versiyondan projeyi geri yükle.
-        
-        Args:
-            version_id: Versiyon ID'si
-            new_project_name: Yeni proje adı (None ise versiyondaki ad kullanılır)
-            
-        Returns:
-            Optional[int]: Geri yüklenen projenin ID'si
-        """
-        version = self.get_project_version(version_id)
-        if not version:
-            return None
-        
-        snapshot_data = json.loads(version['snapshot_data'])
-        project_data = snapshot_data.get('project', {})
-        metraj_items = snapshot_data.get('metraj_items', [])
-        taseron_offers = snapshot_data.get('taseron_offers', [])
-        
-        # Yeni proje oluştur
-        project_name = new_project_name or f"{project_data.get('ad', 'Geri Yüklenen Proje')} (v{version['version_number']})"
-        project_id = self.create_project(
-            ad=project_name,
-            aciklama=project_data.get('aciklama', ''),
-            notlar=f"Versiyon {version['version_number']} geri yüklendi: {version.get('description', '')}"
-        )
-        
-        # Metraj kalemlerini geri yükle
-        for item in metraj_items:
-            self.add_metraj_item(
-                proje_id=project_id,
-                poz_no=item.get('poz_no', ''),
-                tanim=item.get('tanim', ''),
-                miktar=item.get('miktar', 0),
-                birim=item.get('birim', ''),
-                birim_fiyat=item.get('birim_fiyat', 0),
-                kategori=item.get('kategori', ''),
-                notlar=item.get('notlar', '')
-            )
-        
-        # Taşeron tekliflerini geri yükle
-        for offer in taseron_offers:
-            self.add_taseron_teklif(
-                proje_id=project_id,
-                firma_adi=offer.get('firma_adi', ''),
-                fiyat=offer.get('fiyat', 0),
-                poz_no=offer.get('poz_no', ''),
-                tanim=offer.get('tanim', ''),
-                miktar=offer.get('miktar', 0),
-                birim=offer.get('birim', ''),
-                notlar=offer.get('notlar', '')
-            )
-        
-        return project_id
-    
-    def delete_project_version(self, version_id: int) -> bool:
-        """
-        Versiyonu sil.
-        
-        Args:
-            version_id: Versiyon ID'si
-
-        Returns:
-            bool: Başarılı ise True
-        """
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM project_versions WHERE id = ?", (version_id,))
-                return True
-        except Exception as e:
-            print(f"Versiyon silme hatası: {e}")
-            return False
-    
-    # AI Metraj Öğrenme İşlemleri
-    def save_ai_learning(self, katman_adi: str, duvar_yuksekligi: float, 
-                        birim: str = 'm', kaynak: str = 'kullanici',
-                        duvar_cinsi: Optional[str] = None,
-                        duvar_kalinligi: Optional[float] = None) -> int:
-        """
-        AI öğrenme verisini kaydet veya güncelle.
-        
-        Args:
-            katman_adi: Katman adı
-            duvar_yuksekligi: Duvar yüksekliği değeri
-            birim: Birim ('m', 'cm', 'mm')
-            kaynak: Veri kaynağı ('kullanici', 'katman_ismi', 'text_entity')
-            duvar_cinsi: Duvar cinsi (örn: 'tuğla', 'beton', 'gazbeton')
-            duvar_kalinligi: Duvar kalınlığı (cm cinsinden)
-            
-        Returns:
-            int: Kayıt ID'si
-        """
-        now = datetime.now().isoformat()
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            # Önce var mı kontrol et
-            cursor.execute("""
-                SELECT id, kullanim_sayisi FROM ai_metraj_ogrenme 
-                WHERE katman_adi = ?
-            """, (katman_adi,))
-            existing = cursor.fetchone()
-            
-            if existing:
-                # Güncelle
-                kullanim_sayisi = existing['kullanim_sayisi'] + 1
-                cursor.execute("""
-                    UPDATE ai_metraj_ogrenme
-                    SET duvar_yuksekligi = ?, birim = ?, kaynak = ?,
-                        kullanici_duzeltmesi = ?,
-                        duvar_cinsi = ?, duvar_kalinligi = ?,
-                        guncelleme_tarihi = ?, kullanim_sayisi = ?
-                    WHERE katman_adi = ?
-                """, (duvar_yuksekligi, birim, kaynak, 
-                      1 if kaynak == 'kullanici' else 0,
-                      duvar_cinsi, duvar_kalinligi,
-                      now, kullanim_sayisi, katman_adi))
-                return existing['id']
-            else:
-                # Yeni kayıt
-                cursor.execute("""
-                    INSERT INTO ai_metraj_ogrenme 
-                    (katman_adi, duvar_yuksekligi, birim, kaynak, 
-                     kullanici_duzeltmesi, duvar_cinsi, duvar_kalinligi,
-                     olusturma_tarihi, guncelleme_tarihi, kullanim_sayisi)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (katman_adi, duvar_yuksekligi, birim, kaynak,
-                      1 if kaynak == 'kullanici' else 0,
-                      duvar_cinsi, duvar_kalinligi,
-                      now, now, 1))
-                return cursor.lastrowid
-    
-    def get_ai_learning(self, katman_adi: str) -> Optional[Dict[str, Any]]:
-        """
-        Katman adına göre öğrenilmiş duvar bilgilerini getir.
-        
-        Args:
-            katman_adi: Katman adı
-            
-        Returns:
-            Dict: Öğrenme verisi (duvar_yuksekligi, duvar_cinsi, duvar_kalinligi vb.) veya None
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM ai_metraj_ogrenme 
-                WHERE katman_adi = ?
-                ORDER BY kullanici_duzeltmesi DESC, kullanim_sayisi DESC
-                LIMIT 1
-            """, (katman_adi,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    
-    def get_all_ai_learning(self) -> List[Dict[str, Any]]:
-        """
-        Tüm AI öğrenme verilerini getir.
-        
-        Returns:
-            List[Dict]: Tüm öğrenme verileri
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM ai_metraj_ogrenme 
-                ORDER BY kullanici_duzeltmesi DESC, kullanim_sayisi DESC, olusturma_tarihi DESC
-            """)
-            return [dict(row) for row in cursor.fetchall()]
-    
-    def delete_ai_learning(self, learning_id: int) -> bool:
-        """
-        AI öğrenme verisini sil.
-        
-        Args:
-            learning_id: Öğrenme kaydı ID'si
-            
-        Returns:
-            bool: Başarılı ise True
-        """
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM ai_metraj_ogrenme WHERE id = ?", (learning_id,))
-                return cursor.rowcount > 0
-        except Exception as e:
-            print(f"AI öğrenme silme hatası: {e}")
-            return False
-
-    # Dashboard Analytics İşlemleri
-    def get_dashboard_summary(self) -> Dict[str, Any]:
-        """
-        Dashboard için genel özet bilgileri getir.
-
-        Returns:
-            Dict: Dashboard özet verileri
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Toplam proje sayısı
-            cursor.execute("SELECT COUNT(*) as total FROM projects WHERE durum = 'aktif'")
-            toplam_proje = cursor.fetchone()['total']
-
-            # Toplam maliyet (aktif projeler)
-            cursor.execute("SELECT SUM(toplam_maliyet) as total FROM projects WHERE durum = 'aktif'")
-            toplam_maliyet = cursor.fetchone()['total'] or 0
-
-            # Toplam metraj kalem sayısı
-            cursor.execute("""
-                SELECT COUNT(DISTINCT mk.id) as total
-                FROM metraj_kalemleri mk
-                JOIN projects p ON mk.proje_id = p.id
-                WHERE p.durum = 'aktif'
-            """)
-            toplam_kalem = cursor.fetchone()['total']
-
-            # Toplam taşeron teklif sayısı
-            cursor.execute("""
-                SELECT COUNT(DISTINCT tt.id) as total
-                FROM taseron_teklifleri tt
-                JOIN projects p ON tt.proje_id = p.id
-                WHERE p.durum = 'aktif'
-            """)
-            toplam_teklif = cursor.fetchone()['total']
-
-            # Son 30 gün içinde oluşturulan projeler
-            from datetime import datetime, timedelta
-            thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
-            cursor.execute("""
-                SELECT COUNT(*) as total
-                FROM projects
-                WHERE olusturma_tarihi >= ? AND durum = 'aktif'
-            """, (thirty_days_ago,))
-            yeni_projeler = cursor.fetchone()['total']
-
-            return {
-                'toplam_proje': toplam_proje,
-                'toplam_maliyet': toplam_maliyet,
-                'toplam_kalem': toplam_kalem,
-                'toplam_teklif': toplam_teklif,
-                'yeni_projeler_30_gun': yeni_projeler
-            }
-
-    def get_projects_by_cost(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """
-        En yüksek maliyetli projeleri getir.
-
-        Args:
-            limit: Maksimum proje sayısı
-
-        Returns:
-            List[Dict]: Proje listesi (ad, toplam_maliyet)
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT ad, toplam_maliyet, aciklama
-                FROM projects
-                WHERE durum = 'aktif' AND toplam_maliyet > 0
-                ORDER BY toplam_maliyet DESC
-                LIMIT ?
-            """, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_cost_by_category(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        Kategorilere göre maliyet dağılımı.
-
-        Args:
-            project_id: Belirli bir proje için (None ise tüm projeler)
-
-        Returns:
-            List[Dict]: Kategori bazlı maliyet listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            if project_id:
-                cursor.execute("""
-                    SELECT
-                        kategori,
-                        SUM(toplam) as toplam_maliyet,
-                        COUNT(*) as kalem_sayisi
-                    FROM metraj_kalemleri
-                    WHERE proje_id = ? AND kategori IS NOT NULL AND kategori != ''
-                    GROUP BY kategori
-                    ORDER BY toplam_maliyet DESC
-                """, (project_id,))
-            else:
-                cursor.execute("""
-                    SELECT
-                        mk.kategori,
-                        SUM(mk.toplam) as toplam_maliyet,
-                        COUNT(*) as kalem_sayisi
-                    FROM metraj_kalemleri mk
-                    JOIN projects p ON mk.proje_id = p.id
-                    WHERE p.durum = 'aktif' AND mk.kategori IS NOT NULL AND mk.kategori != ''
-                    GROUP BY mk.kategori
-                    ORDER BY toplam_maliyet DESC
-                """)
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_monthly_project_trend(self, months: int = 12) -> List[Dict[str, Any]]:
-        """
-        Aylık proje oluşturma trendi.
-
-        Args:
-            months: Kaç aylık veri
-
-        Returns:
-            List[Dict]: Aylık proje sayısı
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            from datetime import datetime, timedelta
-            start_date = (datetime.now() - timedelta(days=months*30)).isoformat()
-
-            cursor.execute("""
-                SELECT
-                    strftime('%Y-%m', olusturma_tarihi) as ay,
-                    COUNT(*) as proje_sayisi,
-                    SUM(toplam_maliyet) as toplam_maliyet
-                FROM projects
-                WHERE olusturma_tarihi >= ?
-                GROUP BY strftime('%Y-%m', olusturma_tarihi)
-                ORDER BY ay
-            """, (start_date,))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_top_subcontractors(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """
-        En çok teklif veren taşeronlar.
-
-        Args:
-            limit: Maksimum taşeron sayısı
-
-        Returns:
-            List[Dict]: Taşeron firma listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    firma_adi,
-                    COUNT(*) as teklif_sayisi,
-                    AVG(fiyat) as ortalama_fiyat,
-                    SUM(toplam) as toplam_teklif
-                FROM taseron_teklifleri
-                GROUP BY firma_adi
-                ORDER BY teklif_sayisi DESC
-                LIMIT ?
-            """, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_material_usage_stats(self) -> List[Dict[str, Any]]:
-        """
-        Malzeme kullanım istatistikleri.
-
-        Returns:
-            List[Dict]: En çok kullanılan malzemeler
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    m.ad as malzeme_adi,
-                    m.kategori,
-                    COUNT(DISTINCT mf.poz_id) as kullanilan_poz_sayisi,
-                    m.birim_fiyat
-                FROM malzemeler m
-                JOIN malzeme_formulleri mf ON m.id = mf.malzeme_id
-                GROUP BY m.id
-                ORDER BY kullanilan_poz_sayisi DESC
-                LIMIT 20
-            """)
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_recent_activities(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """
-        Son aktiviteler (proje oluşturma, güncelleme).
-
-        Args:
-            limit: Maksimum aktivite sayısı
-
-        Returns:
-            List[Dict]: Aktivite listesi
-        """
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    ad,
-                    'Proje Oluşturuldu' as aktivite_tipi,
-                    olusturma_tarihi as tarih
-                FROM projects
-                WHERE durum = 'aktif'
-                ORDER BY olusturma_tarihi DESC
-                LIMIT ?
-            """, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
+ """
+ SQLite veritabanı yönetim sınıfı.
+ 
+ Offline-first yaklaşım ile yerel veritabanı işlemlerini yönetir.
+ İleride online senkronizasyon için genişletilebilir yapı.
+ """
+ 
+ def __init__(self, db_path: Optional[Path] = None) -> None:
+ """
+ Veritabanı yöneticisini başlat.
+ 
+ Args:
+ db_path: Veritabanı dosya yolu. None ise varsayılan konum kullanılır.
+ """
+ if db_path is None:
+ # Varsayılan: proje kök dizininde
+ db_path = Path(__file__).parent.parent.parent / "data" / "insaat_metraj.db"
+ 
+ self.db_path = Path(db_path)
+ self.db_path.parent.mkdir(parents=True, exist_ok=True)
+ self._init_database()
+ 
+ @contextmanager
+ def get_connection(self):
+ """
+ Veritabanı bağlantısı context manager.
+ 
+ Yields:
+ sqlite3.Connection: Veritabanı bağlantısı
+ """
+ conn = sqlite3.connect(str(self.db_path))
+ conn.row_factory = sqlite3.Row # Sözlük benzeri erişim
+ try:
+ yield conn
+ conn.commit()
+ except Exception:
+ conn.rollback()
+ raise
+ finally:
+ conn.close()
+ 
+ def _init_database(self) -> None:
+ """Veritabanı tablolarını oluştur."""
+ with self.get_connection() as conn:
+ # WAL mode aktif et (daha hızlı okuma/yazma)
+ conn.execute("PRAGMA journal_mode=WAL")
+ # Synchronous mode'u optimize et (güvenlik vs hız dengesi)
+ conn.execute("PRAGMA synchronous=NORMAL")
+ # Cache size artır (daha hızlı sorgular)
+ conn.execute("PRAGMA cache_size=-64000") # 64MB cache
+ # Foreign key kontrolünü aktif et
+ conn.execute("PRAGMA foreign_keys=ON")
+
+ # Schema versiyonu kontrolü - migration'ları tekrar çalıştırmayı önler
+ current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+ SCHEMA_VERSION = 3
+ 
+ cursor = conn.cursor()
+ 
+ # Projeler tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS projects (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ad TEXT NOT NULL,
+ aciklama TEXT,
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ durum TEXT DEFAULT 'aktif',
+ toplam_maliyet REAL DEFAULT 0,
+ notlar TEXT
+ )
+ """)
+ 
+ # Migration'lar sadece eski schema versiyonlarında çalışır
+ if current_version < 1:
+ try:
+ cursor.execute("ALTER TABLE projects ADD COLUMN notlar TEXT")
+ except sqlite3.OperationalError:
+ pass
+ 
+ # Şablonlar tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS sablonlar (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ad TEXT NOT NULL,
+ aciklama TEXT,
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT
+ )
+ """)
+ 
+ # Şablon kalemleri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS sablon_kalemleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ sablon_id INTEGER NOT NULL,
+ poz_no TEXT,
+ tanim TEXT NOT NULL,
+ kategori TEXT,
+ miktar REAL DEFAULT 0,
+ birim TEXT,
+ birim_fiyat REAL DEFAULT 0,
+ toplam REAL DEFAULT 0,
+ FOREIGN KEY (sablon_id) REFERENCES sablonlar(id) ON DELETE CASCADE
+ )
+ """)
+ 
+ # Birim fiyatlar tablosu (poz bazlı, tarihli fiyat takibi)
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS birim_fiyatlar (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ poz_id INTEGER,
+ poz_no TEXT,
+ birim_fiyat REAL NOT NULL,
+ tarih TEXT NOT NULL,
+ kaynak TEXT,
+ aciklama TEXT,
+ aktif INTEGER DEFAULT 1,
+ FOREIGN KEY (poz_id) REFERENCES pozlar(id) ON DELETE SET NULL
+ )
+ """)
+ 
+ # İhaleler tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS ihaleler (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ad TEXT NOT NULL,
+ aciklama TEXT,
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ durum TEXT DEFAULT 'hazirlaniyor'
+ )
+ """)
+ 
+ # İhale kalemleri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS ihale_kalemleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ihale_id INTEGER NOT NULL,
+ poz_no TEXT,
+ poz_tanim TEXT,
+ kategori TEXT,
+ birim_miktar REAL DEFAULT 0,
+ birim TEXT,
+ birim_fiyat REAL DEFAULT 0,
+ toplam REAL DEFAULT 0,
+ sira_no INTEGER,
+ FOREIGN KEY (ihale_id) REFERENCES ihaleler(id) ON DELETE CASCADE
+ )
+ """)
+ 
+ # Pozlar tablosu (Çevre ve Şehircilik Bakanlığı verileri için)
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS pozlar (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ poz_no TEXT NOT NULL UNIQUE,
+ tanim TEXT NOT NULL,
+ birim TEXT NOT NULL,
+ resmi_fiyat REAL DEFAULT 0,
+ kategori TEXT,
+ aciklama TEXT,
+ fire_orani REAL DEFAULT 0.05,
+ guncelleme_tarihi TEXT
+ )
+ """)
+ 
+ if current_version < 1:
+ try:
+ cursor.execute("ALTER TABLE pozlar ADD COLUMN fire_orani REAL DEFAULT 0.05")
+ except sqlite3.OperationalError:
+ pass
+ 
+ # Metraj kalemleri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS metraj_kalemleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER NOT NULL,
+ poz_no TEXT,
+ tanim TEXT NOT NULL,
+ miktar REAL NOT NULL DEFAULT 0,
+ birim TEXT NOT NULL,
+ birim_fiyat REAL DEFAULT 0,
+ toplam REAL DEFAULT 0,
+ kategori TEXT,
+ notlar TEXT,
+ olusturma_tarihi TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+ 
+ # Taşeron teklifleri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS taseron_teklifleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER NOT NULL,
+ firma_adi TEXT NOT NULL,
+ kalem_id INTEGER,
+ poz_no TEXT,
+ tanim TEXT,
+ miktar REAL,
+ birim TEXT,
+ fiyat REAL NOT NULL,
+ toplam REAL,
+ teklif_tarihi TEXT,
+ durum TEXT DEFAULT 'beklemede',
+ notlar TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE,
+ FOREIGN KEY (kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE SET NULL
+ )
+ """)
+ 
+ # Malzemeler tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS malzemeler (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ad TEXT NOT NULL UNIQUE,
+ birim TEXT NOT NULL,
+ kategori TEXT,
+ aciklama TEXT,
+ birim_fiyat REAL DEFAULT 0,
+ olusturma_tarihi TEXT
+ )
+ """)
+ 
+ if current_version < 1:
+ try:
+ cursor.execute("ALTER TABLE malzemeler ADD COLUMN birim_fiyat REAL DEFAULT 0")
+ except sqlite3.OperationalError:
+ pass
+ 
+ # Malzeme formülleri tablosu (Poz → Malzeme ilişkileri)
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS malzeme_formulleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ poz_id INTEGER NOT NULL,
+ malzeme_id INTEGER NOT NULL,
+ miktar REAL NOT NULL,
+ birim TEXT NOT NULL,
+ formul_tipi TEXT DEFAULT 'direkt',
+ aciklama TEXT,
+ FOREIGN KEY (poz_id) REFERENCES pozlar(id) ON DELETE CASCADE,
+ FOREIGN KEY (malzeme_id) REFERENCES malzemeler(id) ON DELETE CASCADE,
+ UNIQUE(poz_id, malzeme_id)
+ )
+ """)
+ 
+ # Birim dönüşümleri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS birim_donusumleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ malzeme_id INTEGER,
+ kaynak_birim TEXT NOT NULL,
+ hedef_birim TEXT NOT NULL,
+ donusum_katsayisi REAL NOT NULL,
+ FOREIGN KEY (malzeme_id) REFERENCES malzemeler(id) ON DELETE CASCADE
+ )
+ """)
+ 
+ # Proje versiyonları tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS project_versions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ project_id INTEGER NOT NULL,
+ version_name TEXT NOT NULL,
+ version_number INTEGER NOT NULL,
+ created_at TEXT NOT NULL,
+ created_by TEXT,
+ description TEXT,
+ snapshot_data TEXT NOT NULL,
+ FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+ UNIQUE(project_id, version_number)
+ )
+ """)
+ 
+ # İndeksler
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_projects_durum 
+ ON projects(durum)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_metraj_proje 
+ ON metraj_kalemleri(proje_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_taseron_proje 
+ ON taseron_teklifleri(proje_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_malzeme_formul_poz 
+ ON malzeme_formulleri(poz_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_malzeme_formul_malzeme 
+ ON malzeme_formulleri(malzeme_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_birim_fiyat_poz 
+ ON birim_fiyatlar(poz_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_birim_fiyat_poz_no 
+ ON birim_fiyatlar(poz_no)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_birim_fiyat_tarih 
+ ON birim_fiyatlar(tarih)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_ihale_kalem_ihale 
+ ON ihale_kalemleri(ihale_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_project_versions_project 
+ ON project_versions(project_id)
+ """)
+ 
+ # Taşeron işleri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS taseron_isleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ is_adi TEXT NOT NULL,
+ aciklama TEXT,
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ durum TEXT DEFAULT 'aktif'
+ )
+ """)
+ 
+ # Taşeron personel tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS taseron_personel (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ is_id INTEGER NOT NULL,
+ ad_soyad TEXT NOT NULL,
+ gunluk_ucret REAL DEFAULT 0,
+ saatlik_ucret REAL DEFAULT 0,
+ olusturma_tarihi TEXT NOT NULL,
+ FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
+ )
+ """)
+ 
+ # Taşeron puantaj tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS taseron_puantaj (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ personel_id INTEGER NOT NULL,
+ tarih TEXT NOT NULL,
+ calisma_saati REAL DEFAULT 0,
+ calisma_gunu INTEGER DEFAULT 0,
+ toplam_ucret REAL DEFAULT 0,
+ FOREIGN KEY (personel_id) REFERENCES taseron_personel(id) ON DELETE CASCADE
+ )
+ """)
+ 
+ # Taşeron gelir/gider tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS taseron_gelir_gider (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ is_id INTEGER NOT NULL,
+ tip TEXT NOT NULL, -- 'gelir' veya 'gider'
+ kategori TEXT NOT NULL, -- 'yemek', 'malzeme', 'personel', 'is', vb.
+ aciklama TEXT,
+ tutar REAL NOT NULL,
+ tarih TEXT NOT NULL,
+ FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
+ )
+ """)
+ 
+ # Taşeron iş birim fiyatları tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS taseron_is_birim_fiyat (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ is_id INTEGER NOT NULL,
+ is_adi TEXT NOT NULL,
+ birim TEXT NOT NULL,
+ birim_fiyat REAL NOT NULL,
+ miktar REAL DEFAULT 0,
+ toplam REAL DEFAULT 0,
+ FOREIGN KEY (is_id) REFERENCES taseron_isleri(id) ON DELETE CASCADE
+ )
+ """)
+ 
+ # AI Metraj Öğrenme tablosu (Duvar yüksekliği öğrenme)
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS ai_metraj_ogrenme (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ katman_adi TEXT NOT NULL,
+ duvar_yuksekligi REAL NOT NULL,
+ birim TEXT DEFAULT 'm',
+ kaynak TEXT DEFAULT 'kullanici', -- 'kullanici', 'katman_ismi', 'text_entity'
+ kullanici_duzeltmesi INTEGER DEFAULT 0, -- 1 ise kullanıcı düzeltmesi
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ kullanim_sayisi INTEGER DEFAULT 1,
+ UNIQUE(katman_adi)
+ )
+ """)
+ 
+ # İndeksler
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_taseron_personel_is 
+ ON taseron_personel(is_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_taseron_puantaj_personel 
+ ON taseron_puantaj(personel_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_taseron_gelir_gider_is 
+ ON taseron_gelir_gider(is_id)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_taseron_gelir_gider_tarih 
+ ON taseron_gelir_gider(tarih)
+ """)
+ 
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_ai_metraj_katman 
+ ON ai_metraj_ogrenme(katman_adi)
+ """)
+ 
+ if current_version < 2:
+ try:
+ cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_cinsi TEXT")
+ except sqlite3.OperationalError:
+ pass
+ try:
+ cursor.execute("ALTER TABLE ai_metraj_ogrenme ADD COLUMN duvar_kalinligi REAL")
+ except sqlite3.OperationalError:
+ pass
+
+ if current_version < 3:
+ try:
+ cursor.execute("ALTER TABLE projects ADD COLUMN hedef_maliyet REAL DEFAULT 0")
+ except sqlite3.OperationalError:
+ pass
+
+ # Enflasyon verileri tablosu (TÜFE/ÜFE verilerini saklar)
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS enflasyon_verileri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ tarih TEXT NOT NULL,
+ tufe REAL,
+ ufe REAL,
+ aylik_tufe REAL,
+ aylik_ufe REAL,
+ yillik_tufe REAL,
+ yillik_ufe REAL,
+ kaynak TEXT DEFAULT 'TCMB',
+ olusturma_tarihi TEXT NOT NULL,
+ UNIQUE(tarih)
+ )
+ """)
+
+ # Fiyat farkı hesaplamaları tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS fiyat_farki_hesaplamalari (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER,
+ metraj_kalem_id INTEGER,
+ baslangic_fiyat REAL NOT NULL,
+ baslangic_tarihi TEXT NOT NULL,
+ bitis_tarihi TEXT NOT NULL,
+ endeks_tipi TEXT DEFAULT 'TUFE',
+ enflasyon_orani REAL,
+ guncel_fiyat REAL,
+ fark REAL,
+ fark_yuzde REAL,
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE,
+ FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE CASCADE
+ )
+ """)
+
+ # Tedarikçiler tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS tedarikci_listesi (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ad TEXT NOT NULL,
+ api_url TEXT,
+ api_key TEXT,
+ aktif INTEGER DEFAULT 1,
+ telefon TEXT,
+ email TEXT,
+ adres TEXT,
+ notlar TEXT,
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT
+ )
+ """)
+
+ # Tedarikçi fiyatları tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS tedarikci_fiyatlari (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ tedarikci_id INTEGER NOT NULL,
+ malzeme_kodu TEXT NOT NULL,
+ malzeme_adi TEXT,
+ birim TEXT,
+ birim_fiyat REAL NOT NULL,
+ kdv_orani REAL DEFAULT 20,
+ minimum_miktar REAL DEFAULT 1,
+ indirim_orani REAL DEFAULT 0,
+ teslimat_suresi TEXT,
+ stok_durumu TEXT,
+ gecerlilik_tarihi TEXT,
+ notlar TEXT,
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ FOREIGN KEY (tedarikci_id) REFERENCES tedarikci_listesi(id) ON DELETE CASCADE
+ )
+ """)
+
+ # Tedarikçi fiyat karşılaştırmaları tablosu (geçmiş karşılaştırmaları saklar)
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS tedarikci_karsilastirma (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ malzeme_kodu TEXT NOT NULL,
+ miktar REAL NOT NULL,
+ en_ucuz_tedarikci_id INTEGER,
+ en_ucuz_fiyat REAL,
+ en_pahali_tedarikci_id INTEGER,
+ en_pahali_fiyat REAL,
+ tasarruf REAL,
+ tasarruf_yuzde REAL,
+ karsilastirma_tarihi TEXT NOT NULL,
+ tedarikci_sayisi INTEGER,
+ FOREIGN KEY (en_ucuz_tedarikci_id) REFERENCES tedarikci_listesi(id),
+ FOREIGN KEY (en_pahali_tedarikci_id) REFERENCES tedarikci_listesi(id)
+ )
+ """)
+
+ # İndeksler - Enflasyon ve Tedarikçi
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_enflasyon_tarih
+ ON enflasyon_verileri(tarih)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_fiyat_farki_proje
+ ON fiyat_farki_hesaplamalari(proje_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_tedarikci_fiyat_tedarikci
+ ON tedarikci_fiyatlari(tedarikci_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_tedarikci_fiyat_malzeme
+ ON tedarikci_fiyatlari(malzeme_kodu)
+ """)
+
+ # Hakediş gerçekleşme tablosu (QR kod bazlı takip)
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS hakedis_gerceklesme (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER NOT NULL,
+ metraj_kalem_id INTEGER NOT NULL,
+ gerceklesen_miktar REAL NOT NULL,
+ aciklama TEXT,
+ foto_path TEXT,
+ konum TEXT,
+ gerceklesme_tarihi TEXT NOT NULL,
+ olusturan_kisi TEXT,
+ onay_durumu TEXT DEFAULT 'beklemede',
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE,
+ FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE CASCADE
+ )
+ """)
+
+ # Hakediş dönemleri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS hakedis_donemleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER NOT NULL,
+ donem_adi TEXT NOT NULL,
+ baslangic_tarihi TEXT NOT NULL,
+ bitis_tarihi TEXT NOT NULL,
+ toplam_tutar REAL DEFAULT 0,
+ onay_durumu TEXT DEFAULT 'hazirlaniyor',
+ olusturma_tarihi TEXT NOT NULL,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+
+ # İndeksler - Hakediş
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_hakedis_gerceklesme_proje
+ ON hakedis_gerceklesme(proje_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_hakedis_gerceklesme_kalem
+ ON hakedis_gerceklesme(metraj_kalem_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_hakedis_donem_proje
+ ON hakedis_donemleri(proje_id)
+ """)
+
+ # ============================================
+ # SÜRDÜRÜLEBİLİRLİK MODÜLÜ TABLOLARI
+ # ============================================
+
+ # Malzeme karbon ayak izi tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS malzeme_karbon_ayakizi (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ malzeme_adi TEXT NOT NULL,
+ kategori TEXT,
+ karbon_faktor REAL NOT NULL,
+ birim TEXT NOT NULL,
+ kaynak TEXT,
+ guncelleme_tarihi TEXT,
+ UNIQUE(malzeme_adi, birim)
+ )
+ """)
+
+ # Enerji verileri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS enerji_verileri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER,
+ yillik_tuketim_kwh REAL NOT NULL,
+ toplam_alan_m2 REAL NOT NULL,
+ enerji_sinifi TEXT,
+ puan REAL,
+ tarih TEXT NOT NULL,
+ aciklama TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+
+ # Atık yönetimi tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS atik_yonetimi (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER NOT NULL,
+ atik_turu TEXT NOT NULL,
+ miktar_ton REAL NOT NULL,
+ geri_donusturuldu INTEGER DEFAULT 0,
+ tehlikeli INTEGER DEFAULT 0,
+ aciklama TEXT,
+ tarih TEXT NOT NULL,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+
+ # Sürdürülebilirlik hesaplama tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS surdurulebilirlik_hesaplama (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER NOT NULL,
+ toplam_karbon_kg REAL,
+ enerji_sinifi TEXT,
+ geri_donusum_orani REAL,
+ leed_puani REAL,
+ leed_seviye TEXT,
+ hesaplama_tarihi TEXT NOT NULL,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+
+ # Yeşil sertifika kriterleri tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS yesil_sertifika_kriterleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER NOT NULL,
+ sertifika_tipi TEXT NOT NULL,
+ kategori TEXT NOT NULL,
+ kriter_adi TEXT NOT NULL,
+ puan REAL DEFAULT 0,
+ max_puan REAL NOT NULL,
+ durum TEXT DEFAULT 'beklemede',
+ aciklama TEXT,
+ tarih TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+
+ # İndeksler - Sürdürülebilirlik
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_enerji_proje
+ ON enerji_verileri(proje_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_atik_proje
+ ON atik_yonetimi(proje_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_surdurulebilirlik_proje
+ ON surdurulebilirlik_hesaplama(proje_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_yesil_sertifika_proje
+ ON yesil_sertifika_kriterleri(proje_id)
+ """)
+
+ # ============================================
+ # GANTT CHART VE CPM MODÜLÜ TABLOLARI
+ # ============================================
+
+ # İş programı header tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS is_programi (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER NOT NULL,
+ baslangic_tarihi TEXT NOT NULL,
+ bitis_tarihi TEXT NOT NULL,
+ toplam_sure_gun INTEGER DEFAULT 0,
+ kritik_yol_sure_gun INTEGER DEFAULT 0,
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+
+ # İş programı kalemleri (task) tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS is_programi_kalemleri (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ program_id INTEGER NOT NULL,
+ ad TEXT NOT NULL,
+ sure_gun INTEGER NOT NULL,
+ baslangic_tarihi TEXT,
+ bitis_tarihi TEXT,
+ early_start TEXT,
+ early_finish TEXT,
+ late_start TEXT,
+ late_finish TEXT,
+ float_gun INTEGER DEFAULT 0,
+ kritik INTEGER DEFAULT 0,
+ ilerleme REAL DEFAULT 0,
+ milestone INTEGER DEFAULT 0,
+ kaynak TEXT,
+ metraj_kalem_id INTEGER,
+ aciklama TEXT,
+ olusturma_tarihi TEXT DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY (program_id) REFERENCES is_programi(id) ON DELETE CASCADE,
+ FOREIGN KEY (metraj_kalem_id) REFERENCES metraj_kalemleri(id) ON DELETE SET NULL
+ )
+ """)
+
+ # Bağımlılıklar tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS is_programi_bagimliliklar (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ program_id INTEGER NOT NULL,
+ onceki_is_id INTEGER NOT NULL,
+ sonraki_is_id INTEGER NOT NULL,
+ bagimliluk_tipi TEXT DEFAULT 'FS',
+ lag_gun INTEGER DEFAULT 0,
+ FOREIGN KEY (program_id) REFERENCES is_programi(id) ON DELETE CASCADE,
+ FOREIGN KEY (onceki_is_id) REFERENCES is_programi_kalemleri(id) ON DELETE CASCADE,
+ FOREIGN KEY (sonraki_is_id) REFERENCES is_programi_kalemleri(id) ON DELETE CASCADE
+ )
+ """)
+
+ # İndeksler - Gantt Chart
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_is_programi_proje
+ ON is_programi(proje_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_is_programi_kalemleri_program
+ ON is_programi_kalemleri(program_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_is_programi_kalemleri_metraj
+ ON is_programi_kalemleri(metraj_kalem_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_is_programi_bagimliliklar_program
+ ON is_programi_bagimliliklar(program_id)
+ """)
+
+ # Temel Demir Listesi tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS temel_demir_listesi (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER,
+ temel_tipi TEXT, -- RADYE, BAG_KIRISI, KOLON_FILIZI
+ temel_adi TEXT, -- PL1, PL2, BK1, S001 vb.
+ pozisyon_no TEXT, -- P36, P37 vb.
+ donati_tipi TEXT, -- BOYUNA, ENINE, UST, ALT, SEHPA
+ demir_capi INTEGER, -- 8, 10, 12, 14, 16... (mm)
+ demir_uzunlugu REAL, -- cm
+ demir_adeti INTEGER,
+ aralik_cm REAL, -- Donatı aralığı (varsa)
+ toplam_uzunluk REAL, -- adet × uzunluk (cm)
+ toplam_uzunluk_m REAL, -- metre cinsinden
+ birim_agirlik REAL, -- kg/m
+ toplam_agirlik REAL, -- kg
+ kaynak TEXT DEFAULT 'DXF', -- DXF, MANUEL
+ dxf_layer TEXT, -- Hangi layer'dan okundu
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+
+ # Temel Özet tablosu (Çapa göre gruplandırılmış özet)
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS temel_demir_ozet (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ proje_id INTEGER,
+ demir_capi INTEGER,
+ toplam_uzunluk_m REAL,
+ toplam_agirlik_kg REAL,
+ toplam_agirlik_ton REAL,
+ adet_sayisi INTEGER, -- Toplam kaç adet demir var
+ olusturma_tarihi TEXT NOT NULL,
+ guncelleme_tarihi TEXT,
+ FOREIGN KEY (proje_id) REFERENCES projects(id) ON DELETE CASCADE
+ )
+ """)
+
+ # İndeksler - Temel Demir
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_proje
+ ON temel_demir_listesi(proje_id)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_capi
+ ON temel_demir_listesi(demir_capi)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_temel_demir_listesi_poz
+ ON temel_demir_listesi(pozisyon_no)
+ """)
+
+ cursor.execute("""
+ CREATE INDEX IF NOT EXISTS idx_temel_demir_ozet_proje
+ ON temel_demir_ozet(proje_id)
+ """)
+
+ # Uygulama ayarları tablosu
+ cursor.execute("""
+ CREATE TABLE IF NOT EXISTS uygulama_ayarlari (
+ anahtar TEXT PRIMARY KEY,
+ deger TEXT
+ )
+ """)
+
+ # Schema versiyonunu güncelle
+ if current_version < SCHEMA_VERSION:
+ conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+ conn.commit()
+
+ # ── Tedarikçi İşlemleri ─────────────────────────────────────────
+
+ def get_tedarikci_listesi(self) -> List[Dict[str, Any]]:
+ """Tüm tedarikçileri getir."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM tedarikci_listesi ORDER BY ad")
+ return [dict(row) for row in cursor.fetchall()]
+
+ def add_tedarikci(self, ad: str, telefon: str = "", email: str = "",
+ adres: str = "", notlar: str = "") -> Optional[int]:
+ """Yeni tedarikçi ekle."""
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO tedarikci_listesi (ad, telefon, email, adres, notlar, aktif, olusturma_tarihi)
+ VALUES (?, ?, ?, ?, ?, 1, ?)
+ """, (ad, telefon, email, adres, notlar, now))
+ return cursor.lastrowid
+
+ def update_tedarikci(self, tedarikci_id: int, **kwargs) -> bool:
+ """Tedarikçi bilgilerini güncelle."""
+ if not kwargs:
+ return False
+ kwargs['guncelleme_tarihi'] = datetime.now().isoformat()
+ fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+ values = list(kwargs.values()) + [tedarikci_id]
+ with self.get_connection() as conn:
+ conn.execute(f"UPDATE tedarikci_listesi SET {fields} WHERE id = ?", values)
+ return True
+
+ def delete_tedarikci(self, tedarikci_id: int) -> bool:
+ """Tedarikçiyi sil."""
+ with self.get_connection() as conn:
+ conn.execute("DELETE FROM tedarikci_listesi WHERE id = ?", (tedarikci_id,))
+ return True
+
+ def add_tedarikci_fiyat(self, tedarikci_id: int, malzeme_kodu: str,
+ malzeme_adi: str = "", birim: str = "",
+ birim_fiyat: float = 0.0, kdv_orani: float = 20.0,
+ indirim_orani: float = 0.0, teslimat_suresi: str = "",
+ stok_durumu: str = "", gecerlilik_tarihi: str = "",
+ notlar: str = "") -> Optional[int]:
+ """Tedarikçi için malzeme fiyatı ekle veya güncelle."""
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ # Aynı tedarikçi + malzeme varsa güncelle
+ cursor.execute("""
+ SELECT id FROM tedarikci_fiyatlari
+ WHERE tedarikci_id = ? AND malzeme_kodu = ?
+ """, (tedarikci_id, malzeme_kodu))
+ row = cursor.fetchone()
+ if row:
+ cursor.execute("""
+ UPDATE tedarikci_fiyatlari
+ SET malzeme_adi=?, birim=?, birim_fiyat=?, kdv_orani=?,
+ indirim_orani=?, teslimat_suresi=?, stok_durumu=?,
+ gecerlilik_tarihi=?, notlar=?, guncelleme_tarihi=?
+ WHERE id=?
+ """, (malzeme_adi, birim, birim_fiyat, kdv_orani, indirim_orani,
+ teslimat_suresi, stok_durumu, gecerlilik_tarihi, notlar, now, row[0]))
+ return row[0]
+ else:
+ cursor.execute("""
+ INSERT INTO tedarikci_fiyatlari
+ (tedarikci_id, malzeme_kodu, malzeme_adi, birim, birim_fiyat,
+ kdv_orani, indirim_orani, teslimat_suresi, stok_durumu,
+ gecerlilik_tarihi, notlar, olusturma_tarihi)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ """, (tedarikci_id, malzeme_kodu, malzeme_adi, birim, birim_fiyat,
+ kdv_orani, indirim_orani, teslimat_suresi, stok_durumu,
+ gecerlilik_tarihi, notlar, now))
+ return cursor.lastrowid
+
+ def get_tedarikci_fiyatlari(self, malzeme_kodu: str = "",
+ tedarikci_id: int = 0) -> List[Dict[str, Any]]:
+ """Tedarikçi fiyatlarını getir (malzeme koduna veya tedarikçiye göre filtrele)."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ if malzeme_kodu and tedarikci_id:
+ cursor.execute("""
+ SELECT tf.*, tl.ad as tedarikci_ad
+ FROM tedarikci_fiyatlari tf
+ JOIN tedarikci_listesi tl ON tf.tedarikci_id = tl.id
+ WHERE tf.malzeme_kodu = ? AND tf.tedarikci_id = ?
+ """, (malzeme_kodu, tedarikci_id))
+ elif malzeme_kodu:
+ cursor.execute("""
+ SELECT tf.*, tl.ad as tedarikci_ad
+ FROM tedarikci_fiyatlari tf
+ JOIN tedarikci_listesi tl ON tf.tedarikci_id = tl.id
+ WHERE tf.malzeme_kodu = ?
+ ORDER BY tf.birim_fiyat
+ """, (malzeme_kodu,))
+ elif tedarikci_id:
+ cursor.execute("""
+ SELECT tf.*, tl.ad as tedarikci_ad
+ FROM tedarikci_fiyatlari tf
+ JOIN tedarikci_listesi tl ON tf.tedarikci_id = tl.id
+ WHERE tf.tedarikci_id = ?
+ ORDER BY tf.malzeme_kodu
+ """, (tedarikci_id,))
+ else:
+ cursor.execute("""
+ SELECT tf.*, tl.ad as tedarikci_ad
+ FROM tedarikci_fiyatlari tf
+ JOIN tedarikci_listesi tl ON tf.tedarikci_id = tl.id
+ ORDER BY tf.malzeme_kodu, tf.birim_fiyat
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+
+ def delete_tedarikci_fiyat(self, fiyat_id: int) -> bool:
+ """Tedarikçi fiyatını sil."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM tedarikci_fiyatlari WHERE id = ?", (fiyat_id,))
+ return cursor.rowcount > 0
+
+ def search_malzeme_kodlari(self, arama: str) -> List[str]:
+ """Mevcut malzeme kodlarını ara (autocomplete için)."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT DISTINCT malzeme_kodu FROM tedarikci_fiyatlari
+ WHERE malzeme_kodu LIKE ? ORDER BY malzeme_kodu LIMIT 20
+ """, (f"%{arama}%",))
+ return [row[0] for row in cursor.fetchall()]
+
+ # ── Uygulama Ayarları ─────────────────────────────────────────
+
+ def get_ayar(self, anahtar: str, varsayilan: str = "") -> str:
+ """Uygulama ayarını getir."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT deger FROM uygulama_ayarlari WHERE anahtar = ?", (anahtar,))
+ row = cursor.fetchone()
+ return row[0] if row else varsayilan
+
+ def save_ayar(self, anahtar: str, deger: str) -> None:
+ """Uygulama ayarını kaydet."""
+ with self.get_connection() as conn:
+ conn.execute(
+ "INSERT OR REPLACE INTO uygulama_ayarlari (anahtar, deger) VALUES (?, ?)",
+ (anahtar, deger)
+ )
+
+ # Proje İşlemleri
+ def create_project(self, ad: str, aciklama: str = "") -> int:
+ """
+ Yeni proje oluştur.
+ 
+ Args:
+ ad: Proje adı
+ aciklama: Proje açıklaması
+ 
+ Returns:
+ int: Oluşturulan projenin ID'si
+ """
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO projects (ad, aciklama, olusturma_tarihi, guncelleme_tarihi)
+ VALUES (?, ?, ?, ?)
+ """, (ad, aciklama, now, now))
+ return cursor.lastrowid
+ 
+ def get_all_projects(self) -> List[Dict[str, Any]]:
+ """
+ Tüm projeleri getir.
+ 
+ Returns:
+ List[Dict]: Proje listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM projects 
+ ORDER BY olusturma_tarihi DESC
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def get_project(self, project_id: int) -> Optional[Dict[str, Any]]:
+ """
+ Belirli bir projeyi getir.
+ 
+ Args:
+ project_id: Proje ID'si
+ 
+ Returns:
+ Optional[Dict]: Proje bilgileri veya None
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def update_project(self, project_id: int, **kwargs) -> bool:
+ """
+ Projeyi güncelle.
+ 
+ Args:
+ project_id: Proje ID'si
+ **kwargs: Güncellenecek alanlar
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ if not kwargs:
+ return False
+ 
+ now = datetime.now().isoformat()
+ fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+ fields += ", guncelleme_tarihi = ?"
+ values = list(kwargs.values()) + [now, project_id]
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute(f"UPDATE projects SET {fields} WHERE id = ?", values)
+ return cursor.rowcount > 0
+ 
+ def delete_project(self, project_id: int) -> bool:
+ """
+ Projeyi sil.
+ 
+ Args:
+ project_id: Proje ID'si
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+ return cursor.rowcount > 0
+ 
+ # Poz İşlemleri
+ def add_poz(self, poz_no: str, tanim: str, birim: str, 
+ resmi_fiyat: float = 0, kategori: str = "", fire_orani: float = 0.05) -> int:
+ """
+ Yeni poz ekle.
+ 
+ Args:
+ poz_no: Poz numarası
+ tanim: Poz tanımı
+ birim: Birim (m, m², m³, adet, vb.)
+ resmi_fiyat: Resmi birim fiyat
+ kategori: Poz kategorisi
+ fire_orani: Fire/atık oranı (0.05 = %5, varsayılan)
+ 
+ Returns:
+ int: Oluşturulan pozun ID'si
+ """
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ try:
+ cursor.execute("""
+ INSERT INTO pozlar (poz_no, tanim, birim, resmi_fiyat, kategori, fire_orani, guncelleme_tarihi)
+ VALUES (?, ?, ?, ?, ?, ?, ?)
+ """, (poz_no, tanim, birim, resmi_fiyat, kategori, fire_orani, now))
+ return cursor.lastrowid
+ except sqlite3.IntegrityError:
+ # Poz zaten varsa güncelle
+ cursor.execute("""
+ UPDATE pozlar 
+ SET tanim = ?, birim = ?, resmi_fiyat = ?, kategori = ?, fire_orani = ?, guncelleme_tarihi = ?
+ WHERE poz_no = ?
+ """, (tanim, birim, resmi_fiyat, kategori, fire_orani, now, poz_no))
+ cursor.execute("SELECT id FROM pozlar WHERE poz_no = ?", (poz_no,))
+ return cursor.fetchone()['id']
+ 
+ def get_poz(self, poz_no: str) -> Optional[Dict[str, Any]]:
+ """
+ Poz bilgilerini getir.
+ 
+ Args:
+ poz_no: Poz numarası
+ 
+ Returns:
+ Optional[Dict]: Poz bilgileri veya None
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM pozlar WHERE poz_no = ?", (poz_no,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def search_pozlar(self, search_term: str) -> List[Dict[str, Any]]:
+ """
+ Poz arama.
+ 
+ Args:
+ search_term: Arama terimi
+ 
+ Returns:
+ List[Dict]: Bulunan pozlar
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM pozlar 
+ WHERE poz_no LIKE ? OR tanim LIKE ?
+ ORDER BY poz_no
+ LIMIT 100
+ """, (f"%{search_term}%", f"%{search_term}%"))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ # Metraj Kalemleri İşlemleri
+ def add_metraj_kalem(self, proje_id: int, tanim: str, miktar: float,
+ birim: str, birim_fiyat: float = 0, 
+ poz_no: str = "", kategori: str = "") -> int:
+ """
+ Metraj kalemi ekle.
+ 
+ Args:
+ proje_id: Proje ID'si
+ tanim: Kalem tanımı
+ miktar: Miktar
+ birim: Birim
+ birim_fiyat: Birim fiyat
+ poz_no: Poz numarası (opsiyonel)
+ kategori: Kategori
+ 
+ Returns:
+ int: Oluşturulan kalemin ID'si
+ """
+ from decimal import Decimal, ROUND_HALF_UP
+ toplam = float(
+ (Decimal(str(miktar)) * Decimal(str(birim_fiyat)))
+ .quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+ )
+ now = datetime.now().isoformat()
+
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO metraj_kalemleri
+ (proje_id, poz_no, tanim, miktar, birim, birim_fiyat, toplam, kategori, olusturma_tarihi)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ """, (proje_id, poz_no, tanim, miktar, birim, birim_fiyat, toplam, kategori, now))
+ 
+ # Proje toplam maliyetini güncelle
+ self._update_project_total(conn, proje_id)
+ 
+ return cursor.lastrowid
+ 
+ def get_project_metraj(self, proje_id: int) -> List[Dict[str, Any]]:
+ """
+ Projeye ait metraj kalemlerini getir.
+ 
+ Args:
+ proje_id: Proje ID'si
+ 
+ Returns:
+ List[Dict]: Metraj kalemleri listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM metraj_kalemleri
+ WHERE proje_id = ?
+ ORDER BY kategori, tanim
+ """, (proje_id,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def update_metraj_kalem(self, item_id: int, **kwargs) -> bool:
+ """
+ Metraj kalemini güncelle.
+ 
+ Args:
+ item_id: Kalem ID'si
+ **kwargs: Güncellenecek alanlar
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ if not kwargs:
+ return False
+ 
+ # Toplam hesapla (eğer toplam parametresi verilmişse onu kullan, yoksa otomatik hesapla)
+ from decimal import Decimal, ROUND_HALF_UP
+ if 'toplam' not in kwargs:
+ if 'miktar' in kwargs and 'birim_fiyat' in kwargs:
+ kwargs['toplam'] = float(
+ (Decimal(str(kwargs['miktar'])) * Decimal(str(kwargs['birim_fiyat'])))
+ .quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+ )
+ elif 'miktar' in kwargs or 'birim_fiyat' in kwargs:
+ # Mevcut değerleri al
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT miktar, birim_fiyat FROM metraj_kalemleri WHERE id = ?", (item_id,))
+ row = cursor.fetchone()
+ if row:
+ miktar = kwargs.get('miktar', row['miktar'])
+ birim_fiyat = kwargs.get('birim_fiyat', row['birim_fiyat'])
+ kwargs['toplam'] = float(
+ (Decimal(str(miktar)) * Decimal(str(birim_fiyat)))
+ .quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+ )
+ 
+ fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+ values = list(kwargs.values()) + [item_id]
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute(f"UPDATE metraj_kalemleri SET {fields} WHERE id = ?", values)
+ 
+ # Proje toplamını güncelle
+ cursor.execute("SELECT proje_id FROM metraj_kalemleri WHERE id = ?", (item_id,))
+ row = cursor.fetchone()
+ if row:
+ self._update_project_total(conn, row['proje_id'])
+ 
+ return cursor.rowcount > 0
+ 
+ def delete_metraj_kalem(self, item_id: int) -> bool:
+ """
+ Metraj kalemini sil.
+
+ Args:
+ item_id: Kalem ID'si
+
+ Returns:
+ bool: Başarı durumu
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ # Önce proje ID'sini al
+ cursor.execute("SELECT proje_id FROM metraj_kalemleri WHERE id = ?", (item_id,))
+ row = cursor.fetchone()
+
+ if row:
+ proje_id = row['proje_id']
+ # Kalemi sil
+ cursor.execute("DELETE FROM metraj_kalemleri WHERE id = ?", (item_id,))
+ # Proje toplamını güncelle
+ self._update_project_total(conn, proje_id)
+ return cursor.rowcount > 0
+ return False
+
+ # Geriye uyumluluk için alias
+ def delete_item(self, item_id: int) -> bool:
+ """Geriye uyumluluk: delete_metraj_kalem() kullanınız."""
+ return self.delete_metraj_kalem(item_id)
+ 
+ def _update_project_total(self, conn: sqlite3.Connection, proje_id: int) -> None:
+ """Proje toplam maliyetini güncelle."""
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT SUM(toplam) as toplam FROM metraj_kalemleri
+ WHERE proje_id = ?
+ """, (proje_id,))
+ result = cursor.fetchone()
+ toplam = result['toplam'] if result['toplam'] else 0
+ 
+ cursor.execute("""
+ UPDATE projects SET toplam_maliyet = ? WHERE id = ?
+ """, (toplam, proje_id))
+ 
+ # Taşeron Teklifleri İşlemleri
+ def add_taseron_teklif(self, proje_id: int, firma_adi: str, 
+ kalem_id: Optional[int], fiyat: float,
+ poz_no: str = "", tanim: str = "",
+ miktar: float = 0, birim: str = "") -> int:
+ """
+ Taşeron teklifi ekle.
+ 
+ Args:
+ proje_id: Proje ID'si
+ firma_adi: Firma adı
+ kalem_id: Metraj kalemi ID'si (opsiyonel)
+ fiyat: Teklif fiyatı
+ poz_no: Poz numarası
+ tanim: Kalem tanımı
+ miktar: Miktar
+ birim: Birim
+ 
+ Returns:
+ int: Oluşturulan teklifin ID'si
+ """
+ toplam = miktar * fiyat
+ now = datetime.now().isoformat()
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO taseron_teklifleri
+ (proje_id, firma_adi, kalem_id, poz_no, tanim, miktar, birim, fiyat, toplam, teklif_tarihi)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ """, (proje_id, firma_adi, kalem_id, poz_no, tanim, miktar, birim, fiyat, toplam, now))
+ return cursor.lastrowid
+ 
+ def get_taseron_teklifleri(self, proje_id: int) -> List[Dict[str, Any]]:
+ """
+ Projeye ait taşeron tekliflerini getir.
+ 
+ Args:
+ proje_id: Proje ID'si
+ 
+ Returns:
+ List[Dict]: Taşeron teklifleri listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM taseron_teklifleri
+ WHERE proje_id = ?
+ ORDER BY firma_adi, tanim
+ """, (proje_id,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def update_taseron_teklif(self, offer_id: int, **kwargs) -> bool:
+ """
+ Taşeron teklifini güncelle.
+ 
+ Args:
+ offer_id: Teklif ID'si
+ **kwargs: Güncellenecek alanlar
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ if not kwargs:
+ return False
+ 
+ # Toplam hesapla
+ if 'miktar' in kwargs and 'fiyat' in kwargs:
+ kwargs['toplam'] = kwargs['miktar'] * kwargs['fiyat']
+ elif 'miktar' in kwargs or 'fiyat' in kwargs:
+ # Mevcut değerleri al
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT miktar, fiyat FROM taseron_teklifleri WHERE id = ?", (offer_id,))
+ row = cursor.fetchone()
+ if row:
+ miktar = kwargs.get('miktar', row['miktar'])
+ fiyat = kwargs.get('fiyat', row['fiyat'])
+ kwargs['toplam'] = miktar * fiyat if miktar and fiyat else 0
+ 
+ fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+ values = list(kwargs.values()) + [offer_id]
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute(f"UPDATE taseron_teklifleri SET {fields} WHERE id = ?", values)
+ return cursor.rowcount > 0
+ 
+ def delete_taseron_teklif(self, offer_id: int) -> bool:
+ """
+ Taşeron teklifini sil.
+ 
+ Args:
+ offer_id: Teklif ID'si
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM taseron_teklifleri WHERE id = ?", (offer_id,))
+ return cursor.rowcount > 0
+ 
+ # Malzeme İşlemleri
+ def add_malzeme(self, ad: str, birim: str, kategori: str = "", aciklama: str = "", birim_fiyat: float = 0.0) -> int:
+ """
+ Yeni malzeme ekle.
+ 
+ Args:
+ ad: Malzeme adı
+ birim: Birim (kg, m³, adet, vb.)
+ kategori: Malzeme kategorisi
+ aciklama: Açıklama
+ birim_fiyat: Birim fiyat (varsayılan 0)
+ 
+ Returns:
+ int: Oluşturulan malzemenin ID'si
+ """
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ try:
+ cursor.execute("""
+ INSERT INTO malzemeler (ad, birim, kategori, aciklama, birim_fiyat, olusturma_tarihi)
+ VALUES (?, ?, ?, ?, ?, ?)
+ """, (ad, birim, kategori, aciklama, birim_fiyat, now))
+ return cursor.lastrowid
+ except sqlite3.IntegrityError:
+ # Malzeme zaten varsa güncelle (birim fiyat hariç)
+ cursor.execute("""
+ UPDATE malzemeler 
+ SET birim = ?, kategori = ?, aciklama = ?
+ WHERE ad = ? AND birim_fiyat = 0
+ """, (birim, kategori, aciklama, ad))
+ cursor.execute("SELECT id FROM malzemeler WHERE ad = ?", (ad,))
+ row = cursor.fetchone()
+ return row['id'] if row else 0
+ 
+ def get_malzeme(self, malzeme_id: int) -> Optional[Dict[str, Any]]:
+ """Malzeme bilgilerini getir."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM malzemeler WHERE id = ?", (malzeme_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def get_malzeme_by_name(self, ad: str) -> Optional[Dict[str, Any]]:
+ """Malzeme adına göre getir."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM malzemeler WHERE ad = ?", (ad,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def get_all_malzemeler(self) -> List[Dict[str, Any]]:
+ """Tüm malzemeleri getir."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM malzemeler ORDER BY kategori, ad")
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ # Malzeme Formülü İşlemleri
+ def add_malzeme_formulu(self, poz_id: int, malzeme_id: int, miktar: float, 
+ birim: str, formul_tipi: str = "direkt", aciklama: str = "") -> int:
+ """
+ Poz için malzeme formülü ekle.
+ 
+ Args:
+ poz_id: Poz ID'si
+ malzeme_id: Malzeme ID'si
+ miktar: Birim poz başına malzeme miktarı
+ birim: Malzeme birimi
+ formul_tipi: Formül tipi (direkt, harç, beton_karisimi, vb.)
+ aciklama: Açıklama
+ 
+ Returns:
+ int: Oluşturulan formülün ID'si
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ try:
+ cursor.execute("""
+ INSERT INTO malzeme_formulleri 
+ (poz_id, malzeme_id, miktar, birim, formul_tipi, aciklama)
+ VALUES (?, ?, ?, ?, ?, ?)
+ """, (poz_id, malzeme_id, miktar, birim, formul_tipi, aciklama))
+ return cursor.lastrowid
+ except sqlite3.IntegrityError:
+ # Formül zaten varsa güncelle
+ cursor.execute("""
+ UPDATE malzeme_formulleri 
+ SET miktar = ?, birim = ?, formul_tipi = ?, aciklama = ?
+ WHERE poz_id = ? AND malzeme_id = ?
+ """, (miktar, birim, formul_tipi, aciklama, poz_id, malzeme_id))
+ cursor.execute("""
+ SELECT id FROM malzeme_formulleri 
+ WHERE poz_id = ? AND malzeme_id = ?
+ """, (poz_id, malzeme_id))
+ row = cursor.fetchone()
+ return row['id'] if row else 0
+ 
+ def get_poz_formulleri(self, poz_id: int) -> List[Dict[str, Any]]:
+ """
+ Poz için malzeme formüllerini getir.
+ 
+ Args:
+ poz_id: Poz ID'si
+ 
+ Returns:
+ List[Dict]: Formül listesi (malzeme bilgileri dahil)
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT 
+ mf.id,
+ mf.poz_id,
+ mf.malzeme_id,
+ mf.miktar,
+ mf.birim,
+ mf.formul_tipi,
+ mf.aciklama,
+ m.ad as malzeme_adi,
+ m.birim as malzeme_birim,
+ m.kategori as malzeme_kategori
+ FROM malzeme_formulleri mf
+ JOIN malzemeler m ON mf.malzeme_id = m.id
+ WHERE mf.poz_id = ?
+ ORDER BY m.kategori, m.ad
+ """, (poz_id,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def get_poz_formulleri_by_poz_no(self, poz_no: str) -> List[Dict[str, Any]]:
+ """Poz numarasına göre formülleri getir."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT 
+ mf.id,
+ mf.poz_id,
+ mf.malzeme_id,
+ mf.miktar,
+ mf.birim,
+ mf.formul_tipi,
+ mf.aciklama,
+ m.ad as malzeme_adi,
+ m.birim as malzeme_birim,
+ m.kategori as malzeme_kategori
+ FROM malzeme_formulleri mf
+ JOIN malzemeler m ON mf.malzeme_id = m.id
+ JOIN pozlar p ON mf.poz_id = p.id
+ WHERE p.poz_no = ?
+ ORDER BY m.kategori, m.ad
+ """, (poz_no,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ # Birim Dönüşüm İşlemleri
+ def add_birim_donusum(self, malzeme_id: Optional[int], kaynak_birim: str, 
+ hedef_birim: str, donusum_katsayisi: float) -> int:
+ """Birim dönüşümü ekle."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO birim_donusumleri 
+ (malzeme_id, kaynak_birim, hedef_birim, donusum_katsayisi)
+ VALUES (?, ?, ?, ?)
+ """, (malzeme_id, kaynak_birim, hedef_birim, donusum_katsayisi))
+ return cursor.lastrowid
+ 
+ def get_birim_donusum(self, kaynak_birim: str, hedef_birim: str, 
+ malzeme_id: Optional[int] = None) -> Optional[float]:
+ """Birim dönüşüm katsayısını getir."""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ if malzeme_id:
+ cursor.execute("""
+ SELECT donusum_katsayisi FROM birim_donusumleri
+ WHERE malzeme_id = ? AND kaynak_birim = ? AND hedef_birim = ?
+ """, (malzeme_id, kaynak_birim, hedef_birim))
+ else:
+ cursor.execute("""
+ SELECT donusum_katsayisi FROM birim_donusumleri
+ WHERE malzeme_id IS NULL AND kaynak_birim = ? AND hedef_birim = ?
+ """, (kaynak_birim, hedef_birim))
+ row = cursor.fetchone()
+ return row['donusum_katsayisi'] if row else None
+ 
+ # Yedekleme ve Geri Yükleme İşlemleri
+ def backup_project(self, project_id: int, backup_path: Path) -> bool:
+ """
+ Projeyi yedekle (JSON formatında).
+ 
+ Args:
+ project_id: Yedeklenecek proje ID'si
+ backup_path: Yedek dosyasının kaydedileceği yol
+ 
+ Returns:
+ bool: Başarılı ise True
+ """
+ try:
+ # Proje bilgilerini al
+ project = self.get_project(project_id)
+ if not project:
+ return False
+ 
+ # Metraj kalemlerini al
+ metraj_items = self.get_project_metraj(project_id)
+ 
+ # Taşeron tekliflerini al
+ taseron_offers = self.get_taseron_teklifleri(project_id)
+ 
+ # Yedek verisi oluştur
+ backup_data = {
+ 'version': '1.0',
+ 'backup_date': datetime.now().isoformat(),
+ 'project': dict(project),
+ 'metraj_items': [dict(item) for item in metraj_items],
+ 'taseron_offers': [dict(offer) for offer in taseron_offers],
+ 'taseron_teklifleri': [dict(offer) for offer in taseron_offers] # Uyumluluk için
+ }
+ 
+ # JSON dosyasına kaydet
+ backup_path.parent.mkdir(parents=True, exist_ok=True)
+ with open(backup_path, 'w', encoding='utf-8') as f:
+ json.dump(backup_data, f, ensure_ascii=False, indent=2)
+ 
+ return True
+ 
+ except Exception as e:
+ print(f"Yedekleme hatası: {e}")
+ return False
+ 
+ def restore_project(self, backup_path: Path, new_project_name: Optional[str] = None) -> Optional[int]:
+ """
+ Yedekten proje geri yükle.
+ 
+ Args:
+ backup_path: Yedek dosyasının yolu
+ new_project_name: Yeni proje adı (None ise eski ad kullanılır)
+ 
+ Returns:
+ Optional[int]: Geri yüklenen projenin ID'si, hata durumunda None
+ """
+ try:
+ # Yedek dosyasını oku
+ with open(backup_path, 'r', encoding='utf-8') as f:
+ backup_data = json.load(f)
+ 
+ # Proje bilgilerini al
+ project_data = backup_data.get('project', {})
+ metraj_items = backup_data.get('metraj_items', [])
+ # Uyumluluk için hem 'taseron_offers' hem 'taseron_teklifleri' kontrol et
+ taseron_offers = backup_data.get('taseron_offers', backup_data.get('taseron_teklifleri', []))
+ 
+ # Yeni proje oluştur
+ project_name = new_project_name or project_data.get('ad', 'Geri Yüklenen Proje')
+ project_id = self.create_project(
+ ad=project_name,
+ aciklama=project_data.get('aciklama', '')
+ )
+ 
+ # Metraj kalemlerini geri yükle
+ for item in metraj_items:
+ try:
+ self.add_item(
+ proje_id=project_id,
+ poz_no=item.get('poz_no', ''),
+ tanim=item.get('tanim', ''),
+ kategori=item.get('kategori', ''),
+ miktar=item.get('miktar', 0),
+ birim=item.get('birim', ''),
+ birim_fiyat=item.get('birim_fiyat', 0),
+ toplam=item.get('toplam', 0)
+ )
+ except Exception as e:
+ print(f"Metraj kalemi geri yükleme hatası: {e}")
+ continue
+ 
+ # Taşeron tekliflerini geri yükle
+ for offer in taseron_offers:
+ try:
+ # Önce kalem ID'sini bul (poz_no'ya göre)
+ kalem_id = None
+ if offer.get('poz_no'):
+ metraj = self.get_project_metraj(project_id)
+ for item in metraj:
+ if item.get('poz_no') == offer.get('poz_no'):
+ kalem_id = item.get('id')
+ break
+ 
+ self.add_taseron_teklif(
+ proje_id=project_id,
+ firma_adi=offer.get('firma_adi', ''),
+ kalem_id=kalem_id,
+ fiyat=offer.get('fiyat', 0),
+ poz_no=offer.get('poz_no', ''),
+ tanim=offer.get('tanim', ''),
+ miktar=offer.get('miktar', 0),
+ birim=offer.get('birim', '')
+ )
+ except Exception as e:
+ print(f"Taşeron teklifi geri yükleme hatası: {e}")
+ continue
+ 
+ return project_id
+ 
+ except Exception as e:
+ print(f"Geri yükleme hatası: {e}")
+ import traceback
+ traceback.print_exc()
+ return None
+ 
+ def backup_all_projects(self, backup_path: Path) -> bool:
+ """
+ Tüm projeleri yedekle.
+ 
+ Args:
+ backup_path: Yedek dosyasının kaydedileceği yol
+ 
+ Returns:
+ bool: Başarılı ise True
+ """
+ try:
+ projects = self.get_all_projects()
+ backup_data = {
+ 'version': '1.0',
+ 'backup_date': datetime.now().isoformat(),
+ 'backup_type': 'all_projects',
+ 'projects': []
+ }
+ 
+ for project in projects:
+ project_id = project['id']
+ project_backup = {
+ 'project': dict(project),
+ 'metraj_items': [dict(item) for item in self.get_project_metraj(project_id)],
+ 'taseron_offers': [dict(offer) for offer in self.get_taseron_teklifleri(project_id)]
+ }
+ backup_data['projects'].append(project_backup)
+ 
+ # JSON dosyasına kaydet
+ backup_path.parent.mkdir(parents=True, exist_ok=True)
+ with open(backup_path, 'w', encoding='utf-8') as f:
+ json.dump(backup_data, f, ensure_ascii=False, indent=2)
+ 
+ return True
+ 
+ except Exception as e:
+ print(f"Tüm projeleri yedekleme hatası: {e}")
+ return False
+ 
+ # Şablon İşlemleri
+ def create_template(self, ad: str, aciklama: str = "") -> int:
+ """
+ Yeni şablon oluştur.
+ 
+ Args:
+ ad: Şablon adı
+ aciklama: Şablon açıklaması
+ 
+ Returns:
+ int: Oluşturulan şablonun ID'si
+ """
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO sablonlar (ad, aciklama, olusturma_tarihi, guncelleme_tarihi)
+ VALUES (?, ?, ?, ?)
+ """, (ad, aciklama, now, now))
+ return cursor.lastrowid
+ 
+ def get_all_templates(self) -> List[Dict[str, Any]]:
+ """
+ Tüm şablonları getir.
+ 
+ Returns:
+ List[Dict]: Şablon listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM sablonlar
+ ORDER BY olusturma_tarihi DESC
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def get_template(self, template_id: int) -> Optional[Dict[str, Any]]:
+ """
+ Şablon bilgilerini getir.
+ 
+ Args:
+ template_id: Şablon ID'si
+ 
+ Returns:
+ Optional[Dict]: Şablon bilgileri
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM sablonlar WHERE id = ?", (template_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def get_template_items(self, template_id: int) -> List[Dict[str, Any]]:
+ """
+ Şablon kalemlerini getir.
+ 
+ Args:
+ template_id: Şablon ID'si
+ 
+ Returns:
+ List[Dict]: Şablon kalemleri listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM sablon_kalemleri
+ WHERE sablon_id = ?
+ ORDER BY id
+ """, (template_id,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def add_template_item(self, sablon_id: int, poz_no: str = "", tanim: str = "",
+ kategori: str = "", miktar: float = 0, birim: str = "",
+ birim_fiyat: float = 0, toplam: float = 0) -> int:
+ """
+ Şablona kalem ekle.
+ 
+ Args:
+ sablon_id: Şablon ID'si
+ poz_no: Poz numarası
+ tanim: Kalem tanımı
+ kategori: Kategori
+ miktar: Miktar
+ birim: Birim
+ birim_fiyat: Birim fiyat
+ toplam: Toplam
+ 
+ Returns:
+ int: Eklenen kalemin ID'si
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO sablon_kalemleri 
+ (sablon_id, poz_no, tanim, kategori, miktar, birim, birim_fiyat, toplam)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ """, (sablon_id, poz_no, tanim, kategori, miktar, birim, birim_fiyat, toplam))
+ return cursor.lastrowid
+ 
+ def create_project_from_template(self, template_id: int, project_name: str, 
+ project_description: str = "") -> Optional[int]:
+ """
+ Şablondan proje oluştur.
+ 
+ Args:
+ template_id: Şablon ID'si
+ project_name: Yeni proje adı
+ project_description: Yeni proje açıklaması
+ 
+ Returns:
+ Optional[int]: Oluşturulan projenin ID'si
+ """
+ try:
+ # Yeni proje oluştur
+ project_id = self.create_project(project_name, project_description)
+ 
+ # Şablon kalemlerini al
+ template_items = self.get_template_items(template_id)
+ 
+ # Kalemleri projeye ekle
+ for item in template_items:
+ self.add_item(
+ proje_id=project_id,
+ poz_no=item.get('poz_no', ''),
+ tanim=item.get('tanim', ''),
+ kategori=item.get('kategori', ''),
+ miktar=item.get('miktar', 0),
+ birim=item.get('birim', ''),
+ birim_fiyat=item.get('birim_fiyat', 0),
+ toplam=item.get('toplam', 0)
+ )
+ 
+ return project_id
+ 
+ except Exception as e:
+ print(f"Şablondan proje oluşturma hatası: {e}")
+ import traceback
+ traceback.print_exc()
+ return None
+ 
+ def create_template_from_project(self, project_id: int, template_name: str, 
+ template_description: str = "") -> Optional[int]:
+ """
+ Projeden şablon oluştur.
+ 
+ Args:
+ project_id: Proje ID'si
+ template_name: Şablon adı
+ template_description: Şablon açıklaması
+ 
+ Returns:
+ Optional[int]: Oluşturulan şablonun ID'si
+ """
+ try:
+ # Yeni şablon oluştur
+ template_id = self.create_template(template_name, template_description)
+ 
+ # Proje kalemlerini al
+ project_items = self.get_project_metraj(project_id)
+ 
+ # Kalemleri şablona ekle
+ for item in project_items:
+ self.add_template_item(
+ sablon_id=template_id,
+ poz_no=item.get('poz_no', ''),
+ tanim=item.get('tanim', ''),
+ kategori=item.get('kategori', ''),
+ miktar=item.get('miktar', 0),
+ birim=item.get('birim', ''),
+ birim_fiyat=item.get('birim_fiyat', 0),
+ toplam=item.get('toplam', 0)
+ )
+ 
+ return template_id
+ 
+ except Exception as e:
+ print(f"Projeden şablon oluşturma hatası: {e}")
+ import traceback
+ traceback.print_exc()
+ return None
+ 
+ def delete_template(self, template_id: int) -> bool:
+ """
+ Şablonu sil.
+ 
+ Args:
+ template_id: Şablon ID'si
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM sablonlar WHERE id = ?", (template_id,))
+ return cursor.rowcount > 0
+ 
+ def update_template(self, template_id: int, **kwargs) -> bool:
+ """
+ Şablonu güncelle.
+ 
+ Args:
+ template_id: Şablon ID'si
+ **kwargs: Güncellenecek alanlar
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ if not kwargs:
+ return False
+ 
+ now = datetime.now().isoformat()
+ fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+ fields += ", guncelleme_tarihi = ?"
+ values = list(kwargs.values()) + [now, template_id]
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute(f"UPDATE sablonlar SET {fields} WHERE id = ?", values)
+ return cursor.rowcount > 0
+ 
+ def get_template_item(self, item_id: int) -> Optional[Dict[str, Any]]:
+ """
+ Şablon kalemi bilgilerini getir.
+ 
+ Args:
+ item_id: Kalem ID'si
+ 
+ Returns:
+ Optional[Dict]: Kalem bilgileri
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM sablon_kalemleri WHERE id = ?", (item_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def update_template_item(self, item_id: int, **kwargs) -> bool:
+ """
+ Şablon kalemini güncelle.
+ 
+ Args:
+ item_id: Kalem ID'si
+ **kwargs: Güncellenecek alanlar
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ if not kwargs:
+ return False
+ 
+ fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+ values = list(kwargs.values()) + [item_id]
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute(f"UPDATE sablon_kalemleri SET {fields} WHERE id = ?", values)
+ return cursor.rowcount > 0
+ 
+ def delete_template_item(self, item_id: int) -> bool:
+ """
+ Şablon kalemini sil.
+ 
+ Args:
+ item_id: Kalem ID'si
+ 
+ Returns:
+ bool: Başarı durumu
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM sablon_kalemleri WHERE id = ?", (item_id,))
+ return cursor.rowcount > 0
+ 
+ def copy_template(self, template_id: int, new_name: str, new_description: str = "") -> Optional[int]:
+ """
+ Şablonu kopyala.
+ 
+ Args:
+ template_id: Kopyalanacak şablon ID'si
+ new_name: Yeni şablon adı
+ new_description: Yeni şablon açıklaması
+ 
+ Returns:
+ Optional[int]: Yeni şablonun ID'si
+ """
+ try:
+ # Orijinal şablonu al
+ original_template = self.get_template(template_id)
+ if not original_template:
+ return None
+ 
+ # Yeni şablon oluştur
+ new_template_id = self.create_template(new_name, new_description or original_template.get('aciklama', ''))
+ 
+ # Kalemleri kopyala
+ items = self.get_template_items(template_id)
+ for item in items:
+ self.add_template_item(
+ sablon_id=new_template_id,
+ poz_no=item.get('poz_no', ''),
+ tanim=item.get('tanim', ''),
+ kategori=item.get('kategori', ''),
+ miktar=item.get('miktar', 0),
+ birim=item.get('birim', ''),
+ birim_fiyat=item.get('birim_fiyat', 0),
+ toplam=item.get('toplam', 0)
+ )
+ 
+ return new_template_id
+ 
+ except Exception as e:
+ print(f"Şablon kopyalama hatası: {e}")
+ import traceback
+ traceback.print_exc()
+ return None
+ 
+ def get_all_kategoriler(self) -> List[str]:
+ """
+ Tüm kategorileri getir (projelerden ve şablonlardan).
+ 
+ Returns:
+ List[str]: Kategori listesi
+ """
+ kategoriler = set()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ # Projelerden kategoriler
+ cursor.execute("SELECT DISTINCT kategori FROM metraj_kalemleri WHERE kategori IS NOT NULL AND kategori != ''")
+ for row in cursor.fetchall():
+ kategoriler.add(row[0])
+ # Şablonlardan kategoriler
+ cursor.execute("SELECT DISTINCT kategori FROM sablon_kalemleri WHERE kategori IS NOT NULL AND kategori != ''")
+ for row in cursor.fetchall():
+ kategoriler.add(row[0])
+ return sorted(list(kategoriler))
+ 
+ def get_items_by_kategoriler(self, kategoriler: List[str]) -> List[Dict[str, Any]]:
+ """
+ Belirtilen kategorilerdeki kalemleri getir (projelerden ve şablonlardan).
+ 
+ Args:
+ kategoriler: Kategori listesi
+ 
+ Returns:
+ List[Dict]: Kalem listesi
+ """
+ if not kategoriler:
+ return []
+ 
+ items = []
+ placeholders = ','.join(['?'] * len(kategoriler))
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ # Projelerden kalemler
+ cursor.execute(f"""
+ SELECT DISTINCT poz_no, tanim, kategori, birim,
+ (SELECT birim_fiyat FROM birim_fiyatlar
+ WHERE birim_fiyatlar.poz_no = metraj_kalemleri.poz_no
+ AND birim_fiyatlar.aktif = 1
+ ORDER BY tarih DESC LIMIT 1) as birim_fiyat
+ FROM metraj_kalemleri
+ WHERE kategori IN ({placeholders})
+ """, kategoriler)
+ 
+ for row in cursor.fetchall():
+ items.append({
+ 'poz_no': row[0] or '',
+ 'tanim': row[1] or '',
+ 'kategori': row[2] or '',
+ 'birim': row[3] or '',
+ 'birim_fiyat': row[4] or 0.0
+ })
+ 
+ # Şablonlardan kalemler
+ cursor.execute(f"""
+ SELECT DISTINCT poz_no, tanim, kategori, birim, birim_fiyat
+ FROM sablon_kalemleri
+ WHERE kategori IN ({placeholders})
+ """, kategoriler)
+ 
+ for row in cursor.fetchall():
+ # Aynı poz_no varsa atla
+ if not any(item.get('poz_no') == (row[0] or '') for item in items):
+ items.append({
+ 'poz_no': row[0] or '',
+ 'tanim': row[1] or '',
+ 'kategori': row[2] or '',
+ 'birim': row[3] or '',
+ 'birim_fiyat': row[4] or 0.0
+ })
+ 
+ return items
+ 
+ # Birim Fiyat İşlemleri
+ def add_birim_fiyat(self, poz_id: Optional[int] = None, poz_no: str = "",
+ birim_fiyat: float = 0, tarih: Optional[str] = None,
+ kaynak: str = "", aciklama: str = "", aktif: bool = True) -> int:
+ """
+ Birim fiyat ekle.
+ 
+ Args:
+ poz_id: Poz ID'si (opsiyonel)
+ poz_no: Poz numarası
+ birim_fiyat: Birim fiyat
+ tarih: Tarih (None ise bugün)
+ kaynak: Fiyat kaynağı (ör: "Tedarikçi A", "Resmi Fiyat")
+ aciklama: Açıklama
+ aktif: Aktif mi (varsayılan: True)
+ 
+ Returns:
+ int: Eklenen fiyatın ID'si
+ """
+ if tarih is None:
+ tarih = datetime.now().isoformat()
+ 
+ # Eğer poz_id yoksa ama poz_no varsa, poz_id'yi bul
+ if not poz_id and poz_no:
+ poz = self.get_poz_by_no(poz_no)
+ if poz:
+ poz_id = poz['id']
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ # Yeni fiyat eklendiğinde eski fiyatları pasif yap (aynı poz için)
+ if poz_id:
+ cursor.execute("""
+ UPDATE birim_fiyatlar SET aktif = 0
+ WHERE poz_id = ? AND aktif = 1
+ """, (poz_id,))
+ elif poz_no:
+ cursor.execute("""
+ UPDATE birim_fiyatlar SET aktif = 0
+ WHERE poz_no = ? AND aktif = 1
+ """, (poz_no,))
+ 
+ # Yeni fiyatı ekle
+ cursor.execute("""
+ INSERT INTO birim_fiyatlar 
+ (poz_id, poz_no, birim_fiyat, tarih, kaynak, aciklama, aktif)
+ VALUES (?, ?, ?, ?, ?, ?, ?)
+ """, (poz_id, poz_no, birim_fiyat, tarih, kaynak, aciklama, 1 if aktif else 0))
+ return cursor.lastrowid
+ 
+ def get_birim_fiyat(self, poz_id: Optional[int] = None, poz_no: str = "",
+ aktif_only: bool = True) -> Optional[Dict[str, Any]]:
+ """
+ Poz için aktif birim fiyatı getir.
+ 
+ Args:
+ poz_id: Poz ID'si
+ poz_no: Poz numarası
+ aktif_only: Sadece aktif fiyatları getir
+ 
+ Returns:
+ Optional[Dict]: Birim fiyat bilgisi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ if poz_id:
+ if aktif_only:
+ cursor.execute("""
+ SELECT * FROM birim_fiyatlar
+ WHERE poz_id = ? AND aktif = 1
+ ORDER BY tarih DESC
+ LIMIT 1
+ """, (poz_id,))
+ else:
+ cursor.execute("""
+ SELECT * FROM birim_fiyatlar
+ WHERE poz_id = ?
+ ORDER BY tarih DESC
+ LIMIT 1
+ """, (poz_id,))
+ elif poz_no:
+ if aktif_only:
+ cursor.execute("""
+ SELECT * FROM birim_fiyatlar
+ WHERE poz_no = ? AND aktif = 1
+ ORDER BY tarih DESC
+ LIMIT 1
+ """, (poz_no,))
+ else:
+ cursor.execute("""
+ SELECT * FROM birim_fiyatlar
+ WHERE poz_no = ?
+ ORDER BY tarih DESC
+ LIMIT 1
+ """, (poz_no,))
+ else:
+ return None
+ 
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def get_birim_fiyat_gecmisi(self, poz_id: Optional[int] = None, poz_no: str = "",
+ limit: int = 50) -> List[Dict[str, Any]]:
+ """
+ Poz için fiyat geçmişini getir.
+ 
+ Args:
+ poz_id: Poz ID'si
+ poz_no: Poz numarası
+ limit: Maksimum kayıt sayısı
+ 
+ Returns:
+ List[Dict]: Fiyat geçmişi listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ if poz_id:
+ cursor.execute("""
+ SELECT * FROM birim_fiyatlar
+ WHERE poz_id = ?
+ ORDER BY tarih DESC
+ LIMIT ?
+ """, (poz_id, limit))
+ elif poz_no:
+ cursor.execute("""
+ SELECT * FROM birim_fiyatlar
+ WHERE poz_no = ?
+ ORDER BY tarih DESC
+ LIMIT ?
+ """, (poz_no, limit))
+ else:
+ return []
+ 
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def get_all_birim_fiyatlar(self, aktif_only: bool = True) -> List[Dict[str, Any]]:
+ """
+ Tüm birim fiyatları getir.
+ 
+ Args:
+ aktif_only: Sadece aktif fiyatları getir
+ 
+ Returns:
+ List[Dict]: Birim fiyat listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ if aktif_only:
+ cursor.execute("""
+ SELECT bf.*, p.tanim as poz_tanim, p.birim as poz_birim
+ FROM birim_fiyatlar bf
+ LEFT JOIN pozlar p ON bf.poz_id = p.id
+ WHERE bf.aktif = 1
+ ORDER BY bf.tarih DESC
+ """)
+ else:
+ cursor.execute("""
+ SELECT bf.*, p.tanim as poz_tanim, p.birim as poz_birim
+ FROM birim_fiyatlar bf
+ LEFT JOIN pozlar p ON bf.poz_id = p.id
+ ORDER BY bf.tarih DESC
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def compare_birim_fiyatlar(self, poz_no: str) -> Dict[str, Any]:
+ """
+ Poz için fiyat karşılaştırması yap.
+ 
+ Args:
+ poz_no: Poz numarası
+ 
+ Returns:
+ Dict: Karşılaştırma sonuçları (en düşük, en yüksek, ortalama, kaynaklar)
+ """
+ fiyatlar = self.get_birim_fiyat_gecmisi(poz_no=poz_no, limit=100)
+ 
+ if not fiyatlar:
+ return {
+ 'poz_no': poz_no,
+ 'fiyat_sayisi': 0,
+ 'en_dusuk': None,
+ 'en_yuksek': None,
+ 'ortalama': None,
+ 'kaynaklar': []
+ }
+ 
+ fiyat_degerleri = [f['birim_fiyat'] for f in fiyatlar if f.get('birim_fiyat')]
+ 
+ if not fiyat_degerleri:
+ return {
+ 'poz_no': poz_no,
+ 'fiyat_sayisi': 0,
+ 'en_dusuk': None,
+ 'en_yuksek': None,
+ 'ortalama': None,
+ 'kaynaklar': []
+ }
+ 
+ en_dusuk = min(fiyat_degerleri)
+ en_yuksek = max(fiyat_degerleri)
+ ortalama = sum(fiyat_degerleri) / len(fiyat_degerleri)
+ 
+ # Kaynakları topla
+ kaynaklar = {}
+ for f in fiyatlar:
+ kaynak = f.get('kaynak', 'Belirtilmemiş')
+ if kaynak not in kaynaklar:
+ kaynaklar[kaynak] = []
+ kaynaklar[kaynak].append(f['birim_fiyat'])
+ 
+ return {
+ 'poz_no': poz_no,
+ 'fiyat_sayisi': len(fiyatlar),
+ 'en_dusuk': en_dusuk,
+ 'en_yuksek': en_yuksek,
+ 'ortalama': ortalama,
+ 'kaynaklar': kaynaklar,
+ 'fiyatlar': fiyatlar
+ }
+ 
+ def delete_pdf_imported_data(self) -> Dict[str, int]:
+ """
+ PDF'den içe aktarılan tüm pozları ve birim fiyatları sil.
+ 
+ Returns:
+ Dict: Silinen kayıt sayıları {'pozlar': int, 'birim_fiyatlar': int}
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ 
+ # 1. Önce PDF Import kaynaklı birim fiyatların poz_no'larını topla
+ cursor.execute("""
+ SELECT DISTINCT poz_no 
+ FROM birim_fiyatlar 
+ WHERE kaynak = 'PDF Import' AND poz_no IS NOT NULL
+ """)
+ pdf_poz_nos = [row['poz_no'] for row in cursor.fetchall()]
+ 
+ # 2. Bu poz numaralarına sahip pozları sil (sadece PDF'den eklenenleri)
+ # PDF'den eklenen pozlar genellikle tanımında "PDF'den içe aktarıldı" içerir
+ # veya sadece PDF Import kaynaklı birim fiyatları vardır
+ deleted_poz_count = 0
+ for poz_no in pdf_poz_nos:
+ # Pozun başka kaynaklı birim fiyatı var mı kontrol et
+ cursor.execute("""
+ SELECT COUNT(*) as count 
+ FROM birim_fiyatlar 
+ WHERE poz_no = ? AND (kaynak != 'PDF Import' OR kaynak IS NULL)
+ """, (poz_no,))
+ other_sources = cursor.fetchone()['count']
+ 
+ # Eğer başka kaynak yoksa, pozun PDF'den eklenmiş olma ihtimali yüksek
+ # Pozu sil (tanımı "PDF'den içe aktarıldı" içeriyorsa veya başka kaynak yoksa)
+ if other_sources == 0:
+ cursor.execute("""
+ DELETE FROM pozlar 
+ WHERE poz_no = ? 
+ AND (tanim LIKE '%PDF%içe aktarıldı%' OR tanim LIKE '%PDF Import%' OR tanim = '' OR tanim IS NULL)
+ """, (poz_no,))
+ deleted_poz_count += cursor.rowcount
+ 
+ # 3. PDF Import kaynaklı tüm birim fiyatları sil
+ cursor.execute("""
+ DELETE FROM birim_fiyatlar 
+ WHERE kaynak = 'PDF Import'
+ """)
+ deleted_fiyat_count = cursor.rowcount
+ 
+ return {
+ 'pozlar': deleted_poz_count,
+ 'birim_fiyatlar': deleted_fiyat_count
+ }
+ 
+ def get_poz_by_no(self, poz_no: str) -> Optional[Dict[str, Any]]:
+ """
+ Poz numarasına göre poz bilgisini getir.
+ 
+ Args:
+ poz_no: Poz numarası
+ 
+ Returns:
+ Optional[Dict]: Poz bilgisi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM pozlar WHERE poz_no = ?", (poz_no,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ # İhale İşlemleri
+ def create_ihale(self, ad: str, aciklama: str = "") -> int:
+ """
+ Yeni ihale oluştur.
+ 
+ Args:
+ ad: İhale adı
+ aciklama: İhale açıklaması
+ 
+ Returns:
+ int: Oluşturulan ihale ID'si
+ """
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO ihaleler (ad, aciklama, olusturma_tarihi, guncelleme_tarihi)
+ VALUES (?, ?, ?, ?)
+ """, (ad, aciklama, now, now))
+ return cursor.lastrowid
+ 
+ def get_all_ihaleler(self) -> List[Dict[str, Any]]:
+ """Tüm ihaleleri getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM ihaleler
+ ORDER BY olusturma_tarihi DESC
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def get_ihale(self, ihale_id: int) -> Optional[Dict[str, Any]]:
+ """İhale bilgilerini getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM ihaleler WHERE id = ?", (ihale_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def get_ihale_kalemleri(self, ihale_id: int) -> List[Dict[str, Any]]:
+ """İhale kalemlerini getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM ihale_kalemleri
+ WHERE ihale_id = ?
+ ORDER BY sira_no, id
+ """, (ihale_id,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def add_ihale_kalem(self, ihale_id: int, poz_no: str = "", poz_tanim: str = "",
+ kategori: str = "", birim_miktar: float = 0, birim: str = "",
+ birim_fiyat: float = 0, toplam: float = 0, sira_no: Optional[int] = None) -> int:
+ """
+ İhaleye kalem ekle.
+ 
+ Args:
+ ihale_id: İhale ID'si
+ poz_no: Poz numarası
+ poz_tanim: Poz tanımı
+ kategori: Kategori
+ birim_miktar: Birim miktar (kullanıcı girer)
+ birim: Birim
+ birim_fiyat: Birim fiyat (otomatik veya kullanıcı düzenler)
+ toplam: Toplam (birim_miktar * birim_fiyat)
+ sira_no: Sıra numarası
+ 
+ Returns:
+ int: Eklenen kalemin ID'si
+ """
+ # Sıra numarası yoksa, mevcut maksimum + 1
+ if sira_no is None:
+ kalemler = self.get_ihale_kalemleri(ihale_id)
+ sira_no = len(kalemler) + 1
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO ihale_kalemleri 
+ (ihale_id, poz_no, poz_tanim, kategori, birim_miktar, birim, birim_fiyat, toplam, sira_no)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ """, (ihale_id, poz_no, poz_tanim, kategori, birim_miktar, birim, birim_fiyat, toplam, sira_no))
+ return cursor.lastrowid
+ 
+ def update_ihale_kalem(self, kalem_id: int, **kwargs) -> bool:
+ """İhale kalemini güncelle"""
+ if not kwargs:
+ return False
+ 
+ fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+ values = list(kwargs.values()) + [kalem_id]
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute(f"UPDATE ihale_kalemleri SET {fields} WHERE id = ?", values)
+ return cursor.rowcount > 0
+ 
+ def delete_ihale_kalem(self, kalem_id: int) -> bool:
+ """İhale kalemini sil"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM ihale_kalemleri WHERE id = ?", (kalem_id,))
+ return cursor.rowcount > 0
+ 
+ def delete_ihale(self, ihale_id: int) -> bool:
+ """İhaleyi sil (kalemleri de silinir - CASCADE)"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM ihaleler WHERE id = ?", (ihale_id,))
+ return cursor.rowcount > 0
+ 
+ def search_pozlar(self, search_text: str, limit: int = 50) -> List[Dict[str, Any]]:
+ """
+ Poz numarası veya tanımına göre arama yap.
+ Poz numarası formatı: 15.250.1011 (nokta ile ayrılmış)
+ 
+ Args:
+ search_text: Arama metni
+ limit: Maksimum sonuç sayısı
+ 
+ Returns:
+ List[Dict]: Bulunan pozlar
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ search_text = search_text.strip()
+ 
+ # Eğer arama metni tam poz numarası formatındaysa (nokta içeriyorsa)
+ # önce tam eşleşme dene, sonra kısmi eşleşme
+ if '.' in search_text:
+ # Tam poz numarası araması - önce tam eşleşme
+ cursor.execute("""
+ SELECT * FROM pozlar
+ WHERE poz_no = ?
+ ORDER BY poz_no
+ LIMIT ?
+ """, (search_text, limit))
+ exact_matches = [dict(row) for row in cursor.fetchall()]
+ 
+ # Eğer tam eşleşme varsa onları döndür
+ if exact_matches:
+ return exact_matches
+ 
+ # Tam eşleşme yoksa, başlangıçtan eşleşenleri ara (15.250.1011 -> 15.250 ile başlayanlar)
+ search_pattern = f"{search_text}%"
+ cursor.execute("""
+ SELECT * FROM pozlar
+ WHERE poz_no LIKE ? OR tanim LIKE ?
+ ORDER BY poz_no
+ LIMIT ?
+ """, (search_pattern, f"%{search_text}%", limit))
+ return [dict(row) for row in cursor.fetchall()]
+ else:
+ # Nokta yoksa, normal LIKE araması yap
+ search_pattern = f"%{search_text}%"
+ cursor.execute("""
+ SELECT * FROM pozlar
+ WHERE poz_no LIKE ? OR tanim LIKE ?
+ ORDER BY poz_no
+ LIMIT ?
+ """, (search_pattern, search_pattern, limit))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ # Taşeron İşlemleri
+ def create_taseron_is(self, is_adi: str, aciklama: str = "") -> int:
+ """Yeni taşeron işi oluştur"""
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO taseron_isleri (is_adi, aciklama, olusturma_tarihi, guncelleme_tarihi)
+ VALUES (?, ?, ?, ?)
+ """, (is_adi, aciklama, now, now))
+ return cursor.lastrowid
+ 
+ def get_taseron_isleri(self) -> List[Dict[str, Any]]:
+ """Tüm taşeron işlerini getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM taseron_isleri
+ WHERE durum = 'aktif'
+ ORDER BY olusturma_tarihi DESC
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def get_taseron_is(self, is_id: int) -> Optional[Dict[str, Any]]:
+ """Taşeron iş bilgilerini getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM taseron_isleri WHERE id = ?", (is_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def delete_taseron_is(self, is_id: int) -> bool:
+ """Taşeron işini sil (durumunu pasif yap)"""
+ try:
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ UPDATE taseron_isleri SET durum = 'pasif', guncelleme_tarihi = ?
+ WHERE id = ?
+ """, (datetime.now().isoformat(), is_id))
+ return True
+ except Exception as e:
+ print(f"İş silme hatası: {e}")
+ return False
+ 
+ def add_taseron_personel(self, is_id: int, ad_soyad: str, 
+ gunluk_ucret: float = 0, saatlik_ucret: float = 0) -> int:
+ """Taşeron personel ekle"""
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO taseron_personel 
+ (is_id, ad_soyad, gunluk_ucret, saatlik_ucret, olusturma_tarihi)
+ VALUES (?, ?, ?, ?, ?)
+ """, (is_id, ad_soyad, gunluk_ucret, saatlik_ucret, now))
+ return cursor.lastrowid
+ 
+ def get_taseron_personel(self, is_id: int) -> List[Dict[str, Any]]:
+ """Taşeron personel listesini getir (sıralama UI'da yapılacak)"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM taseron_personel
+ WHERE is_id = ?
+ """, (is_id,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def add_taseron_puantaj(self, personel_id: int, tarih: str, 
+ calisma_saati: float = 0, calisma_gunu: int = 0) -> int:
+ """Puantaj kaydı ekle"""
+ # Ücreti hesapla
+ personel = self.get_taseron_personel_by_id(personel_id)
+ if not personel:
+ return 0
+ 
+ toplam_ucret = 0.0
+ if calisma_gunu > 0 and personel.get('gunluk_ucret', 0) > 0:
+ toplam_ucret = calisma_gunu * personel['gunluk_ucret']
+ elif calisma_saati > 0 and personel.get('saatlik_ucret', 0) > 0:
+ toplam_ucret = calisma_saati * personel['saatlik_ucret']
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO taseron_puantaj 
+ (personel_id, tarih, calisma_saati, calisma_gunu, toplam_ucret)
+ VALUES (?, ?, ?, ?, ?)
+ """, (personel_id, tarih, calisma_saati, calisma_gunu, toplam_ucret))
+ return cursor.lastrowid
+ 
+ def get_taseron_puantaj(self, is_id: int) -> List[Dict[str, Any]]:
+ """Puantaj kayıtlarını getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT p.*, per.ad_soyad
+ FROM taseron_puantaj p
+ JOIN taseron_personel per ON p.personel_id = per.id
+ WHERE per.is_id = ?
+ ORDER BY p.tarih DESC
+ """, (is_id,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def get_taseron_puantaj_by_id(self, puantaj_id: int) -> Optional[Dict[str, Any]]:
+ """Puantaj kaydını ID ile getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT p.*, per.ad_soyad
+ FROM taseron_puantaj p
+ JOIN taseron_personel per ON p.personel_id = per.id
+ WHERE p.id = ?
+ """, (puantaj_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def update_taseron_puantaj(self, puantaj_id: int, tarih: str,
+ calisma_saati: float = 0, calisma_gunu: int = 0) -> bool:
+ """Puantaj kaydını güncelle"""
+ try:
+ # Personel bilgilerini al (ücret hesaplama için)
+ puantaj = self.get_taseron_puantaj_by_id(puantaj_id)
+ if not puantaj:
+ return False
+ 
+ personel = self.get_taseron_personel_by_id(puantaj['personel_id'])
+ if not personel:
+ return False
+ 
+ # Ücreti hesapla
+ toplam_ucret = 0.0
+ if calisma_gunu > 0 and personel.get('gunluk_ucret', 0) > 0:
+ toplam_ucret = calisma_gunu * personel['gunluk_ucret']
+ elif calisma_saati > 0 and personel.get('saatlik_ucret', 0) > 0:
+ toplam_ucret = calisma_saati * personel['saatlik_ucret']
+ 
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ UPDATE taseron_puantaj
+ SET tarih = ?, calisma_saati = ?, calisma_gunu = ?, toplam_ucret = ?
+ WHERE id = ?
+ """, (tarih, calisma_saati, calisma_gunu, toplam_ucret, puantaj_id))
+ return cursor.rowcount > 0
+ except Exception as e:
+ print(f"Puantaj güncelleme hatası: {e}")
+ return False
+ 
+ def delete_taseron_puantaj(self, puantaj_id: int) -> bool:
+ """Puantaj kaydını sil"""
+ try:
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM taseron_puantaj WHERE id = ?", (puantaj_id,))
+ return cursor.rowcount > 0
+ except Exception as e:
+ print(f"Puantaj silme hatası: {e}")
+ return False
+ 
+ def get_taseron_personel_by_id(self, personel_id: int) -> Optional[Dict[str, Any]]:
+ """Personel bilgilerini ID ile getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM taseron_personel WHERE id = ?", (personel_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def update_taseron_personel(self, personel_id: int, ad_soyad: str,
+ gunluk_ucret: float = 0, saatlik_ucret: float = 0) -> bool:
+ """Taşeron personel bilgilerini güncelle"""
+ try:
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ UPDATE taseron_personel
+ SET ad_soyad = ?, gunluk_ucret = ?, saatlik_ucret = ?
+ WHERE id = ?
+ """, (ad_soyad, gunluk_ucret, saatlik_ucret, personel_id))
+ return cursor.rowcount > 0
+ except Exception as e:
+ print(f"Personel güncelleme hatası: {e}")
+ return False
+ 
+ def delete_taseron_personel(self, personel_id: int) -> bool:
+ """Taşeron personel sil"""
+ try:
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM taseron_personel WHERE id = ?", (personel_id,))
+ return cursor.rowcount > 0
+ except Exception as e:
+ print(f"Personel silme hatası: {e}")
+ return False
+ 
+ def add_taseron_is_birim_fiyat(self, is_id: int, is_adi: str, birim: str,
+ birim_fiyat: float, miktar: float = 0) -> int:
+ """İş birim fiyat ekle"""
+ toplam = birim_fiyat * miktar
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO taseron_is_birim_fiyat 
+ (is_id, is_adi, birim, birim_fiyat, miktar, toplam)
+ VALUES (?, ?, ?, ?, ?, ?)
+ """, (is_id, is_adi, birim, birim_fiyat, miktar, toplam))
+ return cursor.lastrowid
+ 
+ def get_taseron_is_birim_fiyat(self, is_id: int) -> List[Dict[str, Any]]:
+ """İş birim fiyat listesini getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM taseron_is_birim_fiyat
+ WHERE is_id = ?
+ ORDER BY id
+ """, (is_id,))
+ return [dict(row) for row in cursor.fetchall()]
+
+ def update_taseron_is_birim_fiyat(self, item_id: int, **kwargs) -> bool:
+ """İş birim fiyat güncelle"""
+ if not kwargs:
+ return False
+ # toplam otomatik hesapla
+ if 'birim_fiyat' in kwargs and 'miktar' in kwargs:
+ kwargs['toplam'] = kwargs['birim_fiyat'] * kwargs['miktar']
+ fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+ values = list(kwargs.values()) + [item_id]
+ with self.get_connection() as conn:
+ conn.execute(f"UPDATE taseron_is_birim_fiyat SET {fields} WHERE id = ?", values)
+ return True
+
+ def delete_taseron_is_birim_fiyat(self, item_id: int) -> bool:
+ """İş birim fiyat sil"""
+ with self.get_connection() as conn:
+ conn.execute("DELETE FROM taseron_is_birim_fiyat WHERE id = ?", (item_id,))
+ return True
+
+ def add_taseron_gelir_gider(self, is_id: int, tip: str, kategori: str,
+ aciklama: str, tutar: float, tarih: str) -> int:
+ """Gelir/Gider ekle"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ INSERT INTO taseron_gelir_gider 
+ (is_id, tip, kategori, aciklama, tutar, tarih)
+ VALUES (?, ?, ?, ?, ?, ?)
+ """, (is_id, tip, kategori, aciklama, tutar, tarih))
+ return cursor.lastrowid
+ 
+ def get_taseron_gelir_gider(self, is_id: int, start_date: str = None, 
+ end_date: str = None) -> List[Dict[str, Any]]:
+ """Gelir/Gider listesini getir"""
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ query = """
+ SELECT * FROM taseron_gelir_gider
+ WHERE is_id = ?
+ """
+ params = [is_id]
+ 
+ if start_date:
+ query += " AND tarih >= ?"
+ params.append(start_date)
+ if end_date:
+ query += " AND tarih <= ?"
+ params.append(end_date)
+ 
+ query += " ORDER BY tarih DESC"
+ cursor.execute(query, params)
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ # Versiyonlama İşlemleri
+ def create_project_version(self, project_id: int, version_name: str, 
+ description: str = "", created_by: str = "") -> int:
+ """
+ Proje versiyonu oluştur (snapshot).
+ 
+ Args:
+ project_id: Proje ID'si
+ version_name: Versiyon adı
+ description: Versiyon açıklaması
+ created_by: Oluşturan kullanıcı
+ 
+ Returns:
+ int: Oluşturulan versiyonun ID'si
+ """
+ # Mevcut versiyon numarasını al
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT MAX(version_number) as max_version 
+ FROM project_versions 
+ WHERE project_id = ?
+ """, (project_id,))
+ result = cursor.fetchone()
+ next_version = (result['max_version'] or 0) + 1
+ 
+ # Proje snapshot'ını al
+ project = self.get_project(project_id)
+ metraj_items = self.get_project_metraj(project_id)
+ taseron_offers = self.get_taseron_teklifleri(project_id)
+ 
+ snapshot_data = {
+ 'project': dict(project) if project else {},
+ 'metraj_items': [dict(item) for item in metraj_items],
+ 'taseron_offers': [dict(offer) for offer in taseron_offers]
+ }
+ 
+ # Versiyonu kaydet
+ now = datetime.now().isoformat()
+ cursor.execute("""
+ INSERT INTO project_versions 
+ (project_id, version_name, version_number, created_at, created_by, description, snapshot_data)
+ VALUES (?, ?, ?, ?, ?, ?, ?)
+ """, (project_id, version_name, next_version, now, created_by, description, 
+ json.dumps(snapshot_data, ensure_ascii=False)))
+ 
+ return cursor.lastrowid
+ 
+ def get_project_versions(self, project_id: int) -> List[Dict[str, Any]]:
+ """
+ Projenin tüm versiyonlarını getir.
+ 
+ Args:
+ project_id: Proje ID'si
+ 
+ Returns:
+ List[Dict]: Versiyon listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM project_versions
+ WHERE project_id = ?
+ ORDER BY version_number DESC
+ """, (project_id,))
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def get_project_version(self, version_id: int) -> Optional[Dict[str, Any]]:
+ """
+ Versiyon bilgilerini getir.
+ 
+ Args:
+ version_id: Versiyon ID'si
+ 
+ Returns:
+ Optional[Dict]: Versiyon bilgileri
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("SELECT * FROM project_versions WHERE id = ?", (version_id,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def restore_project_version(self, version_id: int, new_project_name: str = None) -> Optional[int]:
+ """
+ Versiyondan projeyi geri yükle.
+ 
+ Args:
+ version_id: Versiyon ID'si
+ new_project_name: Yeni proje adı (None ise versiyondaki ad kullanılır)
+ 
+ Returns:
+ Optional[int]: Geri yüklenen projenin ID'si
+ """
+ version = self.get_project_version(version_id)
+ if not version:
+ return None
+ 
+ snapshot_data = json.loads(version['snapshot_data'])
+ project_data = snapshot_data.get('project', {})
+ metraj_items = snapshot_data.get('metraj_items', [])
+ taseron_offers = snapshot_data.get('taseron_offers', [])
+ 
+ # Yeni proje oluştur
+ project_name = new_project_name or f"{project_data.get('ad', 'Geri Yüklenen Proje')} (v{version['version_number']})"
+ project_id = self.create_project(
+ ad=project_name,
+ aciklama=project_data.get('aciklama', ''),
+ notlar=f"Versiyon {version['version_number']} geri yüklendi: {version.get('description', '')}"
+ )
+ 
+ # Metraj kalemlerini geri yükle
+ for item in metraj_items:
+ self.add_metraj_item(
+ proje_id=project_id,
+ poz_no=item.get('poz_no', ''),
+ tanim=item.get('tanim', ''),
+ miktar=item.get('miktar', 0),
+ birim=item.get('birim', ''),
+ birim_fiyat=item.get('birim_fiyat', 0),
+ kategori=item.get('kategori', ''),
+ notlar=item.get('notlar', '')
+ )
+ 
+ # Taşeron tekliflerini geri yükle
+ for offer in taseron_offers:
+ self.add_taseron_teklif(
+ proje_id=project_id,
+ firma_adi=offer.get('firma_adi', ''),
+ fiyat=offer.get('fiyat', 0),
+ poz_no=offer.get('poz_no', ''),
+ tanim=offer.get('tanim', ''),
+ miktar=offer.get('miktar', 0),
+ birim=offer.get('birim', ''),
+ notlar=offer.get('notlar', '')
+ )
+ 
+ return project_id
+ 
+ def delete_project_version(self, version_id: int) -> bool:
+ """
+ Versiyonu sil.
+ 
+ Args:
+ version_id: Versiyon ID'si
+
+ Returns:
+ bool: Başarılı ise True
+ """
+ try:
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM project_versions WHERE id = ?", (version_id,))
+ return True
+ except Exception as e:
+ print(f"Versiyon silme hatası: {e}")
+ return False
+ 
+ # AI Metraj Öğrenme İşlemleri
+ def save_ai_learning(self, katman_adi: str, duvar_yuksekligi: float, 
+ birim: str = 'm', kaynak: str = 'kullanici',
+ duvar_cinsi: Optional[str] = None,
+ duvar_kalinligi: Optional[float] = None) -> int:
+ """
+ AI öğrenme verisini kaydet veya güncelle.
+ 
+ Args:
+ katman_adi: Katman adı
+ duvar_yuksekligi: Duvar yüksekliği değeri
+ birim: Birim ('m', 'cm', 'mm')
+ kaynak: Veri kaynağı ('kullanici', 'katman_ismi', 'text_entity')
+ duvar_cinsi: Duvar cinsi (örn: 'tuğla', 'beton', 'gazbeton')
+ duvar_kalinligi: Duvar kalınlığı (cm cinsinden)
+ 
+ Returns:
+ int: Kayıt ID'si
+ """
+ now = datetime.now().isoformat()
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ # Önce var mı kontrol et
+ cursor.execute("""
+ SELECT id, kullanim_sayisi FROM ai_metraj_ogrenme 
+ WHERE katman_adi = ?
+ """, (katman_adi,))
+ existing = cursor.fetchone()
+ 
+ if existing:
+ # Güncelle
+ kullanim_sayisi = existing['kullanim_sayisi'] + 1
+ cursor.execute("""
+ UPDATE ai_metraj_ogrenme
+ SET duvar_yuksekligi = ?, birim = ?, kaynak = ?,
+ kullanici_duzeltmesi = ?,
+ duvar_cinsi = ?, duvar_kalinligi = ?,
+ guncelleme_tarihi = ?, kullanim_sayisi = ?
+ WHERE katman_adi = ?
+ """, (duvar_yuksekligi, birim, kaynak, 
+ 1 if kaynak == 'kullanici' else 0,
+ duvar_cinsi, duvar_kalinligi,
+ now, kullanim_sayisi, katman_adi))
+ return existing['id']
+ else:
+ # Yeni kayıt
+ cursor.execute("""
+ INSERT INTO ai_metraj_ogrenme 
+ (katman_adi, duvar_yuksekligi, birim, kaynak, 
+ kullanici_duzeltmesi, duvar_cinsi, duvar_kalinligi,
+ olusturma_tarihi, guncelleme_tarihi, kullanim_sayisi)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ """, (katman_adi, duvar_yuksekligi, birim, kaynak,
+ 1 if kaynak == 'kullanici' else 0,
+ duvar_cinsi, duvar_kalinligi,
+ now, now, 1))
+ return cursor.lastrowid
+ 
+ def get_ai_learning(self, katman_adi: str) -> Optional[Dict[str, Any]]:
+ """
+ Katman adına göre öğrenilmiş duvar bilgilerini getir.
+ 
+ Args:
+ katman_adi: Katman adı
+ 
+ Returns:
+ Dict: Öğrenme verisi (duvar_yuksekligi, duvar_cinsi, duvar_kalinligi vb.) veya None
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM ai_metraj_ogrenme 
+ WHERE katman_adi = ?
+ ORDER BY kullanici_duzeltmesi DESC, kullanim_sayisi DESC
+ LIMIT 1
+ """, (katman_adi,))
+ row = cursor.fetchone()
+ return dict(row) if row else None
+ 
+ def get_all_ai_learning(self) -> List[Dict[str, Any]]:
+ """
+ Tüm AI öğrenme verilerini getir.
+ 
+ Returns:
+ List[Dict]: Tüm öğrenme verileri
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT * FROM ai_metraj_ogrenme 
+ ORDER BY kullanici_duzeltmesi DESC, kullanim_sayisi DESC, olusturma_tarihi DESC
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+ 
+ def delete_ai_learning(self, learning_id: int) -> bool:
+ """
+ AI öğrenme verisini sil.
+ 
+ Args:
+ learning_id: Öğrenme kaydı ID'si
+ 
+ Returns:
+ bool: Başarılı ise True
+ """
+ try:
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("DELETE FROM ai_metraj_ogrenme WHERE id = ?", (learning_id,))
+ return cursor.rowcount > 0
+ except Exception as e:
+ print(f"AI öğrenme silme hatası: {e}")
+ return False
+
+ # Dashboard Analytics İşlemleri
+ def get_dashboard_summary(self) -> Dict[str, Any]:
+ """
+ Dashboard için genel özet bilgileri getir.
+
+ Returns:
+ Dict: Dashboard özet verileri
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+
+ # Toplam proje sayısı
+ cursor.execute("SELECT COUNT(*) as total FROM projects WHERE durum = 'aktif'")
+ toplam_proje = cursor.fetchone()['total']
+
+ # Toplam maliyet (aktif projeler)
+ cursor.execute("SELECT SUM(toplam_maliyet) as total FROM projects WHERE durum = 'aktif'")
+ toplam_maliyet = cursor.fetchone()['total'] or 0
+
+ # Toplam metraj kalem sayısı
+ cursor.execute("""
+ SELECT COUNT(DISTINCT mk.id) as total
+ FROM metraj_kalemleri mk
+ JOIN projects p ON mk.proje_id = p.id
+ WHERE p.durum = 'aktif'
+ """)
+ toplam_kalem = cursor.fetchone()['total']
+
+ # Toplam taşeron teklif sayısı
+ cursor.execute("""
+ SELECT COUNT(DISTINCT tt.id) as total
+ FROM taseron_teklifleri tt
+ JOIN projects p ON tt.proje_id = p.id
+ WHERE p.durum = 'aktif'
+ """)
+ toplam_teklif = cursor.fetchone()['total']
+
+ # Son 30 gün içinde oluşturulan projeler
+ from datetime import datetime, timedelta
+ thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
+ cursor.execute("""
+ SELECT COUNT(*) as total
+ FROM projects
+ WHERE olusturma_tarihi >= ? AND durum = 'aktif'
+ """, (thirty_days_ago,))
+ yeni_projeler = cursor.fetchone()['total']
+
+ return {
+ 'toplam_proje': toplam_proje,
+ 'toplam_maliyet': toplam_maliyet,
+ 'toplam_kalem': toplam_kalem,
+ 'toplam_teklif': toplam_teklif,
+ 'yeni_projeler_30_gun': yeni_projeler
+ }
+
+ def get_projects_by_cost(self, limit: int = 10) -> List[Dict[str, Any]]:
+ """
+ En yüksek maliyetli projeleri getir.
+
+ Args:
+ limit: Maksimum proje sayısı
+
+ Returns:
+ List[Dict]: Proje listesi (ad, toplam_maliyet)
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT ad, toplam_maliyet, aciklama
+ FROM projects
+ WHERE durum = 'aktif' AND toplam_maliyet > 0
+ ORDER BY toplam_maliyet DESC
+ LIMIT ?
+ """, (limit,))
+ return [dict(row) for row in cursor.fetchall()]
+
+ def get_cost_by_category(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+ """
+ Kategorilere göre maliyet dağılımı.
+
+ Args:
+ project_id: Belirli bir proje için (None ise tüm projeler)
+
+ Returns:
+ List[Dict]: Kategori bazlı maliyet listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ if project_id:
+ cursor.execute("""
+ SELECT
+ kategori,
+ SUM(toplam) as toplam_maliyet,
+ COUNT(*) as kalem_sayisi
+ FROM metraj_kalemleri
+ WHERE proje_id = ? AND kategori IS NOT NULL AND kategori != ''
+ GROUP BY kategori
+ ORDER BY toplam_maliyet DESC
+ """, (project_id,))
+ else:
+ cursor.execute("""
+ SELECT
+ mk.kategori,
+ SUM(mk.toplam) as toplam_maliyet,
+ COUNT(*) as kalem_sayisi
+ FROM metraj_kalemleri mk
+ JOIN projects p ON mk.proje_id = p.id
+ WHERE p.durum = 'aktif' AND mk.kategori IS NOT NULL AND mk.kategori != ''
+ GROUP BY mk.kategori
+ ORDER BY toplam_maliyet DESC
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+
+ def get_monthly_project_trend(self, months: int = 12) -> List[Dict[str, Any]]:
+ """
+ Aylık proje oluşturma trendi.
+
+ Args:
+ months: Kaç aylık veri
+
+ Returns:
+ List[Dict]: Aylık proje sayısı
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ from datetime import datetime, timedelta
+ start_date = (datetime.now() - timedelta(days=months*30)).isoformat()
+
+ cursor.execute("""
+ SELECT
+ strftime('%Y-%m', olusturma_tarihi) as ay,
+ COUNT(*) as proje_sayisi,
+ SUM(toplam_maliyet) as toplam_maliyet
+ FROM projects
+ WHERE olusturma_tarihi >= ?
+ GROUP BY strftime('%Y-%m', olusturma_tarihi)
+ ORDER BY ay
+ """, (start_date,))
+ return [dict(row) for row in cursor.fetchall()]
+
+ def get_top_subcontractors(self, limit: int = 10) -> List[Dict[str, Any]]:
+ """
+ En çok teklif veren taşeronlar.
+
+ Args:
+ limit: Maksimum taşeron sayısı
+
+ Returns:
+ List[Dict]: Taşeron firma listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT
+ firma_adi,
+ COUNT(*) as teklif_sayisi,
+ AVG(fiyat) as ortalama_fiyat,
+ SUM(toplam) as toplam_teklif
+ FROM taseron_teklifleri
+ GROUP BY firma_adi
+ ORDER BY teklif_sayisi DESC
+ LIMIT ?
+ """, (limit,))
+ return [dict(row) for row in cursor.fetchall()]
+
+ def get_material_usage_stats(self) -> List[Dict[str, Any]]:
+ """
+ Malzeme kullanım istatistikleri.
+
+ Returns:
+ List[Dict]: En çok kullanılan malzemeler
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT
+ m.ad as malzeme_adi,
+ m.kategori,
+ COUNT(DISTINCT mf.poz_id) as kullanilan_poz_sayisi,
+ m.birim_fiyat
+ FROM malzemeler m
+ JOIN malzeme_formulleri mf ON m.id = mf.malzeme_id
+ GROUP BY m.id
+ ORDER BY kullanilan_poz_sayisi DESC
+ LIMIT 20
+ """)
+ return [dict(row) for row in cursor.fetchall()]
+
+ def get_recent_activities(self, limit: int = 20) -> List[Dict[str, Any]]:
+ """
+ Son aktiviteler (proje oluşturma, güncelleme).
+
+ Args:
+ limit: Maksimum aktivite sayısı
+
+ Returns:
+ List[Dict]: Aktivite listesi
+ """
+ with self.get_connection() as conn:
+ cursor = conn.cursor()
+ cursor.execute("""
+ SELECT
+ ad,
+ 'Proje Oluşturuldu' as aktivite_tipi,
+ olusturma_tarihi as tarih
+ FROM projects
+ WHERE durum = 'aktif'
+ ORDER BY olusturma_tarihi DESC
+ LIMIT ?
+ """, (limit,))
+ return [dict(row) for row in cursor.fetchall()]
 

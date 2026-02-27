@@ -1,0 +1,13 @@
+{
+  "_aciklama": "AutoCAD katman isimlendirme standartları. Her anahtar için birden fazla alternatif verilebilir.",
+  "_versiyon": "1.0",
+
+  "duvar":    ["DUVAR", "WALLS", "A-WALL", "DUVARLAR", "WALL"],
+  "oda":      ["MIMARI", "ODA", "DOSEME", "DÖŞEME", "A-FLOOR", "FLOOR", "MAHAL"],
+  "kapi":     ["KAPI", "KAPÝ", "DOOR", "A-DOOR", "KAPILAR"],
+  "pencere":  ["PENCERE", "WINDOW", "A-WINDOW", "PENCERELER"],
+  "kolon":    ["KOLON", "COLUMN", "S-COLS", "COL", "KOLONLAR"],
+  "kiris":    ["KIRIS", "KIRIŞ", "BEAM", "S-BEAM", "KIRISLER"],
+  "doseme":   ["DOSEME", "DÖŞEME", "SLAB", "S-SLAB", "DÖSEME"],
+  "bosluk":   ["BOSLUK", "BOŞLUK", "OPENING", "VOID", "MENHA"]
+}

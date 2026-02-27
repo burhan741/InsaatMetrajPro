@@ -10,9 +10,9 @@ results.append(f"Veritabani: {db_path}")
 results.append(f"Mevcut: {db_path.exists()}")
 
 if not db_path.exists():
-    results.append("HATA: Veritabani dosyasi bulunamadi!")
-    result_file.write_text("\n".join(results), encoding="utf-8")
-    exit(1)
+ results.append("HATA: Veritabani dosyasi bulunamadi!")
+ result_file.write_text("\n".join(results), encoding="utf-8")
+ exit(1)
 
 conn = sqlite3.connect(str(db_path))
 cursor = conn.cursor()

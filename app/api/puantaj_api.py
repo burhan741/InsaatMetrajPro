@@ -21,9 +21,9 @@ app = Flask(__name__, template_folder='templates', static_folder='static')
 CORS(app)
 
 # Güvenlik - Basit token authentication
-API_TOKEN = None  # Uygulama başlatılınca generate edilecek
+API_TOKEN = None # Uygulama başlatılınca generate edilecek
 API_USERNAME = "santiye"
-API_PASSWORD = "2024"  # Kullanıcı değiştirebilir
+API_PASSWORD = "2024" # Kullanıcı değiştirebilir
 
 # Veritabanı yolu
 DB_PATH = None
@@ -34,7 +34,7 @@ def get_db_path():
     if DB_PATH is None:
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         DB_PATH = os.path.join(base_dir, "data", "metraj.db")
-    return DB_PATH
+        return DB_PATH
 
 def init_puantaj_tables():
     """Puantaj tablolarını oluştur"""
@@ -48,51 +48,51 @@ def init_puantaj_tables():
 
     # İşçi tablosu
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS isci (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ad_soyad TEXT NOT NULL,
-            tc_no TEXT UNIQUE,
-            telefon TEXT,
-            ustalik TEXT DEFAULT 'Duz Isci',
-            gunluk_ucret REAL DEFAULT 0,
-            ekip TEXT,
-            aktif INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+    CREATE TABLE IF NOT EXISTS isci (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ad_soyad TEXT NOT NULL,
+    tc_no TEXT UNIQUE,
+    telefon TEXT,
+    ustalik TEXT DEFAULT 'Duz Isci',
+    gunluk_ucret REAL DEFAULT 0,
+    ekip TEXT,
+    aktif INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
     ''')
 
     # Puantaj tablosu
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS puantaj (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            isci_id INTEGER NOT NULL,
-            proje_id INTEGER,
-            tarih DATE NOT NULL,
-            giris_saati TIME,
-            cikis_saati TIME,
-            calisma_durumu TEXT DEFAULT 'tam_gun',
-            mesai_saat REAL DEFAULT 0,
-            yapilan_is TEXT,
-            notlar TEXT,
-            konum_lat REAL,
-            konum_lng REAL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            created_by TEXT,
-            FOREIGN KEY (isci_id) REFERENCES isci(id)
-        )
+    CREATE TABLE IF NOT EXISTS puantaj (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    isci_id INTEGER NOT NULL,
+    proje_id INTEGER,
+    tarih DATE NOT NULL,
+    giris_saati TIME,
+    cikis_saati TIME,
+    calisma_durumu TEXT DEFAULT 'tam_gun',
+    mesai_saat REAL DEFAULT 0,
+    yapilan_is TEXT,
+    notlar TEXT,
+    konum_lat REAL,
+    konum_lng REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by TEXT,
+    FOREIGN KEY (isci_id) REFERENCES isci(id)
+    )
     ''')
 
     # Avans tablosu
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS avans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            isci_id INTEGER NOT NULL,
-            tarih DATE NOT NULL,
-            miktar REAL NOT NULL,
-            aciklama TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (isci_id) REFERENCES isci(id)
-        )
+    CREATE TABLE IF NOT EXISTS avans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    isci_id INTEGER NOT NULL,
+    tarih DATE NOT NULL,
+    miktar REAL NOT NULL,
+    aciklama TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (isci_id) REFERENCES isci(id)
+    )
     ''')
 
     conn.commit()
@@ -110,12 +110,12 @@ def require_auth(f):
         if token and token == API_TOKEN:
             return f(*args, **kwargs)
 
-        # Basic auth
-        if auth and auth.username == API_USERNAME and auth.password == API_PASSWORD:
-            return f(*args, **kwargs)
+            # Basic auth
+            if auth and auth.username == API_USERNAME and auth.password == API_PASSWORD:
+                return f(*args, **kwargs)
 
-        return jsonify({'error': 'Yetkisiz erişim'}), 401
-    return decorated
+                return jsonify({'error': 'Yetkisiz erişim'}), 401
+                return decorated
 
 # ==================== ANA SAYFA (PWA) ====================
 
@@ -128,25 +128,25 @@ def index():
 def manifest():
     """PWA manifest dosyası"""
     return jsonify({
-        "name": "Şantiye Puantaj",
-        "short_name": "Puantaj",
-        "description": "İşçi puantaj takip sistemi",
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#1a1a2e",
-        "theme_color": "#e94560",
-        "icons": [
-            {
-                "src": "/static/icon-192.png",
-                "sizes": "192x192",
-                "type": "image/png"
-            },
-            {
-                "src": "/static/icon-512.png",
-                "sizes": "512x512",
-                "type": "image/png"
-            }
-        ]
+    "name": "Şantiye Puantaj",
+    "short_name": "Puantaj",
+    "description": "İşçi puantaj takip sistemi",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#1a1a2e",
+    "theme_color": "#e94560",
+    "icons": [
+    {
+    "src": "/static/icon-192.png",
+    "sizes": "192x192",
+    "type": "image/png"
+    },
+    {
+    "src": "/static/icon-512.png",
+    "sizes": "512x512",
+    "type": "image/png"
+    }
+    ]
     })
 
 @app.route('/sw.js')
@@ -182,15 +182,15 @@ def add_isci():
 
     try:
         cursor.execute('''
-            INSERT INTO isci (ad_soyad, tc_no, telefon, ustalik, gunluk_ucret, ekip)
-            VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO isci (ad_soyad, tc_no, telefon, ustalik, gunluk_ucret, ekip)
+        VALUES (?, ?, ?, ?, ?, ?)
         ''', (
-            data.get('ad_soyad'),
-            data.get('tc_no'),
-            data.get('telefon'),
-            data.get('ustalik', 'Duz Isci'),
-            data.get('gunluk_ucret', 0),
-            data.get('ekip')
+        data.get('ad_soyad'),
+        data.get('tc_no'),
+        data.get('telefon'),
+        data.get('ustalik', 'Duz Isci'),
+        data.get('gunluk_ucret', 0),
+        data.get('ekip')
         ))
         conn.commit()
         isci_id = cursor.lastrowid
@@ -214,16 +214,16 @@ def update_isci(isci_id):
     cursor = conn.cursor()
 
     cursor.execute('''
-        UPDATE isci SET ad_soyad=?, telefon=?, ustalik=?, gunluk_ucret=?, ekip=?, aktif=?
-        WHERE id=?
+    UPDATE isci SET ad_soyad=?, telefon=?, ustalik=?, gunluk_ucret=?, ekip=?, aktif=?
+    WHERE id=?
     ''', (
-        data.get('ad_soyad'),
-        data.get('telefon'),
-        data.get('ustalik'),
-        data.get('gunluk_ucret'),
-        data.get('ekip'),
-        data.get('aktif', 1),
-        isci_id
+    data.get('ad_soyad'),
+    data.get('telefon'),
+    data.get('ustalik'),
+    data.get('gunluk_ucret'),
+    data.get('ekip'),
+    data.get('aktif', 1),
+    isci_id
     ))
     conn.commit()
     conn.close()
@@ -245,25 +245,25 @@ def get_puantaj():
 
     if isci_id:
         cursor.execute('''
-            SELECT p.*, i.ad_soyad, i.ustalik
-            FROM puantaj p
-            JOIN isci i ON p.isci_id = i.id
-            WHERE p.tarih = ? AND p.isci_id = ?
-            ORDER BY p.created_at DESC
+        SELECT p.*, i.ad_soyad, i.ustalik
+        FROM puantaj p
+        JOIN isci i ON p.isci_id = i.id
+        WHERE p.tarih = ? AND p.isci_id = ?
+        ORDER BY p.created_at DESC
         ''', (tarih, isci_id))
     else:
         cursor.execute('''
-            SELECT p.*, i.ad_soyad, i.ustalik
-            FROM puantaj p
-            JOIN isci i ON p.isci_id = i.id
-            WHERE p.tarih = ?
-            ORDER BY i.ad_soyad
+        SELECT p.*, i.ad_soyad, i.ustalik
+        FROM puantaj p
+        JOIN isci i ON p.isci_id = i.id
+        WHERE p.tarih = ?
+        ORDER BY i.ad_soyad
         ''', (tarih,))
 
-    puantajlar = [dict(row) for row in cursor.fetchall()]
-    conn.close()
+        puantajlar = [dict(row) for row in cursor.fetchall()]
+        conn.close()
 
-    return jsonify(puantajlar)
+        return jsonify(puantajlar)
 
 @app.route('/api/puantaj', methods=['POST'])
 @require_auth
@@ -276,7 +276,7 @@ def add_puantaj():
 
     # Aynı gün için kayıt var mı kontrol et
     cursor.execute('''
-        SELECT id FROM puantaj WHERE isci_id = ? AND tarih = ?
+    SELECT id FROM puantaj WHERE isci_id = ? AND tarih = ?
     ''', (data.get('isci_id'), data.get('tarih', date.today().isoformat())))
 
     existing = cursor.fetchone()
@@ -284,49 +284,49 @@ def add_puantaj():
     if existing:
         # Güncelle
         cursor.execute('''
-            UPDATE puantaj SET
-                giris_saati=?, cikis_saati=?, calisma_durumu=?,
-                mesai_saat=?, yapilan_is=?, notlar=?, konum_lat=?, konum_lng=?
-            WHERE id=?
+        UPDATE puantaj SET
+        giris_saati=?, cikis_saati=?, calisma_durumu=?,
+        mesai_saat=?, yapilan_is=?, notlar=?, konum_lat=?, konum_lng=?
+        WHERE id=?
         ''', (
-            data.get('giris_saati'),
-            data.get('cikis_saati'),
-            data.get('calisma_durumu', 'tam_gun'),
-            data.get('mesai_saat', 0),
-            data.get('yapilan_is'),
-            data.get('notlar'),
-            data.get('konum_lat'),
-            data.get('konum_lng'),
-            existing[0]
+        data.get('giris_saati'),
+        data.get('cikis_saati'),
+        data.get('calisma_durumu', 'tam_gun'),
+        data.get('mesai_saat', 0),
+        data.get('yapilan_is'),
+        data.get('notlar'),
+        data.get('konum_lat'),
+        data.get('konum_lng'),
+        existing[0]
         ))
         msg = 'Puantaj güncellendi'
     else:
         # Yeni ekle
         cursor.execute('''
-            INSERT INTO puantaj (isci_id, proje_id, tarih, giris_saati, cikis_saati,
-                                 calisma_durumu, mesai_saat, yapilan_is, notlar,
-                                 konum_lat, konum_lng, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO puantaj (isci_id, proje_id, tarih, giris_saati, cikis_saati,
+        calisma_durumu, mesai_saat, yapilan_is, notlar,
+        konum_lat, konum_lng, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            data.get('isci_id'),
-            data.get('proje_id'),
-            data.get('tarih', date.today().isoformat()),
-            data.get('giris_saati'),
-            data.get('cikis_saati'),
-            data.get('calisma_durumu', 'tam_gun'),
-            data.get('mesai_saat', 0),
-            data.get('yapilan_is'),
-            data.get('notlar'),
-            data.get('konum_lat'),
-            data.get('konum_lng'),
-            data.get('created_by', 'mobile')
+        data.get('isci_id'),
+        data.get('proje_id'),
+        data.get('tarih', date.today().isoformat()),
+        data.get('giris_saati'),
+        data.get('cikis_saati'),
+        data.get('calisma_durumu', 'tam_gun'),
+        data.get('mesai_saat', 0),
+        data.get('yapilan_is'),
+        data.get('notlar'),
+        data.get('konum_lat'),
+        data.get('konum_lng'),
+        data.get('created_by', 'mobile')
         ))
         msg = 'Puantaj eklendi'
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
-    return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': True, 'message': msg})
 
 @app.route('/api/puantaj/toplu', methods=['POST'])
 @require_auth
@@ -344,11 +344,11 @@ def add_toplu_puantaj():
         if not isci.get('katildi', True):
             continue
 
-        cursor.execute('''
+            cursor.execute('''
             INSERT OR REPLACE INTO puantaj (isci_id, tarih, giris_saati, cikis_saati,
-                                           calisma_durumu, mesai_saat, yapilan_is, created_by)
+            calisma_durumu, mesai_saat, yapilan_is, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
+            ''', (
             isci.get('isci_id'),
             tarih,
             isci.get('giris_saati', '08:00'),
@@ -357,13 +357,13 @@ def add_toplu_puantaj():
             isci.get('mesai_saat', 0),
             isci.get('yapilan_is'),
             'mobile_toplu'
-        ))
-        eklenen += 1
+            ))
+            eklenen += 1
 
-    conn.commit()
-    conn.close()
+            conn.commit()
+            conn.close()
 
-    return jsonify({'success': True, 'message': f'{eklenen} işçi puantajı kaydedildi'})
+            return jsonify({'success': True, 'message': f'{eklenen} işçi puantajı kaydedildi'})
 
 @app.route('/api/puantaj/<int:puantaj_id>', methods=['DELETE'])
 @require_auth
@@ -395,36 +395,36 @@ def get_gunluk_ozet():
 
     # Bugün gelen işçi sayısı
     cursor.execute('''
-        SELECT COUNT(DISTINCT isci_id) as gelen
-        FROM puantaj WHERE tarih = ?
+    SELECT COUNT(DISTINCT isci_id) as gelen
+    FROM puantaj WHERE tarih = ?
     ''', (tarih,))
     gelen_isci = cursor.fetchone()['gelen']
 
     # Çalışma durumu dağılımı
     cursor.execute('''
-        SELECT calisma_durumu, COUNT(*) as sayi
-        FROM puantaj WHERE tarih = ?
-        GROUP BY calisma_durumu
+    SELECT calisma_durumu, COUNT(*) as sayi
+    FROM puantaj WHERE tarih = ?
+    GROUP BY calisma_durumu
     ''', (tarih,))
     durum_dagilimi = {row['calisma_durumu']: row['sayi'] for row in cursor.fetchall()}
 
     # Toplam mesai
     cursor.execute('''
-        SELECT SUM(mesai_saat) as toplam_mesai
-        FROM puantaj WHERE tarih = ?
+    SELECT SUM(mesai_saat) as toplam_mesai
+    FROM puantaj WHERE tarih = ?
     ''', (tarih,))
     toplam_mesai = cursor.fetchone()['toplam_mesai'] or 0
 
     conn.close()
 
     return jsonify({
-        'tarih': tarih,
-        'toplam_isci': toplam_isci,
-        'gelen_isci': gelen_isci,
-        'gelmeyen_isci': toplam_isci - gelen_isci,
-        'devam_orani': round((gelen_isci / toplam_isci * 100) if toplam_isci > 0 else 0, 1),
-        'durum_dagilimi': durum_dagilimi,
-        'toplam_mesai_saat': toplam_mesai
+    'tarih': tarih,
+    'toplam_isci': toplam_isci,
+    'gelen_isci': gelen_isci,
+    'gelmeyen_isci': toplam_isci - gelen_isci,
+    'devam_orani': round((gelen_isci / toplam_isci * 100) if toplam_isci > 0 else 0, 1),
+    'durum_dagilimi': durum_dagilimi,
+    'toplam_mesai_saat': toplam_mesai
     })
 
 @app.route('/api/ozet/haftalik', methods=['GET'])
@@ -442,17 +442,17 @@ def get_haftalik_ozet():
     cursor = conn.cursor()
 
     cursor.execute('''
-        SELECT i.id, i.ad_soyad, i.ustalik, i.gunluk_ucret,
-               COUNT(p.id) as calisilan_gun,
-               SUM(CASE WHEN p.calisma_durumu = 'tam_gun' THEN 1
-                        WHEN p.calisma_durumu = 'yarim_gun' THEN 0.5
-                        ELSE 0 END) as yevmiye,
-               SUM(p.mesai_saat) as toplam_mesai
-        FROM isci i
-        LEFT JOIN puantaj p ON i.id = p.isci_id AND p.tarih BETWEEN ? AND ?
-        WHERE i.aktif = 1
-        GROUP BY i.id
-        ORDER BY i.ad_soyad
+    SELECT i.id, i.ad_soyad, i.ustalik, i.gunluk_ucret,
+    COUNT(p.id) as calisilan_gun,
+    SUM(CASE WHEN p.calisma_durumu = 'tam_gun' THEN 1
+    WHEN p.calisma_durumu = 'yarim_gun' THEN 0.5
+    ELSE 0 END) as yevmiye,
+    SUM(p.mesai_saat) as toplam_mesai
+    FROM isci i
+    LEFT JOIN puantaj p ON i.id = p.isci_id AND p.tarih BETWEEN ? AND ?
+    WHERE i.aktif = 1
+    GROUP BY i.id
+    ORDER BY i.ad_soyad
     ''', (baslangic_date.isoformat(), bitis_date.isoformat()))
 
     isci_ozet = []
@@ -460,22 +460,22 @@ def get_haftalik_ozet():
         yevmiye = row['yevmiye'] or 0
         ucret = row['gunluk_ucret'] or 0
         isci_ozet.append({
-            'id': row['id'],
-            'ad_soyad': row['ad_soyad'],
-            'ustalik': row['ustalik'],
-            'calisilan_gun': row['calisilan_gun'] or 0,
-            'yevmiye': yevmiye,
-            'mesai_saat': row['toplam_mesai'] or 0,
-            'hakedis': yevmiye * ucret
+        'id': row['id'],
+        'ad_soyad': row['ad_soyad'],
+        'ustalik': row['ustalik'],
+        'calisilan_gun': row['calisilan_gun'] or 0,
+        'yevmiye': yevmiye,
+        'mesai_saat': row['toplam_mesai'] or 0,
+        'hakedis': yevmiye * ucret
         })
 
-    conn.close()
+        conn.close()
 
-    return jsonify({
+        return jsonify({
         'baslangic': baslangic_date.isoformat(),
         'bitis': bitis_date.isoformat(),
         'isciler': isci_ozet
-    })
+        })
 
 # ==================== AVANS API ====================
 
@@ -491,22 +491,22 @@ def get_avanslar():
 
     if isci_id:
         cursor.execute('''
-            SELECT a.*, i.ad_soyad
-            FROM avans a JOIN isci i ON a.isci_id = i.id
-            WHERE a.isci_id = ?
-            ORDER BY a.tarih DESC
+        SELECT a.*, i.ad_soyad
+        FROM avans a JOIN isci i ON a.isci_id = i.id
+        WHERE a.isci_id = ?
+        ORDER BY a.tarih DESC
         ''', (isci_id,))
     else:
         cursor.execute('''
-            SELECT a.*, i.ad_soyad
-            FROM avans a JOIN isci i ON a.isci_id = i.id
-            ORDER BY a.tarih DESC LIMIT 50
+        SELECT a.*, i.ad_soyad
+        FROM avans a JOIN isci i ON a.isci_id = i.id
+        ORDER BY a.tarih DESC LIMIT 50
         ''')
 
-    avanslar = [dict(row) for row in cursor.fetchall()]
-    conn.close()
+        avanslar = [dict(row) for row in cursor.fetchall()]
+        conn.close()
 
-    return jsonify(avanslar)
+        return jsonify(avanslar)
 
 @app.route('/api/avans', methods=['POST'])
 @require_auth
@@ -518,13 +518,13 @@ def add_avans():
     cursor = conn.cursor()
 
     cursor.execute('''
-        INSERT INTO avans (isci_id, tarih, miktar, aciklama)
-        VALUES (?, ?, ?, ?)
+    INSERT INTO avans (isci_id, tarih, miktar, aciklama)
+    VALUES (?, ?, ?, ?)
     ''', (
-        data.get('isci_id'),
-        data.get('tarih', date.today().isoformat()),
-        data.get('miktar'),
-        data.get('aciklama')
+    data.get('isci_id'),
+    data.get('tarih', date.today().isoformat()),
+    data.get('miktar'),
+    data.get('aciklama')
     ))
 
     conn.commit()
@@ -546,13 +546,13 @@ def run_server(host='0.0.0.0', port=5000, debug=False):
     token = generate_token()
 
     print("\n" + "="*50)
-    print("  PUANTAJ API SUNUCUSU")
+    print(" PUANTAJ API SUNUCUSU")
     print("="*50)
-    print(f"\n  Yerel: http://localhost:{port}")
-    print(f"  Ağ:    http://{get_local_ip()}:{port}")
-    print(f"\n  Kullanıcı: {API_USERNAME}")
-    print(f"  Şifre:     {API_PASSWORD}")
-    print(f"\n  API Token: {token[:20]}...")
+    print(f"\n Yerel: http://localhost:{port}")
+    print(f" Ağ: http://{get_local_ip()}:{port}")
+    print(f"\n Kullanıcı: {API_USERNAME}")
+    print(f" Şifre: {API_PASSWORD}")
+    print(f"\n API Token: {token[:20]}...")
     print("\n" + "="*50 + "\n")
 
     app.run(host=host, port=port, debug=debug)

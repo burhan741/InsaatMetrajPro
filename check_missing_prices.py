@@ -9,10 +9,10 @@ cursor = conn.cursor()
 
 # Fiyatı 0 veya NULL olan pozları bul
 cursor.execute("""
-    SELECT poz_no, tanim, resmi_fiyat
-    FROM pozlar
-    WHERE resmi_fiyat IS NULL OR resmi_fiyat = 0 OR resmi_fiyat = ''
-    ORDER BY poz_no
+SELECT poz_no, tanim, resmi_fiyat
+FROM pozlar
+WHERE resmi_fiyat IS NULL OR resmi_fiyat = 0 OR resmi_fiyat = ''
+ORDER BY poz_no
 """)
 
 rows = cursor.fetchall()
@@ -33,7 +33,7 @@ with open(result_file, 'w', encoding='utf-8') as f:
         f.write(f"Fiyat: {fiyat}\n")
         f.write("-" * 40 + "\n")
 
-conn.close()
+    conn.close()
 
-print(f"Toplam fiyatsiz poz: {len(rows)}")
-print(f"Liste kaydedildi: {result_file}")
+    print(f"Toplam fiyatsiz poz: {len(rows)}")
+    print(f"Liste kaydedildi: {result_file}")
