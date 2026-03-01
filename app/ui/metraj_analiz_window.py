@@ -4180,7 +4180,8 @@ class MetrajAnalizWindow(QMainWindow):
  "Boy (cm)": d.boy,
  "Toplam Boy (m)": d.toplam_boy,
  "Birim Ağırlık (kg/m)": d.agirlik_birim,
- "Toplam Ağırlık (kg)": d.toplam_agirlik,
+ "Toplam Ağırlık (kg)": round(d.toplam_agirlik, 3),
+ "Toplam Ağırlık (ton)": round(d.toplam_agirlik / 1000, 4),
  "Çubuk Adedi (12m)": math.ceil(d.toplam_boy / CUBUK_BOYU),
  })
 
@@ -4200,6 +4201,7 @@ class MetrajAnalizWindow(QMainWindow):
  "Toplam Boy (m)": round(toplam_boy, 2),
  "Birim Ağırlık (kg/m)": "-",
  "Toplam Ağırlık (kg)": round(toplam_agirlik, 2),
+ "Toplam Ağırlık (ton)": round(toplam_agirlik / 1000, 3),
  "Çubuk Adedi (12m)": toplam_cubuk,
  }])
 

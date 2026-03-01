@@ -125,6 +125,41 @@ DEMIR_AGIRLIK_TABLOSU = {
  40: 9.865,
 }
 
+# Qt event loop — modül seviyesinde import (method içi import overhead'ı kaldırır)
+try:
+ from PyQt6.QtWidgets import QApplication as _QApplication
+ _QT_AVAILABLE = True
+except ImportError:
+ _QApplication = None
+ _QT_AVAILABLE = False
+
+# ── Demir regex kalıpları — modül seviyesinde derlenir ──────────────────────
+# Method çağrısı başına re.compile() overhead'ı sıfırlanır.
+# Python'ın iç cache'i ne olursa olsun modül import'unda bir kez derlenir.
+#
+# BİRLEŞİK PATTERN — iki ayrı arama yerine tek arama:
+#   Grup 1: carpan  — opsiyonel "2x" / "3x" çarpan (None → 1 kabul edilir)
+#   Grup 2: adet    — demir adedi
+#   Grup 3: çap     — mm cinsinden çap
+#   Grup 4: boy     — L= değeri
+#
+# Desteklenen ayraçlar: Ø ø ƒ φ Φ ∅ T t Τ   ve AutoCAD %%C / %%c
+_DEMIR_PATTERN = re.compile(
+ r'(?:P\d+\s+)?(?:(\d+)\s*[xX*]\s*)?(\d+)\s*(?:[ØøƒφΦ∅TtΤ]|%%[cC])\s*(\d+).*?[Ll]\s*=\s*(\d+(?:[.,]\d+)?)',
+ re.IGNORECASE
+)
+# Eski _DEMIR_PATTERN_AUTOCAD artık gerekli değil;
+# backward compat. için alias olarak bırakıldı.
+_DEMIR_PATTERN_AUTOCAD = _DEMIR_PATTERN
+_DONATI_PATTERN = re.compile(
+ r'(?:P\d+[-.])?(\d+)\s*[ØøƒφΦ∅]\s*(\d+)',
+ re.IGNORECASE
+)
+_DONATI_PATTERN_AUTOCAD = re.compile(
+ r'(?:P\d+[-.])?(\d+)\s*%%[cC]\s*(\d+)',
+ re.IGNORECASE
+)
+
 
 class AutoCADConnector:
  """
@@ -721,6 +756,19 @@ class AutoCADConnector:
  except Exception:
  return None
 
+ # TEXT/MTEXT değilse: Handle/Layer/Color okumadan erken dön.
+ # Bu 3 COM çağrısını her non-text entity için kurtarır.
+ # Tüm çağıranlar zaten obj_name ile TEXT/MTEXT kontrolü yapıyor.
+ if obj_name not in ("AcDbText", "AcDbMText"):
+ return {
+  'entity': entity,
+  'object_name': obj_name,
+  'handle': None,
+  'text': None,
+  'layer': '',
+  'color': 256,
+ }
+
  handle = None
  try:
  handle = self._com_retry(lambda: entity.Handle)
@@ -728,11 +776,10 @@ class AutoCADConnector:
  pass
 
  text = None
- if obj_name in ["AcDbText", "AcDbMText"]:
  try:
  t = self._com_retry(lambda: entity.TextString)
  if t is not None:
- text = str(t)
+  text = str(t)
  except Exception:
  text = self._guvenli_text_oku(entity)
 
@@ -1309,10 +1356,8 @@ class AutoCADConnector:
  metin_props_listesi = [] # Cache'lenmiş özellikler
 
  for i in range(secim_sayisi):
- # Her 100 objede bir AutoCAD'e nefes aldır
- if i > 0 and i % 100 == 0:
- time.sleep(0.05)
-
+ # _com_retry zaten RPC_E_CALL_REJECTED yönetiyor;
+ # ayrı sleep döngüsü gerekli değil.
  try:
  entity = self._com_retry(lambda idx=i: self.selection_set.Item(idx))
  except Exception as e:
@@ -1323,11 +1368,11 @@ class AutoCADConnector:
  if props is None:
  continue
 
- if props['object_name'] in ["AcDbText", "AcDbMText"]:
+ if props['object_name'] in ("AcDbText", "AcDbMText"):
  if props['text'] is not None:
- metin_props_listesi.append(props)
+  metin_props_listesi.append(props)
  else:
- logger.debug(f"Metin objesi okunamadı, atlanıyor (index: {i})")
+  logger.debug(f"Metin objesi okunamadı, atlanıyor (index: {i})")
 
  sonuc["metin_sayisi"] = len(metin_props_listesi)
 
@@ -1349,35 +1394,14 @@ class AutoCADConnector:
  # ================================================================
  # DEMİR REGEX ANALİZİ (cache'lenmiş verilerle)
  # ================================================================
- # Pattern: ADET Ø/ƒ/φ ÇAP ... L = BOY
- # Desteklenen formatlar:
- # "10Ø12 L=250" -> 10 adet, Ø12, 250cm
- # "P05 2ƒ12 ila. l=233" -> 2 adet, Ø12, 233cm (poz numaralı)
- # "5φ16 l=180" -> 5 adet, Ø16, 180cm
- # "%%c" = AutoCAD'in Ø kodu
- # Çap karakterleri: Ø ø ƒ φ Φ ∅ T (T bazen font sorunu)
- demir_pattern = re.compile(
- r'(?:P\d+\s+)?(\d+)\s*[ØøƒφΦ∅TtΤ]\s*(\d+).*?[Ll]\s*=\s*(\d+(?:[.,]\d+)?)',
- re.IGNORECASE
- )
-
- # AutoCAD %%c kodu için alternatif pattern
- demir_pattern_autocad = re.compile(
- r'(?:P\d+\s+)?(\d+)\s*%%[cC]\s*(\d+).*?[Ll]\s*=\s*(\d+(?:[.,]\d+)?)',
- re.IGNORECASE
- )
-
- # Qt event loop'u rahatlatmak için import
- try:
- from PyQt6.QtWidgets import QApplication
- _qt_available = True
- except ImportError:
- _qt_available = False
+ # Modül seviyesi sabitler kullanılır: _DEMIR_PATTERN, _DEMIR_PATTERN_AUTOCAD
+ # processEvents her 25 nesnede bir (eski: 5) — UI yanıt süresi korunur,
+ # overhead 5x azalır.
 
  for idx, props in enumerate(metin_props_listesi):
- # Her 5 objede bir Qt mesaj kuyruğunu boşalt
- if _qt_available and idx % 5 == 0:
- QApplication.processEvents()
+ # Her 25 objede bir Qt mesaj kuyruğunu boşalt
+ if _QT_AVAILABLE and idx % 25 == 0:
+ _QApplication.processEvents()
 
  try:
  # Cache'ten oku (0 COM çağrısı)
@@ -1392,19 +1416,24 @@ class AutoCADConnector:
  katman=layer
  )
 
- # Debug: Metin içeriğini logla
- logger.debug(f"Metin kontrol ediliyor: '{text_content}' (hex: {text_content.encode('utf-8').hex()})")
+ # Debug: hex encode hesabı sadece DEBUG aktifken yapılır
+ # (f-string eager evaluation'ı önler)
+ if logger.isEnabledFor(logging.DEBUG):
+ logger.debug(
+  f"Metin kontrol ediliyor: '{text_content}' "
+  f"(hex: {text_content.encode('utf-8').hex()})"
+ )
 
- # Regex ile eşleştir (iki pattern dene)
- match = demir_pattern.search(text_content)
- if not match:
- match = demir_pattern_autocad.search(text_content)
+ # Regex ile eşleştir — tek birleşik pattern (Ø/%%C + 2x çarpan desteği)
+ match = _DEMIR_PATTERN.search(text_content)
 
  if match:
  # Başarılı eşleşme
- adet = int(match.group(1))
- cap = int(match.group(2))
- boy_str = match.group(3).replace(',', '.')
+ # Grup 1: carpan (opsiyonel "2x"), Grup 2: adet, Grup 3: çap, Grup 4: boy
+ carpan = int(match.group(1)) if match.group(1) else 1
+ adet = carpan * int(match.group(2))
+ cap = int(match.group(3))
+ boy_str = match.group(4).replace(',', '.')
  boy = float(boy_str)
 
  # Birim dönüşümü (cm -> m)
@@ -1454,7 +1483,8 @@ class AutoCADConnector:
  original_color=props['color']
  )
 
- logger.debug(f"Demir bulundu: {adet}Ø{cap} L={boy}{birim} -> {toplam_agirlik:.2f}kg")
+ carpan_str = f"{carpan}x" if carpan > 1 else ""
+ logger.debug(f"Demir bulundu: {carpan_str}{adet}Ø{cap} L={boy}{birim} -> {toplam_agirlik:.2f}kg")
 
  else:
  # Eşleşmedi - format dışı
@@ -1621,8 +1651,6 @@ class AutoCADConnector:
  metin_listesi = []
 
  for i in range(secim_sayisi):
- if i > 0 and i % 100 == 0:
- time.sleep(0.05)
  try:
  entity = self._com_retry(lambda idx=i: self.selection_set.Item(idx))
  except Exception:
@@ -1630,7 +1658,7 @@ class AutoCADConnector:
  props = self._read_entity_props(entity)
  if props is None:
  continue
- if props['object_name'] not in ["AcDbText", "AcDbMText"]:
+ if props['object_name'] not in ("AcDbText", "AcDbMText"):
  continue
  if props['text'] is None:
  continue
@@ -1645,15 +1673,7 @@ class AutoCADConnector:
  # ================================================================
  # 2. İÇERİK BAZLI AKILLI PARSE (koordinat gerekmez)
  # ================================================================
- # Metin sınıflandırma kalıpları
- donati_pattern = re.compile(
- r'(?:P\d+[-.])?(\d+)\s*[ØøƒφΦ∅]\s*(\d+)',
- re.IGNORECASE
- )
- donati_pattern_autocad = re.compile(
- r'(?:P\d+[-.])?(\d+)\s*%%[cC]\s*(\d+)',
- re.IGNORECASE
- )
+ # Modül seviyesi sabitler kullanılır: _DONATI_PATTERN, _DONATI_PATTERN_AUTOCAD
  boy_pattern = re.compile(r'^(\d+(?:[.,]\d+)?)$')
  baslik_kelimeleri = {"KOLON", "DONATI", "DONAT", "BOY", "FİLİZ", "FILIZ", "FILIZI", "FİLİZİ", "KOLON FILIZI", "KOLON FİLİZİ"}
 
@@ -1672,10 +1692,10 @@ class AutoCADConnector:
  atlanan += 1
  continue
 
- # Donatı mı? (P84-28ƒ14, 28Ø14, vb.)
- match = donati_pattern.search(text)
+ # Donatı mı? (P84-28ƒ14, 28Ø14, vb.) — modül sabiti kullan
+ match = _DONATI_PATTERN.search(text)
  if not match:
- match = donati_pattern_autocad.search(text)
+ match = _DONATI_PATTERN_AUTOCAD.search(text)
  if match:
  donati_listesi.append((props, match))
  continue
@@ -1739,9 +1759,9 @@ class AutoCADConnector:
  orijinal = f"{kolon_text}: {donati_text} L={boy}" if kolon_text else f"{donati_text} L={boy}"
 
  # Birleşik donatıları yakala (ör: 8ƒ16+6ƒ14 → 2 ayrı demir)
- all_matches = list(donati_pattern.finditer(donati_text))
+ all_matches = list(_DONATI_PATTERN.finditer(donati_text))
  if not all_matches:
- all_matches = list(donati_pattern_autocad.finditer(donati_text))
+ all_matches = list(_DONATI_PATTERN_AUTOCAD.finditer(donati_text))
 
  if not all_matches:
  demir = DemirBilgisi(
@@ -2104,8 +2124,6 @@ class AutoCADConnector:
  Returns:
  Dict: Hesaplama sonuçları, mod bilgisi ve DemirBilgisi listesi
  """
- import re
-
  sonuc = {
  "basarili": False,
  "hata": None,

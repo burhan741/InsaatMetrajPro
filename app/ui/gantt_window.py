@@ -33,6 +33,25 @@ import os
 from app.core.database import DatabaseManager
 from app.core.gantt_engine import GanttEngine, Task
 
+# Yeni özellikler: Şablon Sihirbazı + Bugün Paneli
+try:
+    from app.ui.bugun_paneli import BugunPaneli
+    _BUGUN_PANEL_OK = True
+except Exception:
+    _BUGUN_PANEL_OK = False
+
+try:
+    from app.ui.sablon_sihirbazi import SablonSihirbazi
+    _SABLON_SIHIRBAZ_OK = True
+except Exception:
+    _SABLON_SIHIRBAZ_OK = False
+
+try:
+    from app.core.proje_sablonlari import SablonYoneticisi
+    _SABLON_YON_OK = True
+except Exception:
+    _SABLON_YON_OK = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -1355,9 +1374,10 @@ class GanttWindow(QWidget):
  export_btn.clicked.connect(self.goster_export_menu)
  kontrol_layout.addWidget(export_btn)
 
- # Şablon Ekle butonu
- sablon_btn = QPushButton(" Şablon Ekle")
- sablon_btn.setStyleSheet("background-color: #1abc9c; color: white; padding: 5px 10px; border-radius: 3px;")
+ # Şablon Sihirbazı butonu
+ sablon_btn = QPushButton("🧩 Şablon Sihirbazı")
+ sablon_btn.setStyleSheet("background-color: #1abc9c; color: white; padding: 5px 10px; border-radius: 3px; font-weight: bold;")
+ sablon_btn.setToolTip("Hazır proje şablonundan otomatik iş programı oluştur")
  sablon_btn.clicked.connect(self.goster_sablon_dialog)
  kontrol_layout.addWidget(sablon_btn)
 
@@ -1401,6 +1421,12 @@ class GanttWindow(QWidget):
  self.tab_widget.addTab(self._create_baseline_tab(), " Baseline")
  self.tab_widget.addTab(self._create_kaynak_tab(), " Kaynaklar")
  self.tab_widget.addTab(self._create_gecikme_tab(), " Gecikme")
+
+ # Bugün Paneli sekmesi
+ self.bugun_panel = None
+ if _BUGUN_PANEL_OK:
+  self.bugun_panel = BugunPaneli()
+  self.tab_widget.addTab(self.bugun_panel, "📋 Bugün")
 
  layout.addWidget(self.tab_widget)
  self.setLayout(layout)
@@ -2563,6 +2589,10 @@ Ortalama Float: {sonuc['ortalama_float']} gün
  # Uyarı badge'ini güncelle
  self.guncelle_uyari_badge()
 
+ # Bugün panelini güncelle
+ if self.bugun_panel is not None:
+  self.bugun_panel.guncelle(self.engine)
+
  def yukle_gantt_chart(self):
  """Gantt chart tablosunu yükle"""
  timeline = self.engine.get_timeline_data()
@@ -3000,27 +3030,68 @@ Genel Durum: {analiz['genel_durum'].upper()}
  # ==================== ŞABLON VE UYARI METODLARI ====================
 
  def goster_sablon_dialog(self):
- """Şablon seçim dialog'unu göster"""
- dialog = TemplateDialog(self)
+  """Şablon Sihirbazı dialog'unu göster (yeni SablonSihirbazi öncelikli)"""
+  if _SABLON_SIHIRBAZ_OK and _SABLON_YON_OK:
+   self._goster_yeni_sablon_sihirbazi()
+  else:
+   self._goster_eski_sablon_dialog()
 
- if dialog.exec() == QDialog.DialogCode.Accepted:
- template_id = dialog.get_selected_template()
- start_date = dialog.get_start_date()
+ def _goster_yeni_sablon_sihirbazi(self):
+  """Yeni 4-adımlı SablonSihirbazi'nı aç"""
+  try:
+   sihirbaz = SablonSihirbazi(self)
+   if sihirbaz.exec() == QDialog.DialogCode.Accepted:
+    secim = sihirbaz.get_secim()
+    if not secim:
+     return
+    sablon = secim['sablon']
+    baslangic = secim['baslangic']
+    sehir = secim.get('sehir', '')
+    mevcut_max = max(self.engine.tasks.keys()) if self.engine.tasks else 0
+    yonetici = SablonYoneticisi()
+    sonuc = yonetici.engine_yukle(self.engine, sablon, baslangic, mevcut_max)
+    if sonuc.get('success'):
+     self.yukle_is_listesi()
+     if self.engine.tasks:
+      self.next_task_id = max(self.engine.tasks.keys()) + 1
+     q_tarih = QDate(baslangic.year, baslangic.month, baslangic.day)
+     if hasattr(self, 'baslangic_date'):
+      self.baslangic_date.setDate(q_tarih)
+     if sehir and self.bugun_panel is not None:
+      self.bugun_panel.set_sehir(sehir)
+     QMessageBox.information(
+      self, "✅ Şablon Yüklendi",
+      f"{sonuc.get('sablon_adi', sablon.tip)} başarıyla eklendi!\n"
+      f"{sonuc.get('eklenen_gorev', 0)} iş kalemi oluşturuldu.\n\n"
+      f"'Hesapla' butonuna basarak CPM analizi yapabilirsiniz."
+     )
+    else:
+     QMessageBox.warning(self, "Hata", sonuc.get('hata', 'Bilinmeyen hata'))
+  except Exception as e:
+   logger.error(f"Şablon sihirbazı hatası: {e}")
+   QMessageBox.warning(self, "Hata", f"Şablon yüklenemedi: {e}")
 
- if template_id:
- sonuc = self.engine.load_template(template_id, start_date)
-
- if sonuc.get('success'):
- self.yukle_is_listesi()
- # Task ID'leri güncelle
- if self.engine.tasks:
- self.next_task_id = max(self.engine.tasks.keys()) + 1
- QMessageBox.information(
- self, "Başarılı",
- f"{sonuc.get('sablon_adi', 'Şablon')} eklendi.\n{sonuc.get('eklenen_gorev', 0)} görev eklendi."
- )
- else:
- QMessageBox.warning(self, "Hata", sonuc.get('error', 'Bilinmeyen hata'))
+ def _goster_eski_sablon_dialog(self):
+  """Eski TemplateDialog fallback"""
+  try:
+   dialog = TemplateDialog(self)
+   if dialog.exec() == QDialog.DialogCode.Accepted:
+    template_id = dialog.get_selected_template()
+    start_date = dialog.get_start_date()
+    if template_id:
+     sonuc = self.engine.load_template(template_id, start_date)
+     if sonuc.get('success'):
+      self.yukle_is_listesi()
+      if self.engine.tasks:
+       self.next_task_id = max(self.engine.tasks.keys()) + 1
+      QMessageBox.information(
+       self, "Başarılı",
+       f"{sonuc.get('sablon_adi', 'Şablon')} eklendi.\n{sonuc.get('eklenen_gorev', 0)} görev eklendi."
+      )
+     else:
+      QMessageBox.warning(self, "Hata", sonuc.get('error', 'Bilinmeyen hata'))
+  except Exception as e:
+   logger.error(f"Eski şablon dialog hatası: {e}")
 
  def goster_uyarilar(self):
  """Uyarılar panelini göster"""

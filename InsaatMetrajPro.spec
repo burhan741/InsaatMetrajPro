@@ -46,6 +46,11 @@ hiddenimports = [
     'app.ui.mobilya_maliyet_window', 'app.ui.yalitim_maliyet_window',
     'app.ui.elektrik_maliyet_window', 'app.ui.vitrifiye_maliyet_window',
     'app.ui.kaba_yapi_maliyet_window', 'app.ui.metal_isleri_maliyet_window',
+    'app.ui.bugun_paneli', 'app.ui.sablon_sihirbazi',
+    'app.ui.gecikme_ceza_window', 'app.ui.sgk_iscilik_window',
+    # Core - Yeni Moduller
+    'app.core.proje_sablonlari', 'app.core.hava_durumu',
+    'app.core.pert_engine', 'app.core.beton_kurleme_engine',
     # Utils
     'app.utils.data_loader', 'app.utils.export_manager',
     'app.utils.helpers', 'app.utils.pdf_importer', 'app.utils.excel_importer',
@@ -53,6 +58,10 @@ hiddenimports = [
     'app.data.konut_is_kalemleri', 'app.data.malzeme_formulleri',
     'app.data.fire_oranlari', 'app.data.gantt_templates',
     'app.data.malzeme_renkleri',
+    # Diger bagimliliklar
+    'qrcode', 'qrcode.image.base', 'qrcode.image.pure',
+    'PIL', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFont',
+    'packaging', 'packaging.version', 'packaging.requirements',
 ]
 
 # PyQt6 tum alt modulleri
@@ -65,6 +74,9 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # numpy alt modulleri
 hiddenimports += collect_submodules('numpy')
+
+# app paketinin TUM alt modulleri (IndentationError'li .py'lerin pyc'den yuklenmesi icin kritik)
+hiddenimports += collect_submodules('app')
 
 
 a = Analysis(
