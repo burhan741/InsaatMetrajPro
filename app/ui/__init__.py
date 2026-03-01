@@ -120,8 +120,8 @@ def _gantt_setup_undo(gantt):
     NOT: İş ekleme/düzenleme/silme undo mantığı artık sınıf seviyesi
     patch'lerde (_patched_ekle_is_cls vb.) barındırılmaktadır.
     """
-    from PyQt6.QtGui import QKeySequence
-    from PyQt6.QtWidgets import QShortcut, QPushButton
+    from PyQt6.QtGui import QKeySequence, QShortcut
+    from PyQt6.QtWidgets import QPushButton
 
     gantt._undo_stack = []
     gantt._undo_btn = None
