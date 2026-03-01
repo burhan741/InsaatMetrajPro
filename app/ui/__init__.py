@@ -173,23 +173,27 @@ def _gantt_setup_undo(gantt):
 # Patch'lar arası veri köprüsü: get_task_data() → ekle_is / duzenle_is
 _LAST_TASK_DIALOG_EXTRA = {}
 
-# Verimlilik tablosu (iş tipi adı, birim/gün/usta)
+# Verimlilik tablosu: (iş tipi adı, verimlilik değeri, miktar birimi)
+# Değerler Türkiye inşaat sektörü ortalamalarına göre belirlenmiştir.
+# Birim, preset seçildiğinde Miktar birim combo'suna otomatik yazılır.
 _VERIMLILIK_TABLOSU = [
-    ("Boya",                45.0),
-    ("Sıva",                25.0),
-    ("Fayans",               8.0),
-    ("Seramik",              7.0),
-    ("Doğrama",              2.0),
-    ("Kalıp",               18.0),
-    ("Beton Dökme",         12.0),
-    ("Demir İşçiliği",       0.8),
-    ("Mantolama",           10.0),
-    ("Parke",               20.0),
-    ("Alçıpan",             15.0),
-    ("Su Tesisatı",          8.0),
-    ("Elektrik Tesisatı",   12.0),
-    ("Kazı",                40.0),
-    ("Temel",                8.0),
+    # (ad,                   değer,   birim)
+    ("Boya",                 45.0,   'm²'),   # 45 m²/gün/usta (iç boya)
+    ("Sıva",                 25.0,   'm²'),   # 25 m²/gün/usta
+    ("Fayans",                8.0,   'm²'),   # 8 m²/gün/usta
+    ("Seramik",               7.0,   'm²'),   # 7 m²/gün/usta
+    ("Doğrama",               2.0,   'adet'), # 2 adet/gün/usta
+    ("Kalıp",                18.0,   'm²'),   # 18 m²/gün/usta
+    ("Beton Dökme",          12.0,   'm³'),   # 12 m³/gün/ekip
+    ("Demir İşçiliği",      500.0,   'kg'),   # 500 kg/gün/usta (≈0.5 ton)
+    ("Mantolama",            10.0,   'm²'),   # 10 m²/gün/usta
+    ("Parke",                20.0,   'm²'),   # 20 m²/gün/usta
+    ("Alçıpan",              15.0,   'm²'),   # 15 m²/gün/usta
+    ("Su Tesisatı",           8.0,   'm'),    # 8 m/gün/usta
+    ("Elektrik Tesisatı",    12.0,   'm'),    # 12 m/gün/usta
+    ("Kazı (Makine)",       200.0,   'm³'),   # 200 m³/gün/ekip (kepçe)
+    ("Kazı (Elle)",           5.0,   'm³'),   # 5 m³/gün/usta
+    ("Temel Betonu",          8.0,   'm³'),   # 8 m³/gün/ekip
 ]
 
 
@@ -246,20 +250,28 @@ def _add_miktar_ekip_section(dlg):
 
     # ── Verimlilik ──────────────────────────────────────
     dlg._verim_preset_combo = QComboBox()
-    dlg._verim_preset_combo.addItem("-- İş Tipi Seç (Opsiyonel) --", 0.0)
-    for name, val in _VERIMLILIK_TABLOSU:
-        dlg._verim_preset_combo.addItem(f"{name}  ({val} birim/gün/usta)", val)
+    dlg._verim_preset_combo.addItem("-- İş Tipi Seç (Opsiyonel) --", None)
+    for name, val, birim in _VERIMLILIK_TABLOSU:
+        dlg._verim_preset_combo.addItem(
+            f"{name}  —  {val} {birim}/gün/usta", (val, birim)
+        )
 
     dlg._verim_spin = QDoubleSpinBox()
-    dlg._verim_spin.setRange(0.0, 9999.0)
+    dlg._verim_spin.setRange(0.0, 99999.0)
     dlg._verim_spin.setDecimals(2)
     dlg._verim_spin.setValue(0.0)
     dlg._verim_spin.setSuffix("  birim/gün/usta")
 
     def _on_preset_changed(_idx):
-        v = dlg._verim_preset_combo.currentData()
-        if v:
-            dlg._verim_spin.setValue(float(v))
+        data = dlg._verim_preset_combo.currentData()
+        if data:
+            val, birim = data
+            dlg._verim_spin.setValue(float(val))
+            dlg._verim_spin.setSuffix(f"  {birim}/gün/usta")
+            # Miktar birimini otomatik eşleştir
+            birim_idx = dlg._miktar_birim_combo.findText(birim)
+            if birim_idx >= 0:
+                dlg._miktar_birim_combo.setCurrentIndex(birim_idx)
 
     dlg._verim_preset_combo.currentIndexChanged.connect(_on_preset_changed)
     f.addRow("İş Tipi:", dlg._verim_preset_combo)
