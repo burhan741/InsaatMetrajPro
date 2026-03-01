@@ -174,26 +174,53 @@ def _gantt_setup_undo(gantt):
 _LAST_TASK_DIALOG_EXTRA = {}
 
 # Verimlilik tablosu: (iş tipi adı, verimlilik değeri, miktar birimi)
-# Değerler Türkiye inşaat sektörü ortalamalarına göre belirlenmiştir.
+# Kaynak: Çevre, Şehircilik ve İklim Değişikliği Bakanlığı Birim Fiyat Analizleri
+# Verimlilik = 1 / (usta.gün/birim)  →  birim/gün/usta
 # Birim, preset seçildiğinde Miktar birim combo'suna otomatik yazılır.
 _VERIMLILIK_TABLOSU = [
-    # (ad,                   değer,   birim)
-    ("Boya",                 45.0,   'm²'),   # 45 m²/gün/usta (iç boya)
-    ("Sıva",                 25.0,   'm²'),   # 25 m²/gün/usta
-    ("Fayans",                8.0,   'm²'),   # 8 m²/gün/usta
-    ("Seramik",               7.0,   'm²'),   # 7 m²/gün/usta
-    ("Doğrama",               2.0,   'adet'), # 2 adet/gün/usta
-    ("Kalıp",                18.0,   'm²'),   # 18 m²/gün/usta
-    ("Beton Dökme",          12.0,   'm³'),   # 12 m³/gün/ekip
-    ("Demir İşçiliği",      500.0,   'kg'),   # 500 kg/gün/usta (≈0.5 ton)
-    ("Mantolama",            10.0,   'm²'),   # 10 m²/gün/usta
-    ("Parke",                20.0,   'm²'),   # 20 m²/gün/usta
-    ("Alçıpan",              15.0,   'm²'),   # 15 m²/gün/usta
-    ("Su Tesisatı",           8.0,   'm'),    # 8 m/gün/usta
-    ("Elektrik Tesisatı",    12.0,   'm'),    # 12 m/gün/usta
-    ("Kazı (Makine)",       200.0,   'm³'),   # 200 m³/gün/ekip (kepçe)
-    ("Kazı (Elle)",           5.0,   'm³'),   # 5 m³/gün/usta
-    ("Temel Betonu",          8.0,   'm³'),   # 8 m³/gün/ekip
+    # ── KALIP İŞLERİ ────────────────────────────────────────────────────
+    # Analiz: ~0.45 usta.gün/m² (kolon/kiriş/döşeme ortalama)
+    ("Kalıp Çakma (Ahşap)",   2.22,  'm²'),  # 1/0.45 ≈ 2.22 m²/gün/usta
+    # Analiz: ~0.20 usta.gün/m² (sökme çakmanın yarısı)
+    ("Kalıp Sökme",           5.0,   'm²'),  # 1/0.20 = 5 m²/gün/usta
+    # ── DEMİR İŞLERİ ────────────────────────────────────────────────────
+    # Analiz: ~0.015 usta.gün/kg → bükme+kesme+bağlama dahil
+    ("Demir Bağlama/Bükme",  66.7,   'kg'),  # 1/0.015 ≈ 67 kg/gün/usta
+    # ── BETON İŞLERİ ────────────────────────────────────────────────────
+    # Analiz: ~0.5 usta.gün/m³ (hazır beton + vibrasyon)
+    ("Beton Dökme",           2.0,   'm³'),  # 1/0.5 = 2 m³/gün/usta
+    # ── SIVAIŞLER ────────────────────────────────────────────────────────
+    # Analiz: ~0.04 usta.gün/m² iç sıva
+    ("İç Sıva",              25.0,   'm²'),  # 1/0.04 = 25 m²/gün/usta
+    # Analiz: ~0.05 usta.gün/m² dış sıva (iskele gecikmesi dahil)
+    ("Dış Sıva",             20.0,   'm²'),  # 1/0.05 = 20 m²/gün/usta
+    # ── BOYA ─────────────────────────────────────────────────────────────
+    # Analiz: ~0.022 usta.gün/m² (2 kat iç boya)
+    ("Boya (İç, 2 kat)",     45.0,   'm²'),  # 1/0.022 ≈ 45 m²/gün/usta
+    ("Boya (Dış, Cephe)",    30.0,   'm²'),  # iskele+hazırlık dahil
+    # ── KAPLAMA ──────────────────────────────────────────────────────────
+    # Analiz: ~0.12 usta.gün/m²
+    ("Fayans/Seramik",        8.0,   'm²'),  # 1/0.12 ≈ 8 m²/gün/usta
+    ("Mermer/Granit",         4.0,   'm²'),  # ağır plaka, detaylı kesim
+    ("Parke (Laminat)",      25.0,   'm²'),  # hızlı döşeme
+    ("Parke (Ahşap)",        15.0,   'm²'),  # zımpara+cila dahil
+    # ── YALITIM ──────────────────────────────────────────────────────────
+    # Analiz: ~0.10 usta.gün/m²
+    ("Mantolama (XPS/EPS)",  10.0,   'm²'),  # 1/0.10 = 10 m²/gün/usta
+    ("Su Yalıtımı",           8.0,   'm²'),  # membran+şap dahil
+    # ── KAGİR / DUVAR ────────────────────────────────────────────────────
+    ("Tuğla Duvar",           4.5,   'm²'),  # 1/0.22 ≈ 4.5 m²/gün/usta
+    ("Gazbeton Duvar",        6.0,   'm²'),  # hafif blok, hızlı
+    ("Alçıpan",              15.0,   'm²'),  # profil+panel
+    # ── DOĞRAMA ──────────────────────────────────────────────────────────
+    ("Kapı Montajı",          2.0,   'adet'),# 2 kapı/gün/usta
+    ("Pencere Montajı",       3.0,   'adet'),# 3 pencere/gün/usta
+    # ── TESİSAT ──────────────────────────────────────────────────────────
+    ("Su Tesisatı (PPR)",     8.0,   'm'),   # kaynaklı boru
+    ("Elektrik (Kablo)",     20.0,   'm'),   # döşeme+bağlama
+    # ── KAZI/TOPRAK ──────────────────────────────────────────────────────
+    ("Kazı (Elle)",           3.0,   'm³'),  # 1/0.33 ≈ 3 m³/gün/usta
+    ("Kazı (Makine/Kepçe)", 200.0,   'm³'),  # operatör başına
 ]
 
 
