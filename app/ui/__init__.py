@@ -182,10 +182,16 @@ _VERIMLILIK_TABLOSU = [
     # Verimlilik = 1 / (usta.gün/birim)
     #
     # ── KALIP İŞLERİ ────────────────────────────────────────────────────
-    # 0.45 usta.gün/m² (kolon/kiriş/döşeme karma)
-    ("Kalıp Çakma (Ahşap)",   2.22,  'm²'),
-    # 0.18 usta.gün/m² (sökme, çakmanın ~%40'ı sürer)
-    ("Kalıp Sökme",           5.56,  'm²'),
+    # Döşeme kalıbı: 0.25 usta.gün/m² (düz, geniş alan, hızlı)
+    ("Kalıp Çakma (Döşeme)",  4.0,   'm²'),
+    # Kiriş kalıbı: 0.35 usta.gün/m²
+    ("Kalıp Çakma (Kiriş)",   2.86,  'm²'),
+    # Kolon kalıbı: 0.55 usta.gün/m² (dar, karmaşık geometri)
+    ("Kalıp Çakma (Kolon)",   1.82,  'm²'),
+    # Karma ortalama: 0.30 usta.gün/m² (genel proje tahmini)
+    ("Kalıp Çakma (Karma)",   3.33,  'm²'),
+    # Sökme çakmanın ~%40'ı sürer: döşeme ~0.10, kiriş ~0.14, kolon ~0.22
+    ("Kalıp Sökme",           8.0,   'm²'),
     # ── DEMİR İŞLERİ ────────────────────────────────────────────────────
     # 1 ton için ~3 demirci.gün → 0.003 usta.gün/kg → 333 kg/gün/usta
     ("Demir Bağlama/Bükme", 333.0,   'kg'),
