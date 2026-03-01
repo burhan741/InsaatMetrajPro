@@ -563,13 +563,32 @@ def _patched_gantt_init(self, *args, **kwargs):
     if hasattr(self, "tab_widget"):
         self.tab_widget.setStyleSheet(_GANTT_TAB_STYLE)
 
-    # İş tablosunu 8 sütuna genişlet
+    # ── İş Kalemleri tablosu: 8 sütun + genişlikler ─────────────────────
     if hasattr(self, 'is_table'):
-        self.is_table.setColumnCount(8)
-        self.is_table.setHorizontalHeaderLabels([
+        t = self.is_table
+        t.setColumnCount(8)
+        t.setHorizontalHeaderLabels([
             "ID", "İş Adı", "Süre (Gün)", "Miktar", "Ekip",
             "Kaynak", "Milestone", "Bağımlılıklar",
         ])
+        # Sütun genişlikleri (son sütun stretch ile kalan alanı alır)
+        for col, w in enumerate([40, 165, 80, 95, 85, 115, 65]):
+            t.setColumnWidth(col, w)
+        # Satır yüksekliği + dikey başlığı gizle
+        t.verticalHeader().setDefaultSectionSize(28)
+        t.verticalHeader().hide()
+        # Yatay başlık: tıklanabilir, minimum yükseklik
+        t.horizontalHeader().setMinimumSectionSize(40)
+
+    # ── Gantt Chart tablosu: sütun genişlikleri ──────────────────────────
+    if hasattr(self, 'gantt_table'):
+        g = self.gantt_table
+        # "İş Adı", "Başlangıç", "Bitiş", "Süre", "İlerleme", "Float", "Durum", "Kritik"
+        for col, w in enumerate([165, 90, 90, 60, 75, 55, 95]):
+            g.setColumnWidth(col, w)
+        g.verticalHeader().setDefaultSectionSize(28)
+        g.verticalHeader().hide()
+        g.horizontalHeader().setMinimumSectionSize(40)
 
     # Undo altyapısı (stack + Ctrl+Z + buton)
     _gantt_setup_undo(self)
