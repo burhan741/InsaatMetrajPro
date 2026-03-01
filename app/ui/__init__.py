@@ -195,9 +195,10 @@ _VERIMLILIK_TABLOSU = [
     # ── DEMİR İŞLERİ ────────────────────────────────────────────────────
     # 1 ton için ~3 demirci.gün → 0.003 usta.gün/kg → 333 kg/gün/usta
     ("Demir Bağlama/Bükme", 333.0,   'kg'),
-    # Soğuk demir: profil kesme+kaynak+montaj → ~0.006 usta.gün/kg → 167 kg/gün/usta
-    # (korkuluk, demir kapı/pencere, çelik konstrüksiyon imalatı)
-    ("Soğuk Demir İşçiliği", 167.0,  'kg'),
+    # Nervürlü soğuk demir (B420C/B500C): kesme+bükme+bağlama
+    # Sıcak hadde demirden biraz daha yavaş (daha sert, daha hassas kesim)
+    # ~0.004 usta.gün/kg → 250 kg/gün/usta
+    ("Nervürlü Soğuk Demir",  250.0,  'kg'),
     # ── BETON İŞLERİ ────────────────────────────────────────────────────
     # Hazır beton+pompa: ekip başına ~10 m³/gün; 4 kişilik ekip → 2.5 m³/usta
     ("Beton Dökme (Pompalı)",  2.5,  'm³'),
