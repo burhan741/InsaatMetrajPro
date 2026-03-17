@@ -114,7 +114,7 @@ HTML_TEMPLATE = '''
         .sbtn { width: 44px; height: 44px; border: none; border-radius: 12px; font-size: 18px; flex-shrink: 0; }
         .sbtn.t { background: var(--success); }
         .sbtn.ob { background: #4dc9f6; font-size: 14px; font-weight: 700; }
-        .sbtn.y { background: var(--warning); }
+        .sbtn.y { background: var(--warning); font-size: 14px; font-weight: 700; }
         .sbtn.x { background: var(--danger); }
         .sbtn.sel { transform: scale(1.15); box-shadow: 0 0 0 3px rgba(255,255,255,0.3); }
         .form { background: var(--card); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
@@ -130,6 +130,38 @@ HTML_TEMPLATE = '''
         .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-100px); background: var(--card); padding: 14px 24px; border-radius: 10px; z-index: 300; transition: transform 0.3s; border-left: 4px solid var(--success); }
         .toast.show { transform: translateX(-50%) translateY(0); }
         .empty { text-align: center; padding: 40px; color: #a0a0a0; }
+        .rapor-tbl { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 10px; }
+        .rapor-tbl th { background: #0f3460; color: #eaeaea; padding: 6px 4px; text-align: center; border: 1px solid #333; }
+        .rapor-tbl td { padding: 6px 4px; text-align: center; border: 1px solid #2a2a4a; }
+        .rapor-tbl tr:nth-child(even) td { background: #12183a; }
+        .rapor-tbl .isci-ad { text-align: left; font-weight: 600; white-space: nowrap; }
+        .rapor-tbl .kalan-col { color: #e94560; font-weight: bold; }
+        .rapor-tbl .gider-row td { color: #ffc107; }
+        .d-tam { color: #00d26a; font-weight: bold; }
+        .d-15 { color: #4dc9f6; font-weight: bold; }
+        .d-05 { color: #ffc107; }
+        .d-izin { color: #ff6b6b; }
+        .d-yok { color: #555; }
+        .rapor-baslik { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+        .rapor-alt { font-size: 12px; color: #a0a0a0; margin-bottom: 12px; }
+        @media print {
+            body { background: white !important; color: black !important; padding: 0 !important; }
+            .header, .stats, .tabs, .nav, .toast, #modal, #isciModal { display: none !important; }
+            .section { display: none !important; }
+            #sec-rapor { display: block !important; padding: 0 !important; }
+            .no-print { display: none !important; }
+            .rapor-tbl th { background: #333 !important; color: white !important; }
+            .rapor-tbl td { border: 1px solid #999 !important; color: black !important; }
+            .rapor-tbl tr:nth-child(even) td { background: #f5f5f5 !important; }
+            .rapor-tbl .kalan-col { color: #c00 !important; }
+            .rapor-baslik { color: black !important; }
+            .rapor-alt { color: #555 !important; }
+            .d-tam { color: #006600 !important; }
+            .d-15 { color: #004499 !important; }
+            .d-05 { color: #886600 !important; }
+            .d-izin { color: #cc0000 !important; }
+            .d-yok { color: #999 !important; }
+        }
     </style>
 </head>
 <body>
@@ -151,6 +183,7 @@ HTML_TEMPLATE = '''
         <button class="tab" data-sec="isci" onclick="showSec('isci')">İşçiler</button>
         <button class="tab" data-sec="ozet" onclick="showSec('ozet')">Özet</button>
         <button class="tab" data-sec="gider" onclick="showSec('gider')">Giderler</button>
+        <button class="tab" data-sec="rapor" onclick="showSec('rapor')">Rapor</button>
     </div>
     <div class="section active" id="sec-puantaj"><div id="pList" class="empty" style="padding:0 4px;">Yükleniyor...</div></div>
     <div class="section section-pad" id="sec-isci">
@@ -223,6 +256,19 @@ HTML_TEMPLATE = '''
         <button class="nav-item" data-sec="isci" onclick="showSec('isci')"><span class="icon">👷</span>İşçiler</button>
         <button class="nav-item" data-sec="ozet" onclick="showSec('ozet')"><span class="icon">📊</span>Özet</button>
         <button class="nav-item" data-sec="gider" onclick="showSec('gider')"><span class="icon">💸</span>Giderler</button>
+        <button class="nav-item" data-sec="rapor" onclick="showSec('rapor')"><span class="icon">📄</span>Rapor</button>
+    </div>
+    <div class="section section-pad" id="sec-rapor">
+        <div class="form no-print">
+            <h3>📄 Haftalık Rapor</h3>
+            <div class="field" style="margin-top:12px;">
+                <label>Hafta Seç</label>
+                <input type="week" id="rHafta" style="width:100%;padding:12px;border:none;border-radius:10px;background:#0f3460;color:#eaeaea;font-size:16px;">
+            </div>
+            <button class="btn" onclick="loadRapor()" style="margin-bottom:10px;">Raporu Getir</button>
+            <button onclick="printRapor()" style="width:100%;padding:14px;border:none;border-radius:12px;background:#0f3460;color:#eaeaea;font-size:15px;font-weight:600;">🖨️ Yazdır / PDF Kaydet</button>
+        </div>
+        <div id="raporArea"></div>
     </div>
     <div class="toast" id="toast"></div>
     <div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:200;align-items:flex-end;">
@@ -287,8 +333,8 @@ async function load() {
                     <div class="info"><div class="name">${i.ad_soyad}</div><div class="role">${i.ustalik||'İşçi'} • ${i.gunluk_ucret||0} TL</div></div>
                     <div class="btns">
                         <button class="sbtn t ${s==='tam_gun'?'sel':''}" onclick="event.stopPropagation();qp(${i.id},'tam_gun')">✓</button>
-                        <button class="sbtn ob ${s==='bir_bucuk_gun'?'sel':''}" onclick="event.stopPropagation();qp(${i.id},'bir_bucuk_gun')">1½</button>
-                        <button class="sbtn y ${s==='yarim_gun'?'sel':''}" onclick="event.stopPropagation();qp(${i.id},'yarim_gun')">½</button>
+                        <button class="sbtn ob ${s==='bir_bucuk_gun'?'sel':''}" onclick="event.stopPropagation();qp(${i.id},'bir_bucuk_gun')">1.5</button>
+                        <button class="sbtn y ${s==='yarim_gun'?'sel':''}" onclick="event.stopPropagation();qp(${i.id},'yarim_gun')">0.5</button>
                         <button class="sbtn x ${s==='izinli'?'sel':''}" onclick="event.stopPropagation();qp(${i.id},'izinli')">✗</button>
                     </div>
                 </div>`;
@@ -456,9 +502,14 @@ async function delOdeme(id) {
 
 async function resetOdemeler() {
     if(!confirm('TÜM ödemeler silinecek. Emin misiniz?')) return;
-    await fetch('/api/odeme/tumunu-sil', {method:'DELETE', headers:h()});
-    toast('Tüm ödemeler sıfırlandı');
-    loadOzet();
+    try {
+        const resp = await fetch('/api/odeme/tumunu-sil', {method:'DELETE', headers:h()});
+        if (!resp.ok) { toast('Sıfırlama başarısız: ' + resp.status, 1); return; }
+        toast('Tüm ödemeler sıfırlandı');
+        await loadOzet();
+    } catch(e) {
+        toast('Bağlantı hatası', 1);
+    }
 }
 
 function showSec(name) {
@@ -521,6 +572,91 @@ async function delGider(id) {
     await fetch('/api/gider/'+id, {method:'DELETE', headers:h()});
     toast('Silindi');
     loadGiderler();
+}
+
+// Bugünkü haftayı varsayılan olarak seç
+(function() {
+    const now = new Date();
+    const y = now.getFullYear();
+    const start = new Date(y, 0, 1);
+    const diff = now - start + ((start.getDay() || 7) - 1) * 86400000;
+    const week = Math.ceil(diff / (7 * 86400000));
+    document.getElementById('rHafta').value = y + '-W' + String(week).padStart(2,'0');
+})();
+
+async function loadRapor() {
+    const hafta = document.getElementById('rHafta').value;
+    if(!hafta) { toast('Hafta seçiniz', 1); return; }
+    document.getElementById('raporArea').innerHTML = '<div class="empty">Yükleniyor...</div>';
+    try {
+        const r = await fetch('/api/rapor/haftalik?hafta=' + hafta, {headers:h()}).then(r=>r.json());
+        if(r.error) { toast(r.error, 1); return; }
+        const gunKisalt = ['Pzt','Sal','Çar','Per','Cum','Cmt','Paz'];
+        const durumLabel = (d) => {
+            if(!d || d==='-') return '<span class="d-yok">-</span>';
+            if(d==='tam_gun') return '<span class="d-tam">✓</span>';
+            if(d==='bir_bucuk_gun') return '<span class="d-15">1.5</span>';
+            if(d==='yarim_gun') return '<span class="d-05">0.5</span>';
+            if(d==='izinli') return '<span class="d-izin">✗</span>';
+            return '<span class="d-yok">-</span>';
+        };
+        let html = '<div style="padding:4px">';
+        html += '<div class="rapor-baslik">Şantiye Haftalık Raporu</div>';
+        html += '<div class="rapor-alt">' + r.hafta_baslangic + ' — ' + r.hafta_bitis + '</div>';
+        html += '<div style="overflow-x:auto"><table class="rapor-tbl">';
+        html += '<tr><th class="isci-ad">İşçi / Usta</th>';
+        gunKisalt.forEach(g => html += '<th>' + g + '</th>');
+        html += '<th>Yev.</th><th>Hakediş</th><th>Ödenen</th><th class="kalan-col">Kalan</th></tr>';
+        r.isciler.forEach(i => {
+            html += '<tr>';
+            html += '<td class="isci-ad">' + i.ad_soyad + '<br><span style="font-size:10px;color:#a0a0a0">' + i.ustalik + ' • ' + (i.gunluk_ucret||0).toLocaleString() + '₺</span></td>';
+            i.gunler.forEach(d => html += '<td>' + durumLabel(d) + '</td>');
+            html += '<td style="font-weight:bold">' + (i.haftalik_yevmiye||0) + '</td>';
+            html += '<td>' + (i.haftalik_hakedis||0).toLocaleString() + '₺</td>';
+            html += '<td style="color:#00d26a">' + (i.toplam_odenen||0).toLocaleString() + '₺</td>';
+            html += '<td class="kalan-col">' + (i.toplam_kalan||0).toLocaleString() + '₺</td>';
+            html += '</tr>';
+        });
+        // İşçilik toplam satırı
+        const toplamKalan = r.isciler.reduce((s,i)=>s+(i.toplam_kalan||0),0);
+        const toplamHakedis = r.isciler.reduce((s,i)=>s+(i.haftalik_hakedis||0),0);
+        html += '<tr style="border-top:2px solid #444;font-weight:bold">';
+        html += '<td class="isci-ad" colspan="8">HAFTALIK İŞÇİLİK TOPLAMI</td>';
+        html += '<td></td><td>' + toplamHakedis.toLocaleString() + '₺</td><td></td>';
+        html += '<td class="kalan-col">' + toplamKalan.toLocaleString() + '₺</td></tr>';
+        html += '</table></div>';
+        // Giderler
+        if(r.haftalik_giderler && r.haftalik_giderler.length > 0) {
+            html += '<div style="margin-top:16px;font-weight:700;font-size:13px">📦 Haftalık Giderler</div>';
+            html += '<table class="rapor-tbl" style="margin-top:6px"><tr><th>Gider</th><th>Açıklama</th><th>Tarih</th><th>Tutar</th></tr>';
+            r.haftalik_giderler.forEach(g => {
+                html += '<tr class="gider-row"><td style="text-align:left">' + g.ad + '</td><td>' + (g.aciklama||'-') + '</td><td>' + g.tarih + '</td><td>' + (g.tutar||0).toLocaleString() + '₺</td></tr>';
+            });
+            html += '<tr style="font-weight:bold"><td colspan="3" style="text-align:right">Toplam Gider:</td><td style="color:#ffc107">' + (r.toplam_gider||0).toLocaleString() + '₺</td></tr>';
+            html += '</table>';
+        } else {
+            html += '<div style="margin-top:12px;font-size:12px;color:#a0a0a0">Bu hafta ek gider girilmemiş.</div>';
+        }
+        // Genel toplam
+        const genelToplam = toplamKalan + (r.toplam_gider||0);
+        html += '<div style="margin-top:16px;background:#0f3460;border-radius:10px;padding:14px;display:flex;justify-content:space-between;align-items:center">';
+        html += '<span style="font-weight:700">GENEL TOPLAM ÖDENECEK</span>';
+        html += '<span style="font-size:20px;font-weight:700;color:#e94560">' + genelToplam.toLocaleString() + ' ₺</span></div>';
+        html += '<div style="margin-top:8px;font-size:10px;color:#555;text-align:right">Oluşturma: ' + new Date().toLocaleDateString('tr-TR') + '</div>';
+        html += '</div>';
+        document.getElementById('raporArea').innerHTML = html;
+    } catch(e) {
+        toast('Rapor yüklenemedi', 1);
+        document.getElementById('raporArea').innerHTML = '';
+    }
+}
+
+function printRapor() {
+    if(!document.getElementById('raporArea').innerHTML) {
+        toast('Önce raporu getirin', 1);
+        return;
+    }
+    window.print();
 }
 </script>
 </body>
@@ -752,6 +888,90 @@ def api_gider_sil(gider_id):
     conn.commit()
     conn.close()
     return jsonify({'success': True})
+
+@app.route('/api/rapor/haftalik')
+@require_auth
+def api_rapor_haftalik():
+    hafta = request.args.get('hafta', '')
+    if not hafta:
+        return jsonify({'error': 'Hafta parametresi gerekli (örn: 2026-W11)'}), 400
+    try:
+        pzt = datetime.strptime(hafta + '-1', '%G-W%V-%u').date()
+    except ValueError:
+        return jsonify({'error': 'Geçersiz hafta formatı'}), 400
+    paz = pzt + timedelta(days=6)
+    gunler = [pzt + timedelta(days=i) for i in range(7)]
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    # Tüm aktif işçiler
+    c.execute('SELECT * FROM isci WHERE aktif=1 ORDER BY ad_soyad')
+    isciler = [dict(r) for r in c.fetchall()]
+
+    # Haftalık puantaj kayıtları
+    c.execute('SELECT * FROM puantaj WHERE tarih >= ? AND tarih <= ?', (pzt.isoformat(), paz.isoformat()))
+    puantaj_rows = c.fetchall()
+    # isci_id + tarih → durum
+    pmap = {}
+    for p in puantaj_rows:
+        pmap[(p['isci_id'], p['tarih'])] = p['calisma_durumu']
+
+    # Tüm zamanlar hakediş (kümülatif) ve ödemeler
+    c.execute('''SELECT i.id,
+                 SUM(CASE WHEN p.calisma_durumu='bir_bucuk_gun' THEN 1.5 WHEN p.calisma_durumu='tam_gun' THEN 1 WHEN p.calisma_durumu='yarim_gun' THEN 0.5 ELSE 0 END) as tum_yevmiye,
+                 SUM(COALESCE(p.mesai_saat, 0)) as tum_mesai
+                 FROM isci i LEFT JOIN puantaj p ON i.id=p.isci_id
+                 WHERE i.aktif=1 GROUP BY i.id''')
+    hakedis_map = {r['id']: {'yevmiye': r['tum_yevmiye'] or 0, 'mesai': r['tum_mesai'] or 0} for r in c.fetchall()}
+
+    c.execute('SELECT isci_id, SUM(miktar) as toplam FROM odeme GROUP BY isci_id')
+    odeme_map = {r['isci_id']: r['toplam'] or 0 for r in c.fetchall()}
+
+    # Haftalık giderler
+    c.execute('SELECT * FROM ek_gider WHERE tarih >= ? AND tarih <= ? ORDER BY tarih', (pzt.isoformat(), paz.isoformat()))
+    giderler = [dict(r) for r in c.fetchall()]
+    conn.close()
+
+    isci_list = []
+    for i in isciler:
+        isci_id = i['id']
+        ucret = i['gunluk_ucret'] or 0
+        # Bu haftaki günlük durumlar
+        gun_durumlari = [pmap.get((isci_id, g.isoformat()), None) for g in gunler]
+        # Haftalık yevmiye (sadece bu hafta)
+        haftalik_yev = sum(
+            1.5 if d == 'bir_bucuk_gun' else 1.0 if d == 'tam_gun' else 0.5 if d == 'yarim_gun' else 0
+            for d in gun_durumlari if d
+        )
+        # Kümülatif hakediş
+        hk = hakedis_map.get(isci_id, {'yevmiye': 0, 'mesai': 0})
+        mesai_ucret = (ucret / 8 * 1.5) * hk['mesai'] if ucret > 0 else 0
+        toplam_hakedis = (hk['yevmiye'] * ucret) + mesai_ucret
+        odenen = odeme_map.get(isci_id, 0)
+        kalan = max(round(toplam_hakedis - odenen, 2), 0)
+        isci_list.append({
+            'id': isci_id,
+            'ad_soyad': i['ad_soyad'],
+            'ustalik': i['ustalik'] or 'İşçi',
+            'gunluk_ucret': ucret,
+            'gunler': [d if d else '-' for d in gun_durumlari],
+            'haftalik_yevmiye': round(haftalik_yev, 1),
+            'haftalik_hakedis': round(haftalik_yev * ucret, 2),
+            'toplam_odenen': round(odenen, 2),
+            'toplam_kalan': kalan
+        })
+
+    toplam_gider = round(sum(g['tutar'] for g in giderler), 2)
+    return jsonify({
+        'hafta_baslangic': pzt.strftime('%d.%m.%Y'),
+        'hafta_bitis': paz.strftime('%d.%m.%Y'),
+        'isciler': isci_list,
+        'haftalik_giderler': giderler,
+        'toplam_gider': toplam_gider
+    })
+
 
 if __name__ == '__main__':
     app.run(debug=True)

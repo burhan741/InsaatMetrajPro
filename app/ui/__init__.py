@@ -95,11 +95,8 @@ def _gantt_undo(gantt):
 
 
 def _gantt_snapshot(gantt):
-    """Şu anki engine durumunun anlık görüntüsünü (deepcopy) al."""
-    return {
-        'tasks': _copy.deepcopy(gantt.engine.tasks),
-        'next_task_id': gantt.next_task_id,
-    }
+    """Şu anki is_list durumunun anlık görüntüsünü (deepcopy) al."""
+    return _copy.deepcopy(getattr(gantt, '_is_list', []))
 
 
 def _gantt_commit_undo(gantt, snap):
@@ -133,9 +130,9 @@ def _gantt_setup_undo(gantt):
     # "↩ Geri Al" butonunu btn_layout'a ekle
     try:
         from PyQt6.QtWidgets import QHBoxLayout
-        if not hasattr(gantt, 'is_table'):
+        if not hasattr(gantt, '_is_table'):
             return
-        grp = gantt.is_table.parent()        # QGroupBox
+        grp = gantt._is_table.parent()        # QGroupBox
         grp_layout = grp.layout()            # QVBoxLayout
         item0 = grp_layout.itemAt(0)         # btn_layout item
         btn_layout = item0.layout() if item0 else None
@@ -192,13 +189,18 @@ _VERIMLILIK_TABLOSU = [
     ("Kalıp Çakma (Karma)",   3.33,  'm²'),
     # Sökme çakmanın ~%40'ı sürer: döşeme ~0.10, kiriş ~0.14, kolon ~0.22
     ("Kalıp Sökme",           8.0,   'm²'),
+    # Playwood kalıp: saha ölçümü — 4 usta + 2 yardımcı (standart ekip)
+    # Çakma: 50 m²/gün → 50/4 = 12.5 m²/gün/usta
+    ("Playwood Kalıp Çakma",  12.5,  'm²'),
+    # Sökme: 100 m²/gün → 100/4 = 25.0 m²/gün/usta
+    ("Playwood Kalıp Sökme",  25.0,  'm²'),
     # ── DEMİR İŞLERİ ────────────────────────────────────────────────────
     # 1 ton için ~3 demirci.gün → 0.003 usta.gün/kg → 333 kg/gün/usta
     ("Demir Bağlama/Bükme", 333.0,   'kg'),
     # Nervürlü soğuk demir (B420C/B500C): kesme+bükme+bağlama
-    # Sıcak hadde demirden biraz daha yavaş (daha sert, daha hassas kesim)
-    # ~0.004 usta.gün/kg → 250 kg/gün/usta
-    ("Nervürlü Soğuk Demir",  250.0,  'kg'),
+    # Saha ölçümü: 1 usta + 1 yardımcı (standart demirci ekibi) → 350 kg/gün
+    # Verimlilik = ekip günlük üretimi (usta başı) → 350 kg/gün/usta
+    ("Nervürlü Soğuk Demir",  350.0,  'kg'),
     # ── BETON İŞLERİ ────────────────────────────────────────────────────
     # Hazır beton+pompa: ekip başına ~10 m³/gün; 4 kişilik ekip → 2.5 m³/usta
     ("Beton Dökme (Pompalı)",  2.5,  'm³'),
@@ -618,12 +620,12 @@ def _patched_gantt_init(self, *args, **kwargs):
     _orig_gantt_init(self, *args, **kwargs)
 
     # Sekme koyu tema
-    if hasattr(self, "tab_widget"):
-        self.tab_widget.setStyleSheet(_GANTT_TAB_STYLE)
+    if hasattr(self, "_tabs"):
+        self._tabs.setStyleSheet(_GANTT_TAB_STYLE)
 
     # ── İş Kalemleri tablosu: 8 sütun + genişlikler ─────────────────────
-    if hasattr(self, 'is_table'):
-        t = self.is_table
+    if hasattr(self, '_is_table'):
+        t = self._is_table
         t.setColumnCount(8)
         t.setHorizontalHeaderLabels([
             "ID", "İş Adı", "Süre (Gün)", "Miktar", "Ekip",
@@ -638,15 +640,16 @@ def _patched_gantt_init(self, *args, **kwargs):
         # Yatay başlık: tıklanabilir, minimum yükseklik
         t.horizontalHeader().setMinimumSectionSize(40)
 
-    # ── Gantt Chart tablosu: sütun genişlikleri ──────────────────────────
-    if hasattr(self, 'gantt_table'):
-        g = self.gantt_table
-        # "İş Adı", "Başlangıç", "Bitiş", "Süre", "İlerleme", "Float", "Durum", "Kritik"
-        for col, w in enumerate([165, 90, 90, 60, 75, 55, 95]):
-            g.setColumnWidth(col, w)
-        g.verticalHeader().setDefaultSectionSize(28)
-        g.verticalHeader().hide()
-        g.horizontalHeader().setMinimumSectionSize(40)
+    # ── Gantt tablo görünüm sütun genişlikleri ────────────────────────────
+    for _tbl_attr in ('_gantt_table', '_tablo_table', 'gantt_table'):
+        if hasattr(self, _tbl_attr):
+            g = getattr(self, _tbl_attr)
+            for col, w in enumerate([165, 90, 90, 60, 75, 55, 95]):
+                try:
+                    g.setColumnWidth(col, w)
+                except Exception:
+                    pass
+            break
 
     # Undo altyapısı (stack + Ctrl+Z + buton)
     _gantt_setup_undo(self)
@@ -740,22 +743,15 @@ try:
         TemplateDialog as _TmpD,
     )
 
-    # GanttWindow patch'leri
+    # GanttWindow patch'leri — sadece __init__ (tema + sütun genişlikleri)
+    # NOT: ekle_is / duzenle_is / sil_is / ekle_bagimliluk / yukle_is_listesi
+    #      native GanttWindow metodları ile doğrudan çalışıyor; eski patch'ler
+    #      self.db / self.engine gibi var olmayan attribute'lar kullandığından kaldırıldı.
     _orig_gantt_init = _GW.__init__
     _GW.__init__ = _patched_gantt_init
-    _GW.ekle_is = _patched_ekle_is_cls
-    _GW.duzenle_is = _patched_duzenle_is_cls
-    _GW.sil_is = _patched_sil_is_cls
-    _GW.ekle_bagimliluk = _patched_ekle_bagimliluk_cls
-    _GW.yukle_is_listesi = _patched_yukle_is_listesi_cls
 
-    # TaskDialog patch'leri
-    _orig_task_dialog_init = _TskD.__init__
-    _orig_get_task_data = _TskD.get_task_data
-    _orig_load_task_data = _TskD.load_task_data
-    _TskD.__init__ = _patched_task_dialog_init
-    _TskD.get_task_data = _patched_get_task_data
-    _TskD.load_task_data = _patched_load_task_data
+    # TaskDialog patch'leri kaldırıldı: native TaskDialog zaten miktar/ekip/verimlilik
+    # alanlarını get_task_data() ile döndürüyor; load_task_data metodu mevcut değil.
 
     # TemplateDialog patch'leri
     _orig_template_dialog_init = _TmpD.__init__

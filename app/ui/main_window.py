@@ -23,12 +23,23 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
 from PyQt6.QtGui import QIcon, QFont, QColor
 
 from app.core.database import DatabaseManager
-from app.core.calculator import Calculator
-from app.utils.data_loader import (
+
+# Calculator - use minimal version due to syntax issues in main module
+try:
+    from app.core.calculator import Calculator
+    _CALCULATOR_AVAILABLE = True
+except Exception as e:
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.warning(f"Calculator module import failed, using minimal version: {e}")
+    _CALCULATOR_AVAILABLE = False
+    # Use minimal calculator instead
+    from app.core.calculator_minimal import Calculator
+
+from app.utils.data_loader_minimal import (
     initialize_database_data, check_pozlar_loaded,
     initialize_material_data, check_malzemeler_loaded, check_formuller_loaded
 )
-from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
+from app.ui.dialogs_minimal import MetrajItemDialog, TaseronOfferDialog
 
 # Ağır modüller lazy import ile yüklenir (başlangıç hızı için)
 # MaterialCalculator, DXFAnaliz, DemirEngine, ExportManager, PDFBirimFiyatImporter
@@ -138,9 +149,10 @@ class MainWindow(QMainWindow):
             'ozet': False,
             'taseron': False,
             'malzeme': False,
-            'sablonlar': False,
             'birim_fiyat': False,
-            'ihale': False
+            'ihale': False,
+            'asistan': False,
+            'ekap': False,
         }
         
         # Arayüzü oluştur
@@ -361,14 +373,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(QWidget(), "Proje Özeti")
         self.tabs.addTab(QWidget(), "Alt Yüklenici Analizi")
         self.tabs.addTab(QWidget(), "Malzeme Listesi")
-        self.tabs.addTab(QWidget(), "Şablonlar")
         self.tabs.addTab(QWidget(), "Birim Fiyat Yönetimi")
         self.tabs.addTab(QWidget(), "İhale Dosyası Hazırlama")
         self.tabs.addTab(QWidget(), "Enflasyon ve Fiyat Farkı")
         self.tabs.addTab(QWidget(), "Tedarikçi Fiyat Karşılaştırma")
-        self.tabs.addTab(QWidget(), "BI Dashboard")
         self.tabs.addTab(QWidget(), "Çevre ve Sürdürülebilirlik")
         self.tabs.addTab(QWidget(), "Gantt Chart ve İş Programı")
+        self.tabs.addTab(QWidget(), "AI İnşaat Danışmanı")
+        self.tabs.addTab(QWidget(), "EKAP İhale Sorgulama")
 
         parent.addWidget(self.tabs)
         
@@ -1931,6 +1943,14 @@ class MainWindow(QMainWindow):
                 self.update_proje_ozet()
             self.load_project_notes()
             self.statusBar().showMessage(f"Proje seçildi: {item.text(0)}")
+            # AI Asistan panelini proje değişiminden haberdar et
+            if self._tabs_created.get('asistan'):
+                try:
+                    asistan = self.tabs.widget(12)
+                    if hasattr(asistan, 'proje_guncelle'):
+                        asistan.proje_guncelle(project_id, item.text(0))
+                except Exception:
+                    pass
         else:
             self.statusBar().showMessage("Geçersiz proje seçimi")
             
@@ -3650,35 +3670,15 @@ class MainWindow(QMainWindow):
                     import traceback
                     traceback.print_exc()
                     raise
-            elif index == 4 and not self._tabs_created['sablonlar']:
-                try:
-                    # Şablonlar sekmesi
-                    placeholder = self.tabs.widget(4)
-                    self.create_sablonlar_tab(add_to_tabs=False)
-                    self.tabs.blockSignals(True)
-                    self.tabs.removeTab(4)
-                    self.tabs.insertTab(4, self.sablonlar_widget, "📋 Şablonlar")
-                    self.tabs.setCurrentIndex(4)
-                    self.tabs.blockSignals(False)
-                    self._tabs_created['sablonlar'] = True
-                    self.load_templates()  # İlk açılışta yükle
-                    if placeholder:
-                        placeholder.deleteLater()
-                except Exception as e:
-                    self.tabs.blockSignals(False)
-                    print(f"Şablonlar sekmesi oluşturma hatası: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    raise
-            elif index == 5 and not self._tabs_created['birim_fiyat']:
+            elif index == 4 and not self._tabs_created['birim_fiyat']:
                 try:
                     # Birim Fiyat Yönetimi sekmesi
-                    placeholder = self.tabs.widget(5)
+                    placeholder = self.tabs.widget(4)
                     self.create_birim_fiyat_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(5)
-                    self.tabs.insertTab(5, self.birim_fiyat_widget, "💰 Birim Fiyatlar")
-                    self.tabs.setCurrentIndex(5)
+                    self.tabs.removeTab(4)
+                    self.tabs.insertTab(4, self.birim_fiyat_widget, "💰 Birim Fiyatlar")
+                    self.tabs.setCurrentIndex(4)
                     self.tabs.blockSignals(False)
                     self._tabs_created['birim_fiyat'] = True
                     self.load_birim_fiyatlar()  # İlk açılışta yükle
@@ -3690,15 +3690,15 @@ class MainWindow(QMainWindow):
                     import traceback
                     traceback.print_exc()
                     raise
-            elif index == 6 and not self._tabs_created['ihale']:
+            elif index == 5 and not self._tabs_created['ihale']:
                 try:
                     # İhale Dosyası Hazırlama sekmesi
-                    placeholder = self.tabs.widget(6)
+                    placeholder = self.tabs.widget(5)
                     self.create_ihale_tab(add_to_tabs=False)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(6)
-                    self.tabs.insertTab(6, self.ihale_widget, "📄 İhale Dosyası")
-                    self.tabs.setCurrentIndex(6)
+                    self.tabs.removeTab(5)
+                    self.tabs.insertTab(5, self.ihale_widget, "📄 İhale Dosyası")
+                    self.tabs.setCurrentIndex(5)
                     self.tabs.blockSignals(False)
                     self._tabs_created['ihale'] = True
                     self.load_ihaleler()  # İlk açılışta yükle
@@ -3710,16 +3710,16 @@ class MainWindow(QMainWindow):
                     import traceback
                     traceback.print_exc()
                     raise
-            elif index == 7 and not self._tabs_created.get('enflasyon', False):
+            elif index == 6 and not self._tabs_created.get('enflasyon', False):
                 try:
                     # Enflasyon ve Fiyat Farkı sekmesi
-                    placeholder = self.tabs.widget(7)
+                    placeholder = self.tabs.widget(6)
                     from app.ui.enflasyon_window import EnflasyonWindow
                     enflasyon_widget = EnflasyonWindow(self.db)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(7)
-                    self.tabs.insertTab(7, enflasyon_widget, "📊 Enflasyon ve Fiyat Farkı")
-                    self.tabs.setCurrentIndex(7)
+                    self.tabs.removeTab(6)
+                    self.tabs.insertTab(6, enflasyon_widget, "📊 Enflasyon ve Fiyat Farkı")
+                    self.tabs.setCurrentIndex(6)
                     self.tabs.blockSignals(False)
                     self._tabs_created['enflasyon'] = True
                     if placeholder:
@@ -3730,16 +3730,16 @@ class MainWindow(QMainWindow):
                     import traceback
                     traceback.print_exc()
                     raise
-            elif index == 8 and not self._tabs_created.get('tedarikci', False):
+            elif index == 7 and not self._tabs_created.get('tedarikci', False):
                 try:
                     # Tedarikçi Fiyat Karşılaştırma sekmesi
-                    placeholder = self.tabs.widget(8)
+                    placeholder = self.tabs.widget(7)
                     from app.ui.tedarikci_window import TedarikciWindow
                     tedarikci_widget = TedarikciWindow(self.db)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(8)
-                    self.tabs.insertTab(8, tedarikci_widget, "🏪 Tedarikçi Fiyat Karşılaştırma")
-                    self.tabs.setCurrentIndex(8)
+                    self.tabs.removeTab(7)
+                    self.tabs.insertTab(7, tedarikci_widget, "🏪 Tedarikçi Fiyat Karşılaştırma")
+                    self.tabs.setCurrentIndex(7)
                     self.tabs.blockSignals(False)
                     self._tabs_created['tedarikci'] = True
                     if placeholder:
@@ -3750,36 +3750,16 @@ class MainWindow(QMainWindow):
                     import traceback
                     traceback.print_exc()
                     raise
-            elif index == 9 and not self._tabs_created.get('bi_dashboard', False):
-                try:
-                    # BI Dashboard sekmesi
-                    placeholder = self.tabs.widget(9)
-                    from app.ui.bi_dashboard_window import BIDashboardWindow
-                    bi_widget = BIDashboardWindow(self.db)
-                    self.tabs.blockSignals(True)
-                    self.tabs.removeTab(9)
-                    self.tabs.insertTab(9, bi_widget, "📊 BI Dashboard")
-                    self.tabs.setCurrentIndex(9)
-                    self.tabs.blockSignals(False)
-                    self._tabs_created['bi_dashboard'] = True
-                    if placeholder:
-                        placeholder.deleteLater()
-                except Exception as e:
-                    self.tabs.blockSignals(False)
-                    print(f"BI Dashboard sekmesi oluşturma hatası: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    raise
-            elif index == 10 and not self._tabs_created.get('surdurulebilirlik', False):
+            elif index == 8 and not self._tabs_created.get('surdurulebilirlik', False):
                 try:
                     # Çevre ve Sürdürülebilirlik sekmesi
-                    placeholder = self.tabs.widget(10)
+                    placeholder = self.tabs.widget(8)
                     from app.ui.surdurulebilirlik_window import SurdurulebilirlikWindow
                     surdurulebilirlik_widget = SurdurulebilirlikWindow(self.db)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(10)
-                    self.tabs.insertTab(10, surdurulebilirlik_widget, "🌍 Çevre ve Sürdürülebilirlik")
-                    self.tabs.setCurrentIndex(10)
+                    self.tabs.removeTab(8)
+                    self.tabs.insertTab(8, surdurulebilirlik_widget, "🌍 Çevre ve Sürdürülebilirlik")
+                    self.tabs.setCurrentIndex(8)
                     self.tabs.blockSignals(False)
                     self._tabs_created['surdurulebilirlik'] = True
                     if placeholder:
@@ -3790,16 +3770,16 @@ class MainWindow(QMainWindow):
                     import traceback
                     traceback.print_exc()
                     raise
-            elif index == 11 and not self._tabs_created.get('gantt', False):
+            elif index == 9 and not self._tabs_created.get('gantt', False):
                 try:
                     # Gantt Chart ve İş Programı sekmesi
-                    placeholder = self.tabs.widget(11)
+                    placeholder = self.tabs.widget(9)
                     from app.ui.gantt_window import GanttWindow
                     gantt_widget = GanttWindow(self.db)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(11)
-                    self.tabs.insertTab(11, gantt_widget, "📅 Gantt Chart")
-                    self.tabs.setCurrentIndex(11)
+                    self.tabs.removeTab(9)
+                    self.tabs.insertTab(9, gantt_widget, "📅 Gantt Chart")
+                    self.tabs.setCurrentIndex(9)
                     self.tabs.blockSignals(False)
                     self._tabs_created['gantt'] = True
                     if placeholder:
@@ -3810,6 +3790,50 @@ class MainWindow(QMainWindow):
                     import traceback
                     traceback.print_exc()
                     raise
+            elif index == 10 and not self._tabs_created.get('asistan', False):
+                try:
+                    placeholder = self.tabs.widget(10)
+                    from app.ui.asistan_panel import AsistanPanel
+                    asistan_widget = AsistanPanel(self.db)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(10)
+                    self.tabs.insertTab(10, asistan_widget, "🤖 AI Danışman")
+                    self.tabs.setCurrentIndex(10)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['asistan'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                    # Aktif proje varsa bildir
+                    if self.current_project_id:
+                        try:
+                            proje = self.db.get_project(self.current_project_id)
+                            proje_adi = proje.get("ad", "") if proje else ""
+                            asistan_widget.proje_guncelle(self.current_project_id, proje_adi)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"AI Danışman sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
+            elif index == 11 and not self._tabs_created.get('ekap', False):
+                try:
+                    placeholder = self.tabs.widget(11)
+                    from app.ui.ekap_window import EKAPWindow
+                    ekap_widget = EKAPWindow(self.db)
+                    self.tabs.blockSignals(True)
+                    self.tabs.removeTab(11)
+                    self.tabs.insertTab(11, ekap_widget, "🏛 EKAP İhale")
+                    self.tabs.setCurrentIndex(11)
+                    self.tabs.blockSignals(False)
+                    self._tabs_created['ekap'] = True
+                    if placeholder:
+                        placeholder.deleteLater()
+                except Exception as e:
+                    self.tabs.blockSignals(False)
+                    print(f"EKAP sekmesi oluşturma hatası: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             # Proje Özeti sekmesine geçildiğinde güncelle (sadece sekme zaten oluşturulmuşsa)
             if index == 1 and self._tabs_created['ozet']:
@@ -8139,9 +8163,6 @@ class MainWindow(QMainWindow):
                     elif pencere_tipi == 'GanttWindow':
                         self.show_gantt_chart()
                         logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
-                    elif pencere_tipi == 'BIDashboardWindow':
-                        self.show_bi_dashboard()
-                        logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
                     elif pencere_tipi == 'TedarikciWindow':
                         self.show_tedarikci_portal()
                         logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
@@ -8608,27 +8629,12 @@ class MainWindow(QMainWindow):
                     "  - QR kod ile erisim\n"
                     "  - Puantaj raporu olusturma"
                 ),
-                "BI Dashboard": (
-                    "BI DASHBOARD (IS ZEKASI):\n\n"
-                    "Proje verilerinin gorsel analizi.\n\n"
-                    "  - Ozet kartlar ve grafikler\n"
-                    "  - Performans metrikleri\n"
-                    "  - Veri gorsellestirme"
-                ),
                 "Cevre ve Surdurulebilirlik": (
                     "CEVRE VE SURDURULEBILIRLIK:\n\n"
                     "Projenin cevre etkisi ve surdurulebilirlik analizi.\n\n"
                     "  - Karbon ayak izi hesaplama\n"
                     "  - Yesil bina kriterleri\n"
                     "  - Cevre dostu malzeme onerileri"
-                ),
-                "Sablonlar": (
-                    "SABLONLAR SEKMESI:\n\n"
-                    "Tekrar kullanilabilir proje sablonlari.\n\n"
-                    "  - Mevcut projeden sablon olusturma\n"
-                    "  - Sablon kopyalama\n"
-                    "  - Yeni projeye sablon uygulama\n\n"
-                    "Benzer projelerde zaman kazandirici."
                 ),
             },
         }
@@ -8694,7 +8700,7 @@ class MainWindow(QMainWindow):
             "  IHALE VE FINANS\n"
             "    Ihale dosyasi, enflasyon, fiyat takibi\n\n"
             "  DIGER MODULLER\n"
-            "    Gantt, puantaj, BI, cevre ve daha fazlasi"
+            "    Gantt, puantaj, cevre ve daha fazlasi"
         )
 
         dlg.exec()

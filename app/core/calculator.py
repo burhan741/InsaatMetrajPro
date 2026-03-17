@@ -125,44 +125,44 @@ def hesapla_kara_siva_manuel(
  gecerli_verim_kaynaklari = ['piyasa', 'csb_resmi', 'manuel']
 
  if verim_kaynagi not in gecerli_verim_kaynaklari:
- raise ValueError(
- f"Geçersiz verim kaynağı: '{verim_kaynagi}'. "
- f"Geçerli seçenekler: {gecerli_verim_kaynaklari}"
- )
+     raise ValueError(
+         f"Geçersiz verim kaynağı: '{verim_kaynagi}'. "
+         f"Geçerli seçenekler: {gecerli_verim_kaynaklari}"
+     )
 
  if duvar_m2 <= 0:
- raise ValueError("Duvar alanı 0'dan büyük olmalıdır.")
+     raise ValueError("Duvar alanı 0'dan büyük olmalıdır.")
 
  if ortalama_kalinlik_cm <= 0:
- raise ValueError("Ortalama kalınlık 0'dan büyük olmalıdır.")
+     raise ValueError("Ortalama kalınlık 0'dan büyük olmalıdır.")
 
  if cimento_torba_fiyat < 0:
- raise ValueError("Çimento torba fiyatı negatif olamaz.")
+     raise ValueError("Çimento torba fiyatı negatif olamaz.")
 
  if kum_m3_fiyat < 0:
- raise ValueError("Kum m³ fiyatı negatif olamaz.")
+     raise ValueError("Kum m³ fiyatı negatif olamaz.")
 
  if ekip_gunluk_ucret < 0:
- raise ValueError("Ekip günlük ücreti negatif olamaz.")
+     raise ValueError("Ekip günlük ücreti negatif olamaz.")
 
  if fire_orani < 0 or fire_orani > 1:
- raise ValueError("Fire oranı 0 ile 1 arasında olmalıdır.")
+     raise ValueError("Fire oranı 0 ile 1 arasında olmalıdır.")
 
  if verim_kaynagi == 'manuel':
- if manuel_hiz is None or manuel_hiz <= 0:
- raise ValueError(
- "Manuel verim kaynağı seçildiğinde 'manuel_hiz' değeri "
- "sıfırdan büyük bir değer olmalıdır."
- )
+     if manuel_hiz is None or manuel_hiz <= 0:
+         raise ValueError(
+             "Manuel verim kaynağı seçildiğinde 'manuel_hiz' değeri "
+             "sıfırdan büyük bir değer olmalıdır."
+         )
 
  # =========================================================================
  # 2. HIZ BELİRLEME
  # =========================================================================
 
  if verim_kaynagi == 'manuel':
- secilen_hiz = manuel_hiz
+     secilen_hiz = manuel_hiz
  else:
- secilen_hiz = KARA_SIVA_VERIMLILIK[verim_kaynagi]
+     secilen_hiz = KARA_SIVA_VERIMLILIK[verim_kaynagi]
 
  # =========================================================================
  # 3. HARÇ HACMİ HESAPLAMA
@@ -267,41 +267,41 @@ def hesapla_alci_maliyet_detayli(
  gecerli_verim_kaynaklari = ['piyasa', 'csb_resmi', 'manuel']
 
  if verim_kaynagi not in gecerli_verim_kaynaklari:
- raise ValueError(
- f"Geçersiz verim kaynağı: '{verim_kaynagi}'. "
- f"Geçerli seçenekler: {gecerli_verim_kaynaklari}"
- )
+     raise ValueError(
+         f"Geçersiz verim kaynağı: '{verim_kaynagi}'. "
+         f"Geçerli seçenekler: {gecerli_verim_kaynaklari}"
+     )
 
  if uygulama_alani_m2 <= 0:
- raise ValueError("Uygulama alanı 0'dan büyük olmalıdır.")
+     raise ValueError("Uygulama alanı 0'dan büyük olmalıdır.")
 
  if ortalama_kalinlik_cm <= 0:
- raise ValueError("Ortalama kalınlık 0'dan büyük olmalıdır.")
+     raise ValueError("Ortalama kalınlık 0'dan büyük olmalıdır.")
 
  if torba_birim_fiyat < 0:
- raise ValueError("Torba birim fiyatı negatif olamaz.")
+     raise ValueError("Torba birim fiyatı negatif olamaz.")
 
  if ekip_gunluk_ucret < 0:
- raise ValueError("Ekip günlük ücreti negatif olamaz.")
+     raise ValueError("Ekip günlük ücreti negatif olamaz.")
 
  if fire_orani < 0 or fire_orani > 1:
- raise ValueError("Fire oranı 0 ile 1 arasında olmalıdır.")
+     raise ValueError("Fire oranı 0 ile 1 arasında olmalıdır.")
 
  if verim_kaynagi == 'manuel':
- if manuel_hiz is None or manuel_hiz <= 0:
- raise ValueError(
- "Manuel verim kaynağı seçildiğinde 'manuel_hiz' değeri "
- "sıfırdan büyük bir değer olmalıdır."
- )
+     if manuel_hiz is None or manuel_hiz <= 0:
+         raise ValueError(
+             "Manuel verim kaynağı seçildiğinde 'manuel_hiz' değeri "
+             "sıfırdan büyük bir değer olmalıdır."
+         )
 
  # =========================================================================
  # 2. HIZ BELİRLEME
  # =========================================================================
 
  if verim_kaynagi == 'manuel':
- secilen_hiz = manuel_hiz
+     secilen_hiz = manuel_hiz
  else:
- secilen_hiz = ALCI_VERIMLILIK[verim_kaynagi]
+     secilen_hiz = ALCI_VERIMLILIK[verim_kaynagi]
 
  # =========================================================================
  # 3. ALÇI MİKTARI HESAPLAMA
@@ -345,12 +345,12 @@ def hesapla_alci_maliyet_detayli(
 
  # Ano profil (köşe profili) - sadece kullanılacaksa
  if ano_kullanimi:
- gereken_ano_profil_mt = round(
- uygulama_alani_m2 * ALCI_SARFIYAT['ano_profil_m_m2'] * fire_katsayisi,
- 2
- )
+     gereken_ano_profil_mt = round(
+         uygulama_alani_m2 * ALCI_SARFIYAT['ano_profil_m_m2'] * fire_katsayisi,
+         2
+     )
  else:
- gereken_ano_profil_mt = 0.0
+     gereken_ano_profil_mt = 0.0
 
  # Astar ihtiyacı (fire dahil)
  gereken_astar_kg = round(
@@ -422,44 +422,44 @@ def hesapla_duvar_maliyet_detayli(
  gecerli_verim_kaynaklari = ['piyasa', 'csb_resmi', 'manuel']
 
  if duvar_tipi not in gecerli_duvar_tipleri:
- raise ValueError(
- f"Geçersiz duvar tipi: '{duvar_tipi}'. "
- f"Geçerli seçenekler: {gecerli_duvar_tipleri}"
- )
+     raise ValueError(
+         f"Geçersiz duvar tipi: '{duvar_tipi}'. "
+         f"Geçerli seçenekler: {gecerli_duvar_tipleri}"
+     )
 
  if verim_kaynagi not in gecerli_verim_kaynaklari:
- raise ValueError(
- f"Geçersiz verim kaynağı: '{verim_kaynagi}'. "
- f"Geçerli seçenekler: {gecerli_verim_kaynaklari}"
- )
+     raise ValueError(
+         f"Geçersiz verim kaynağı: '{verim_kaynagi}'. "
+         f"Geçerli seçenekler: {gecerli_verim_kaynaklari}"
+     )
 
  if duvar_m2 <= 0:
- raise ValueError("Duvar alanı 0'dan büyük olmalıdır.")
+     raise ValueError("Duvar alanı 0'dan büyük olmalıdır.")
 
  if malzeme_birim_fiyat < 0:
- raise ValueError("Malzeme birim fiyatı negatif olamaz.")
+     raise ValueError("Malzeme birim fiyatı negatif olamaz.")
 
  if ekip_gunluk_ucret < 0:
- raise ValueError("Ekip günlük ücreti negatif olamaz.")
+     raise ValueError("Ekip günlük ücreti negatif olamaz.")
 
  if fire_orani < 0 or fire_orani > 1:
- raise ValueError("Fire oranı 0 ile 1 arasında olmalıdır.")
+     raise ValueError("Fire oranı 0 ile 1 arasında olmalıdır.")
 
  if verim_kaynagi == 'manuel':
- if manuel_hiz is None or manuel_hiz <= 0:
- raise ValueError(
- "Manuel verim kaynağı seçildiğinde 'manuel_hiz' değeri "
- "sıfırdan büyük bir değer olmalıdır."
- )
+     if manuel_hiz is None or manuel_hiz <= 0:
+         raise ValueError(
+             "Manuel verim kaynağı seçildiğinde 'manuel_hiz' değeri "
+             "sıfırdan büyük bir değer olmalıdır."
+         )
 
  # =========================================================================
  # 2. HIZ BELİRLEME
  # =========================================================================
 
  if verim_kaynagi == 'manuel':
- secilen_hiz = manuel_hiz
+     secilen_hiz = manuel_hiz
  else:
- secilen_hiz = VERIMLILIK_VERITABANI[verim_kaynagi][duvar_tipi]
+     secilen_hiz = VERIMLILIK_VERITABANI[verim_kaynagi][duvar_tipi]
 
  # =========================================================================
  # 3. SÜRE HESAPLAMA (Yukarı Yuvarlama)
@@ -496,20 +496,20 @@ def hesapla_duvar_maliyet_detayli(
  gereken_yapistirici_kg = 0.0
 
  if duvar_tipi in ['bims_19', 'tugla_13.5']:
- # Harç gereken duvar tipleri (Bims ve Tuğla)
- harc_m3_ham = duvar_m2 * sarfiyat['harc_m3_m2'] * fire_katsayisi
+     # Harç gereken duvar tipleri (Bims ve Tuğla)
+     harc_m3_ham = duvar_m2 * sarfiyat['harc_m3_m2'] * fire_katsayisi
 
- # Kum hesabı (m³)
- gereken_kum_m3 = round(harc_m3_ham * HARC_KARISIM['kum_m3'], 3)
+     # Kum hesabı (m³)
+     gereken_kum_m3 = round(harc_m3_ham * HARC_KARISIM['kum_m3'], 3)
 
- # Çimento hesabı (torba - yukarı yuvarla)
- cimento_ham = harc_m3_ham * HARC_KARISIM['cimento_torba']
- gereken_cimento_torba = math.ceil(cimento_ham)
+     # Çimento hesabı (torba - yukarı yuvarla)
+     cimento_ham = harc_m3_ham * HARC_KARISIM['cimento_torba']
+     gereken_cimento_torba = math.ceil(cimento_ham)
 
  elif duvar_tipi == 'gazbeton_15':
- # Yapıştırıcı gereken duvar tipi (Gazbeton)
- yapistirici_ham = duvar_m2 * sarfiyat['yapistirici_kg_m2'] * fire_katsayisi
- gereken_yapistirici_kg = round(yapistirici_ham, 2)
+     # Yapıştırıcı gereken duvar tipi (Gazbeton)
+     yapistirici_ham = duvar_m2 * sarfiyat['yapistirici_kg_m2'] * fire_katsayisi
+     gereken_yapistirici_kg = round(yapistirici_ham, 2)
 
  # =========================================================================
  # 7. GENEL TOPLAM MALİYET HESAPLAMA
@@ -539,369 +539,369 @@ def hesapla_duvar_maliyet_detayli(
 
 
 class Calculator:
- """
- Metraj ve maliyet hesaplama sınıfı.
- 
- Tüm matematiksel işlemler Decimal kullanarak yüksek hassasiyetle yapılır.
- """
- 
- @staticmethod
- def calculate_total(quantity: float, unit_price: float) -> float:
- """
- Toplam tutarı hesapla.
- 
- Args:
- quantity: Miktar
- unit_price: Birim fiyat
- 
- Returns:
- float: Toplam tutar (2 ondalık basamak)
- """
- qty = Decimal(str(quantity))
- price = Decimal(str(unit_price))
- total = qty * price
- return float(total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
- 
- @staticmethod
- def calculate_project_total(metraj_items: List[Dict[str, Any]]) -> float:
- """
- Proje toplam maliyetini hesapla.
- 
- Args:
- metraj_items: Metraj kalemleri listesi
- 
- Returns:
- float: Toplam maliyet
- """
- total = Decimal('0')
- for item in metraj_items:
- quantity = Decimal(str(item.get('miktar', 0)))
- unit_price = Decimal(str(item.get('birim_fiyat', 0)))
- total += quantity * unit_price
- 
- return float(total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
- 
- @staticmethod
- def calculate_kdv(amount: float, kdv_rate: float = 20.0) -> float:
- """
- KDV hesapla.
- 
- Args:
- amount: Tutar
- kdv_rate: KDV oranı (varsayılan %20)
- 
- Returns:
- float: KDV tutarı
- """
- amount_decimal = Decimal(str(amount))
- rate = Decimal(str(kdv_rate)) / Decimal('100')
- kdv = amount_decimal * rate
- return float(kdv.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
- 
- @staticmethod
- def calculate_with_kdv(amount: float, kdv_rate: float = 20.0) -> Dict[str, float]:
- """
- KDV dahil ve hariç tutarları hesapla.
- 
- Args:
- amount: KDV hariç tutar
- kdv_rate: KDV oranı
- 
- Returns:
- Dict: {'kdv_haric', 'kdv', 'kdv_dahil'}
- """
- kdv_haric = Decimal(str(amount))
- kdv = Calculator.calculate_kdv(amount, kdv_rate)
- kdv_decimal = Decimal(str(kdv))
- kdv_dahil = kdv_haric + kdv_decimal
- 
- return {
- 'kdv_haric': float(kdv_haric),
- 'kdv': kdv,
- 'kdv_dahil': float(kdv_dahil.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
- }
- 
- @staticmethod
- def compare_taseron_offers(offers: List[Dict[str, Any]]) -> Dict[str, Any]:
- """
- Taşeron tekliflerini karşılaştır.
- 
- Args:
- offers: Taşeron teklifleri listesi
- 
- Returns:
- Dict: Karşılaştırma sonuçları
- """
- if not offers:
- return {
- 'en_dusuk': None,
- 'en_yuksek': None,
- 'ortalama': 0.0,
- 'firma_sayisi': 0
- }
- 
- totals = [offer.get('toplam', 0) for offer in offers if offer.get('toplam', 0) > 0]
- 
- if not totals:
- return {
- 'en_dusuk': None,
- 'en_yuksek': None,
- 'ortalama': 0.0,
- 'firma_sayisi': len(offers)
- }
- 
- totals_decimal = [Decimal(str(t)) for t in totals]
- en_dusuk = min(totals_decimal)
- en_yuksek = max(totals_decimal)
- ortalama = sum(totals_decimal) / Decimal(str(len(totals_decimal)))
- 
- # En düşük ve en yüksek teklifleri bul
- en_dusuk_offer = next(
- (o for o in offers if Decimal(str(o.get('toplam', 0))) == en_dusuk),
- None
- )
- en_yuksek_offer = next(
- (o for o in offers if Decimal(str(o.get('toplam', 0))) == en_yuksek),
- None
- )
- 
- return {
- 'en_dusuk': {
- 'firma': en_dusuk_offer.get('firma_adi', '') if en_dusuk_offer else '',
- 'tutar': float(en_dusuk)
- },
- 'en_yuksek': {
- 'firma': en_yuksek_offer.get('firma_adi', '') if en_yuksek_offer else '',
- 'tutar': float(en_yuksek)
- },
- 'ortalama': float(ortalama.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
- 'firma_sayisi': len(offers)
- }
- 
- @staticmethod
- def calculate_materials_for_poz(poz_miktar: float, formuller: List[Dict[str, Any]], 
- fire_orani: float = 0.0, 
- sub_formulas: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> List[Dict[str, Any]]:
- """
- Poz miktarına göre gereken malzemeleri hesapla.
- Alt formüller (harç, beton karışımı) desteklenir.
- 
- Args:
- poz_miktar: Poz miktarı (örn: 100 m²)
- formuller: Poz için malzeme formülleri listesi
- fire_orani: Fire/atık oranı (0.05 = %5)
- sub_formulas: Alt formüller (formul_tipi -> formül listesi)
- 
- Returns:
- List[Dict]: Hesaplanan malzeme listesi
- """
- materials = []
- poz_decimal = Decimal(str(poz_miktar))
- fire_katsayi = Decimal('1') + Decimal(str(fire_orani))
- 
- if sub_formulas is None:
- sub_formulas = {}
- 
- for formul in formuller:
- miktar = Decimal(str(formul.get('miktar', 0)))
- birim = formul.get('birim', '')
- malzeme_adi = formul.get('malzeme_adi', '')
- malzeme_birim = formul.get('malzeme_birim', birim)
- formul_tipi = formul.get('formul_tipi', 'direkt')
- 
- # Alt formül kontrolü (harç, beton_karisimi vb.)
- if formul_tipi in sub_formulas:
- # Alt formülün miktarını hesapla
- alt_formul_miktar = poz_decimal * miktar * fire_katsayi
- 
- # Alt formülün içindeki malzemeleri hesapla
- alt_formul_listesi = sub_formulas[formul_tipi]
- for alt_formul in alt_formul_listesi:
- alt_miktar = Decimal(str(alt_formul.get('miktar', 0)))
- alt_malzeme_adi = alt_formul.get('malzeme_adi', '')
- alt_birim = alt_formul.get('birim', '')
- 
- # Alt formül miktarı × alt formül oranı
- toplam_alt_miktar = alt_formul_miktar * alt_miktar
- 
- materials.append({
- 'malzeme_id': alt_formul.get('malzeme_id'),
- 'malzeme_adi': alt_malzeme_adi,
- 'miktar': float(toplam_alt_miktar.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
- 'birim': alt_birim,
- 'formul_tipi': 'direkt',
- 'aciklama': f"{malzeme_adi} ({formul_tipi}) içinde"
- })
- else:
- # Normal direkt formül
- toplam_miktar = poz_decimal * miktar * fire_katsayi
- 
- materials.append({
- 'malzeme_id': formul.get('malzeme_id'),
- 'malzeme_adi': malzeme_adi,
- 'miktar': float(toplam_miktar.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
- 'birim': malzeme_birim,
- 'formul_tipi': formul_tipi,
- 'aciklama': formul.get('aciklama', '')
- })
- 
- return materials
- 
- @staticmethod
- def aggregate_materials(material_lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
- """
- Birden fazla poz için hesaplanan malzemeleri birleştir.
- Aynı malzemeler toplanır.
- 
- Args:
- material_lists: Malzeme listelerinin listesi
- 
- Returns:
- List[Dict]: Birleştirilmiş malzeme listesi
- """
- aggregated = {}
- 
- for material_list in material_lists:
- for material in material_list:
- malzeme_id = material.get('malzeme_id')
- malzeme_adi = material.get('malzeme_adi', '')
- birim = material.get('birim', '')
- 
- # Key: malzeme_id veya malzeme_adi + birim
- key = f"{malzeme_id}_{birim}" if malzeme_id else f"{malzeme_adi}_{birim}"
- 
- if key in aggregated:
- # Mevcut malzemeye ekle
- mevcut_miktar = Decimal(str(aggregated[key]['miktar']))
- yeni_miktar = Decimal(str(material.get('miktar', 0)))
- toplam = mevcut_miktar + yeni_miktar
- aggregated[key]['miktar'] = float(toplam.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
- else:
- # Yeni malzeme ekle
- aggregated[key] = {
- 'malzeme_id': malzeme_id,
- 'malzeme_adi': malzeme_adi,
- 'miktar': material.get('miktar', 0),
- 'birim': birim,
- 'formul_tipi': material.get('formul_tipi', 'direkt')
- }
- 
- # Listeye dönüştür ve sırala
- result = list(aggregated.values())
- result.sort(key=lambda x: (x.get('malzeme_adi', ''), x.get('birim', '')))
- 
- return result
- 
- @staticmethod
- def convert_unit(value: float, from_unit: str, to_unit: str, 
- conversion_factor: Optional[float] = None) -> float:
- """
- Birim dönüştür.
- 
- Args:
- value: Dönüştürülecek değer
- from_unit: Kaynak birim
- to_unit: Hedef birim
- conversion_factor: Dönüşüm katsayısı (None ise standart dönüşümler kullanılır)
- 
- Returns:
- float: Dönüştürülmüş değer
- """
- if conversion_factor is not None:
- return float(Decimal(str(value)) * Decimal(str(conversion_factor)))
- 
- # Standart birim dönüşümleri
- from_unit = from_unit.lower().strip()
- to_unit = to_unit.lower().strip()
- 
- # Aynı birimse dönüştürme yapma
- if from_unit == to_unit:
- return value
- 
- # Uzunluk dönüşümleri
- length_units = {
- 'mm': 0.001, 'cm': 0.01, 'dm': 0.1, 'm': 1.0, 'km': 1000.0,
- 'in': 0.0254, 'ft': 0.3048, 'yd': 0.9144, 'mi': 1609.344
- }
- 
- # Alan dönüşümleri
- area_units = {
- 'mm²': 0.000001, 'cm²': 0.0001, 'dm²': 0.01, 'm²': 1.0, 'km²': 1000000.0,
- 'ha': 10000.0, 'acre': 4046.856, 'in²': 0.00064516, 'ft²': 0.092903, 'yd²': 0.836127
- }
- 
- # Hacim dönüşümleri
- volume_units = {
- 'mm³': 0.000000001, 'cm³': 0.000001, 'dm³': 0.001, 'm³': 1.0, 'l': 0.001, 'ml': 0.000001,
- 'in³': 0.000016387, 'ft³': 0.0283168, 'yd³': 0.764555, 'gal': 0.00378541
- }
- 
- # Ağırlık dönüşümleri
- weight_units = {
- 'mg': 0.000001, 'g': 0.001, 'kg': 1.0, 't': 1000.0, 'ton': 1000.0,
- 'oz': 0.0283495, 'lb': 0.453592, 'st': 6.35029
- }
- 
- # Birim tipini belirle ve dönüştür
- if from_unit in length_units and to_unit in length_units:
- base_value = value * length_units[from_unit]
- return base_value / length_units[to_unit]
- elif from_unit in area_units and to_unit in area_units:
- base_value = value * area_units[from_unit]
- return base_value / area_units[to_unit]
- elif from_unit in volume_units and to_unit in volume_units:
- base_value = value * volume_units[from_unit]
- return base_value / volume_units[to_unit]
- elif from_unit in weight_units and to_unit in weight_units:
- base_value = value * weight_units[from_unit]
- return base_value / weight_units[to_unit]
- else:
- # Bilinmeyen birimler için hata
- raise ValueError(f"Birim dönüşümü desteklenmiyor: {from_unit} -> {to_unit}")
- 
- @staticmethod
- def get_auto_fire_rate(kategori: str) -> float:
- """
- Kategori bazlı otomatik fire oranı hesapla.
- 
- Args:
- kategori: Poz kategorisi
- 
- Returns:
- float: Fire oranı (0.05 = %5)
- """
- if not kategori:
- return 0.05 # Varsayılan %5
- 
- kategori_lower = kategori.lower()
- 
- # Kategori bazlı fire oranları
- fire_rates = {
- 'beton': 0.03, # %3
- 'demir': 0.05, # %5
- 'kalıp': 0.10, # %10
- 'sıva': 0.08, # %8
- 'boya': 0.05, # %5
- 'fayans': 0.03, # %3
- 'seramik': 0.03, # %3
- 'tuğla': 0.05, # %5
- 'çimento': 0.05, # %5
- 'kum': 0.10, # %10
- 'çakıl': 0.10, # %10
- 'izolasyon': 0.05, # %5
- 'elektrik': 0.05, # %5
- 'tesisat': 0.05, # %5
- 'kapı': 0.02, # %2
- 'pencere': 0.02, # %2
- }
- 
- # Kategori içinde anahtar kelime ara
- for key, rate in fire_rates.items():
- if key in kategori_lower:
- return rate
- 
- # Varsayılan
- return 0.05
+    """
+    Metraj ve maliyet hesaplama sınıfı.
+
+    Tüm matematiksel işlemler Decimal kullanarak yüksek hassasiyetle yapılır.
+    """
+
+    @staticmethod
+    def calculate_total(quantity: float, unit_price: float) -> float:
+        """
+        Toplam tutarı hesapla.
+
+        Args:
+            quantity: Miktar
+            unit_price: Birim fiyat
+
+        Returns:
+            float: Toplam tutar (2 ondalık basamak)
+        """
+        qty = Decimal(str(quantity))
+        price = Decimal(str(unit_price))
+        total = qty * price
+        return float(total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+    @staticmethod
+    def calculate_project_total(metraj_items: List[Dict[str, Any]]) -> float:
+        """
+        Proje toplam maliyetini hesapla.
+
+        Args:
+            metraj_items: Metraj kalemleri listesi
+
+        Returns:
+            float: Toplam maliyet
+        """
+        total = Decimal('0')
+        for item in metraj_items:
+            quantity = Decimal(str(item.get('miktar', 0)))
+            unit_price = Decimal(str(item.get('birim_fiyat', 0)))
+            total += quantity * unit_price
+
+        return float(total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+    @staticmethod
+    def calculate_kdv(amount: float, kdv_rate: float = 20.0) -> float:
+        """
+        KDV hesapla.
+
+        Args:
+            amount: Tutar
+            kdv_rate: KDV oranı (varsayılan %20)
+
+        Returns:
+            float: KDV tutarı
+        """
+        amount_decimal = Decimal(str(amount))
+        rate = Decimal(str(kdv_rate)) / Decimal('100')
+        kdv = amount_decimal * rate
+        return float(kdv.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+    @staticmethod
+    def calculate_with_kdv(amount: float, kdv_rate: float = 20.0) -> Dict[str, float]:
+        """
+        KDV dahil ve hariç tutarları hesapla.
+
+        Args:
+            amount: KDV hariç tutar
+            kdv_rate: KDV oranı
+
+        Returns:
+            Dict: {'kdv_haric', 'kdv', 'kdv_dahil'}
+        """
+        kdv_haric = Decimal(str(amount))
+        kdv = Calculator.calculate_kdv(amount, kdv_rate)
+        kdv_decimal = Decimal(str(kdv))
+        kdv_dahil = kdv_haric + kdv_decimal
+
+        return {
+            'kdv_haric': float(kdv_haric),
+            'kdv': kdv,
+            'kdv_dahil': float(kdv_dahil.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        }
+
+    @staticmethod
+    def compare_taseron_offers(offers: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Taşeron tekliflerini karşılaştır.
+
+        Args:
+            offers: Taşeron teklifleri listesi
+
+        Returns:
+            Dict: Karşılaştırma sonuçları
+        """
+        if not offers:
+            return {
+                'en_dusuk': None,
+                'en_yuksek': None,
+                'ortalama': 0.0,
+                'firma_sayisi': 0
+            }
+
+        totals = [offer.get('toplam', 0) for offer in offers if offer.get('toplam', 0) > 0]
+
+        if not totals:
+            return {
+                'en_dusuk': None,
+                'en_yuksek': None,
+                'ortalama': 0.0,
+                'firma_sayisi': len(offers)
+            }
+
+        totals_decimal = [Decimal(str(t)) for t in totals]
+        en_dusuk = min(totals_decimal)
+        en_yuksek = max(totals_decimal)
+        ortalama = sum(totals_decimal) / Decimal(str(len(totals_decimal)))
+
+        # En düşük ve en yüksek teklifleri bul
+        en_dusuk_offer = next(
+            (o for o in offers if Decimal(str(o.get('toplam', 0))) == en_dusuk),
+            None
+        )
+        en_yuksek_offer = next(
+            (o for o in offers if Decimal(str(o.get('toplam', 0))) == en_yuksek),
+            None
+        )
+
+        return {
+            'en_dusuk': {
+                'firma': en_dusuk_offer.get('firma_adi', '') if en_dusuk_offer else '',
+                'tutar': float(en_dusuk)
+            },
+            'en_yuksek': {
+                'firma': en_yuksek_offer.get('firma_adi', '') if en_yuksek_offer else '',
+                'tutar': float(en_yuksek)
+            },
+            'ortalama': float(ortalama.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+            'firma_sayisi': len(offers)
+        }
+
+    @staticmethod
+    def calculate_materials_for_poz(poz_miktar: float, formuller: List[Dict[str, Any]],
+                                    fire_orani: float = 0.0,
+                                    sub_formulas: Optional[Dict[str, List[Dict[str, Any]]]] = None) -> List[Dict[str, Any]]:
+        """
+        Poz miktarına göre gereken malzemeleri hesapla.
+        Alt formüller (harç, beton karışımı) desteklenir.
+
+        Args:
+            poz_miktar: Poz miktarı (örn: 100 m²)
+            formuller: Poz için malzeme formülleri listesi
+            fire_orani: Fire/atık oranı (0.05 = %5)
+            sub_formulas: Alt formüller (formul_tipi -> formül listesi)
+
+        Returns:
+            List[Dict]: Hesaplanan malzeme listesi
+        """
+        materials = []
+        poz_decimal = Decimal(str(poz_miktar))
+        fire_katsayi = Decimal('1') + Decimal(str(fire_orani))
+
+        if sub_formulas is None:
+            sub_formulas = {}
+
+        for formul in formuller:
+            miktar = Decimal(str(formul.get('miktar', 0)))
+            birim = formul.get('birim', '')
+            malzeme_adi = formul.get('malzeme_adi', '')
+            malzeme_birim = formul.get('malzeme_birim', birim)
+            formul_tipi = formul.get('formul_tipi', 'direkt')
+
+            # Alt formül kontrolü (harç, beton_karisimi vb.)
+            if formul_tipi in sub_formulas:
+                # Alt formülün miktarını hesapla
+                alt_formul_miktar = poz_decimal * miktar * fire_katsayi
+
+                # Alt formülün içindeki malzemeleri hesapla
+                alt_formul_listesi = sub_formulas[formul_tipi]
+                for alt_formul in alt_formul_listesi:
+                    alt_miktar = Decimal(str(alt_formul.get('miktar', 0)))
+                    alt_malzeme_adi = alt_formul.get('malzeme_adi', '')
+                    alt_birim = alt_formul.get('birim', '')
+
+                    # Alt formül miktarı × alt formül oranı
+                    toplam_alt_miktar = alt_formul_miktar * alt_miktar
+
+                    materials.append({
+                        'malzeme_id': alt_formul.get('malzeme_id'),
+                        'malzeme_adi': alt_malzeme_adi,
+                        'miktar': float(toplam_alt_miktar.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+                        'birim': alt_birim,
+                        'formul_tipi': 'direkt',
+                        'aciklama': f"{malzeme_adi} ({formul_tipi}) içinde"
+                    })
+            else:
+                # Normal direkt formül
+                toplam_miktar = poz_decimal * miktar * fire_katsayi
+
+                materials.append({
+                    'malzeme_id': formul.get('malzeme_id'),
+                    'malzeme_adi': malzeme_adi,
+                    'miktar': float(toplam_miktar.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+                    'birim': malzeme_birim,
+                    'formul_tipi': formul_tipi,
+                    'aciklama': formul.get('aciklama', '')
+                })
+
+        return materials
+
+    @staticmethod
+    def aggregate_materials(material_lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """
+        Birden fazla poz için hesaplanan malzemeleri birleştir.
+        Aynı malzemeler toplanır.
+
+        Args:
+            material_lists: Malzeme listelerinin listesi
+
+        Returns:
+            List[Dict]: Birleştirilmiş malzeme listesi
+        """
+        aggregated = {}
+
+        for material_list in material_lists:
+            for material in material_list:
+                malzeme_id = material.get('malzeme_id')
+                malzeme_adi = material.get('malzeme_adi', '')
+                birim = material.get('birim', '')
+
+                # Key: malzeme_id veya malzeme_adi + birim
+                key = f"{malzeme_id}_{birim}" if malzeme_id else f"{malzeme_adi}_{birim}"
+
+                if key in aggregated:
+                    # Mevcut malzemeye ekle
+                    mevcut_miktar = Decimal(str(aggregated[key]['miktar']))
+                    yeni_miktar = Decimal(str(material.get('miktar', 0)))
+                    toplam = mevcut_miktar + yeni_miktar
+                    aggregated[key]['miktar'] = float(toplam.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+                else:
+                    # Yeni malzeme ekle
+                    aggregated[key] = {
+                        'malzeme_id': malzeme_id,
+                        'malzeme_adi': malzeme_adi,
+                        'miktar': material.get('miktar', 0),
+                        'birim': birim,
+                        'formul_tipi': material.get('formul_tipi', 'direkt')
+                    }
+
+        # Listeye dönüştür ve sırala
+        result = list(aggregated.values())
+        result.sort(key=lambda x: (x.get('malzeme_adi', ''), x.get('birim', '')))
+
+        return result
+
+    @staticmethod
+    def convert_unit(value: float, from_unit: str, to_unit: str,
+                     conversion_factor: Optional[float] = None) -> float:
+        """
+        Birim dönüştür.
+
+        Args:
+            value: Dönüştürülecek değer
+            from_unit: Kaynak birim
+            to_unit: Hedef birim
+            conversion_factor: Dönüşüm katsayısı (None ise standart dönüşümler kullanılır)
+
+        Returns:
+            float: Dönüştürülmüş değer
+        """
+        if conversion_factor is not None:
+            return float(Decimal(str(value)) * Decimal(str(conversion_factor)))
+
+        # Standart birim dönüşümleri
+        from_unit = from_unit.lower().strip()
+        to_unit = to_unit.lower().strip()
+
+        # Aynı birimse dönüştürme yapma
+        if from_unit == to_unit:
+            return value
+
+        # Uzunluk dönüşümleri
+        length_units = {
+            'mm': 0.001, 'cm': 0.01, 'dm': 0.1, 'm': 1.0, 'km': 1000.0,
+            'in': 0.0254, 'ft': 0.3048, 'yd': 0.9144, 'mi': 1609.344
+        }
+
+        # Alan dönüşümleri
+        area_units = {
+            'mm²': 0.000001, 'cm²': 0.0001, 'dm²': 0.01, 'm²': 1.0, 'km²': 1000000.0,
+            'ha': 10000.0, 'acre': 4046.856, 'in²': 0.00064516, 'ft²': 0.092903, 'yd²': 0.836127
+        }
+
+        # Hacim dönüşümleri
+        volume_units = {
+            'mm³': 0.000000001, 'cm³': 0.000001, 'dm³': 0.001, 'm³': 1.0, 'l': 0.001, 'ml': 0.000001,
+            'in³': 0.000016387, 'ft³': 0.0283168, 'yd³': 0.764555, 'gal': 0.00378541
+        }
+
+        # Ağırlık dönüşümleri
+        weight_units = {
+            'mg': 0.000001, 'g': 0.001, 'kg': 1.0, 't': 1000.0, 'ton': 1000.0,
+            'oz': 0.0283495, 'lb': 0.453592, 'st': 6.35029
+        }
+
+        # Birim tipini belirle ve dönüştür
+        if from_unit in length_units and to_unit in length_units:
+            base_value = value * length_units[from_unit]
+            return base_value / length_units[to_unit]
+        elif from_unit in area_units and to_unit in area_units:
+            base_value = value * area_units[from_unit]
+            return base_value / area_units[to_unit]
+        elif from_unit in volume_units and to_unit in volume_units:
+            base_value = value * volume_units[from_unit]
+            return base_value / volume_units[to_unit]
+        elif from_unit in weight_units and to_unit in weight_units:
+            base_value = value * weight_units[from_unit]
+            return base_value / weight_units[to_unit]
+        else:
+            # Bilinmeyen birimler için hata
+            raise ValueError(f"Birim dönüşümü desteklenmiyor: {from_unit} -> {to_unit}")
+
+    @staticmethod
+    def get_auto_fire_rate(kategori: str) -> float:
+        """
+        Kategori bazlı otomatik fire oranı hesapla.
+
+        Args:
+            kategori: Poz kategorisi
+
+        Returns:
+            float: Fire oranı (0.05 = %5)
+        """
+        if not kategori:
+            return 0.05  # Varsayılan %5
+
+        kategori_lower = kategori.lower()
+
+        # Kategori bazlı fire oranları
+        fire_rates = {
+            'beton': 0.03,       # %3
+            'demir': 0.05,       # %5
+            'kalıp': 0.10,       # %10
+            'sıva': 0.08,        # %8
+            'boya': 0.05,        # %5
+            'fayans': 0.03,      # %3
+            'seramik': 0.03,     # %3
+            'tuğla': 0.05,       # %5
+            'çimento': 0.05,     # %5
+            'kum': 0.10,         # %10
+            'çakıl': 0.10,       # %10
+            'izolasyon': 0.05,   # %5
+            'elektrik': 0.05,    # %5
+            'tesisat': 0.05,     # %5
+            'kapı': 0.02,        # %2
+            'pencere': 0.02,     # %2
+        }
+
+        # Kategori içinde anahtar kelime ara
+        for key, rate in fire_rates.items():
+            if key in kategori_lower:
+                return rate
+
+        # Varsayılan
+        return 0.05
 
 
 # =============================================================================
@@ -941,26 +941,26 @@ def hesapla_mobilya_maliyet(
 
  # 2. Liste Döngüsü
  for urun in urun_listesi:
- tip = urun.get('tip', '')
- adet = urun.get('adet', 1)
+     tip = urun.get('tip', '')
+     adet = urun.get('adet', 1)
 
- # A. ALAN HESAPLAMALI MODÜLLER (En x Boy)
- if tip in ['mutfak', 'vestiyer', 'banyo']:
- en = urun.get('en_cm', 0)
- boy = urun.get('boy_cm', 0)
+     # A. ALAN HESAPLAMALI MODÜLLER (En x Boy)
+     if tip in ['mutfak', 'vestiyer', 'banyo']:
+         en = urun.get('en_cm', 0)
+         boy = urun.get('boy_cm', 0)
 
- # cm -> m2 Dönüşümü
- alan_m2 = ((en * boy) / 10000) * adet
+         # cm -> m2 Dönüşümü
+         alan_m2 = ((en * boy) / 10000) * adet
 
- if tip == 'banyo':
- toplam_banyo_m2 += alan_m2
- else:
- # Mutfak ve Vestiyer aynı havuza gider
- toplam_mutfak_vestiyer_m2 += alan_m2
+         if tip == 'banyo':
+             toplam_banyo_m2 += alan_m2
+         else:
+             # Mutfak ve Vestiyer aynı havuza gider
+             toplam_mutfak_vestiyer_m2 += alan_m2
 
- # B. ADET BAZLI MODÜLLER
- elif tip == 'kapi':
- toplam_kapi_adet += adet
+     # B. ADET BAZLI MODÜLLER
+     elif tip == 'kapi':
+         toplam_kapi_adet += adet
 
  # 3. Genel Maliyet Hesapları
  # Not: Mutfak ve Vestiyer tek kalemde, aynı birim fiyattan toplanır
@@ -1038,21 +1038,21 @@ def hesapla_yalitim_maliyeti(
 
  # 2. Liste Analizi
  for is_kalemi in is_listesi:
- alan = is_kalemi.get('alan_m2', 0)
- tur = is_kalemi.get('tur', '')
+     alan = is_kalemi.get('alan_m2', 0)
+     tur = is_kalemi.get('tur', '')
 
- toplam_uygulama_alani_net += alan
+     toplam_uygulama_alani_net += alan
 
- if tur == 'bez':
- bez_net_m2 += alan
- # KRİTİK KURAL: Rulo membranlarda ek yerleri için %10 bindirme payı eklenir
- bez_brut_m2 += alan * 1.10
+     if tur == 'bez':
+         bez_net_m2 += alan
+         # KRİTİK KURAL: Rulo membranlarda ek yerleri için %10 bindirme payı eklenir
+         bez_brut_m2 += alan * 1.10
 
- elif tur == 'toz':
- toz_net_m2 += alan
+     elif tur == 'toz':
+         toz_net_m2 += alan
 
- elif tur == 'surme':
- surme_net_m2 += alan
+     elif tur == 'surme':
+         surme_net_m2 += alan
 
  # 3. Maliyet Hesaplama
  # Not: Bez membran maliyeti BRÜT (bindirme dahil) metraj üzerinden hesaplanır
@@ -1217,21 +1217,21 @@ def hesapla_vitrifiye_armatur(
 
  # 2. Liste Ayrıştırma
  for urun in urun_listesi:
- tip = urun.get('tip', '')
- adet = urun.get('adet', 1)
+     tip = urun.get('tip', '')
+     adet = urun.get('adet', 1)
 
- if tip == 'batarya':
- stok['batarya_adet'] += adet
- elif tip == 'musluk':
- stok['musluk_adet'] += adet
- elif tip == 'klozet':
- stok['klozet_adet'] += adet
- elif tip == 'alaturka':
- stok['alaturka_adet'] += adet
- elif tip == 'dus':
- stok['dus_set_adet'] += adet
- elif tip == 'petek':
- stok['petek_adet'] += adet
+     if tip == 'batarya':
+         stok['batarya_adet'] += adet
+     elif tip == 'musluk':
+         stok['musluk_adet'] += adet
+     elif tip == 'klozet':
+         stok['klozet_adet'] += adet
+     elif tip == 'alaturka':
+         stok['alaturka_adet'] += adet
+     elif tip == 'dus':
+         stok['dus_set_adet'] += adet
+     elif tip == 'petek':
+         stok['petek_adet'] += adet
 
  # 3. Maliyet Hesaplama
  # Toplam Ürün Maliyeti
@@ -1405,25 +1405,25 @@ def hesapla_metal_isleri(
  }
 
  for is_kalemi in girdiler:
- tur = is_kalemi.get('tur', '')
- miktar = is_kalemi.get('miktar', 0)
+     tur = is_kalemi.get('tur', '')
+     miktar = is_kalemi.get('miktar', 0)
 
- # 1. KORKULUKLAR (Metretül)
- if tur in ['balkon_korkuluk', 'merdiven_korkuluk']:
- metraj['korkuluk_mt'] += miktar
+     # 1. KORKULUKLAR (Metretül)
+     if tur in ['balkon_korkuluk', 'merdiven_korkuluk']:
+         metraj['korkuluk_mt'] += miktar
 
- # 2. PENCERE DEMİRLERİ (m²)
- elif tur == 'pencere_demiri':
- # Kullanıcı en x boy girerse alanı hesapla, direkt m² girerse ekle
- if 'en' in is_kalemi and 'boy' in is_kalemi:
- alan = (is_kalemi['en'] * is_kalemi['boy']) / 10000
- metraj['pencere_demir_m2'] += alan * is_kalemi.get('adet', 1)
- else:
- metraj['pencere_demir_m2'] += miktar
+     # 2. PENCERE DEMİRLERİ (m²)
+     elif tur == 'pencere_demiri':
+         # Kullanıcı en x boy girerse alanı hesapla, direkt m² girerse ekle
+         if 'en' in is_kalemi and 'boy' in is_kalemi:
+             alan = (is_kalemi['en'] * is_kalemi['boy']) / 10000
+             metraj['pencere_demir_m2'] += alan * is_kalemi.get('adet', 1)
+         else:
+             metraj['pencere_demir_m2'] += miktar
 
- # 3. BAHÇE KAPISI (Adet)
- elif tur == 'bahce_kapisi':
- metraj['bahce_kapi_adet'] += is_kalemi.get('adet', 1)
+     # 3. BAHÇE KAPISI (Adet)
+     elif tur == 'bahce_kapisi':
+         metraj['bahce_kapi_adet'] += is_kalemi.get('adet', 1)
 
  # MALİYET HESABI
  korkuluk_tutari = metraj['korkuluk_mt'] * fiyatlar.get('korkuluk_mt_fiyat', 0)

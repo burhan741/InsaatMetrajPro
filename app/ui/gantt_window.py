@@ -1,3287 +1,2805 @@
 """
-Gantt Chart ve CPM UI
-İş programı, kritik yol analizi ve zaman yönetimi arayüzü
-
-Yeni Özellikler:
-- Görsel Gantt Chart (çubuk grafik)
-- Resmi tatil yönetimi
-- Baseline karşılaştırma
-- WBS hiyerarşisi
-- Kaynak çakışma kontrolü
-- PDF/Excel export
+Gantt Chart Window — İnşaat Metraj Pro v2.0
+PyQt6 tabanlı görsel iş programı, CPM/WBS, S-Curve, What-If, Baseline modülleri.
+4-space PEP8 — tam yeniden yazım. 2026-03-16 Rev-16: genişletilmiş ekip/birim/verimlilik.
 """
 
-from PyQt6.QtWidgets import (
- QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
- QTableWidget, QTableWidgetItem, QGroupBox, QFormLayout,
- QLineEdit, QComboBox, QDateEdit, QTextEdit, QMessageBox,
- QHeaderView, QDoubleSpinBox, QTabWidget, QProgressBar,
- QSpinBox, QCheckBox, QScrollArea, QFrame, QDialog,
- QDialogButtonBox, QListWidget, QListWidgetItem, QSplitter,
- QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem,
- QGraphicsLineItem, QGraphicsEllipseItem, QGraphicsPathItem,
- QFileDialog, QColorDialog, QTreeWidget, QTreeWidgetItem,
- QCalendarWidget, QMenu, QToolButton, QGridLayout
-)
-from PyQt6.QtCore import Qt, QDate, QTimer, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QBrush, QPen, QPainter, QLinearGradient, QPainterPath
-from typing import Optional, Dict, List, Any
-from datetime import datetime, timedelta
+import json
 import logging
+import math
 import os
+import copy
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
-from app.core.database import DatabaseManager
-from app.core.gantt_engine import GanttEngine, Task
+from PyQt6.QtCore import (
+    QDate, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal,
+)
+from PyQt6.QtGui import (
+    QBrush, QColor, QFont, QFontMetrics, QIcon, QLinearGradient, QPainter,
+    QPainterPath, QPen, QPixmap,
+)
+from PyQt6.QtWidgets import (
+    QApplication, QCheckBox, QColorDialog, QComboBox, QDateEdit,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QFrame, QGraphicsItem, QGraphicsRectItem, QGraphicsScene,
+    QGraphicsTextItem, QGraphicsView, QGridLayout, QGroupBox, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
+    QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
+    QSlider, QSpinBox, QSplitter, QStackedWidget, QTabWidget, QTableWidget,
+    QTableWidgetItem, QTextEdit, QToolBar, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
+)
 
-# Yeni özellikler: Şablon Sihirbazı + Bugün Paneli
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Opsiyonel modül importları
+# ---------------------------------------------------------------------------
+_BUGUN_PANEL_OK = False
+_SABLON_SIHIRBAZ_OK = False
+_SABLON_YON_OK = False
+
 try:
     from app.ui.bugun_paneli import BugunPaneli
     _BUGUN_PANEL_OK = True
 except Exception:
-    _BUGUN_PANEL_OK = False
+    pass
 
 try:
     from app.ui.sablon_sihirbazi import SablonSihirbazi
     _SABLON_SIHIRBAZ_OK = True
 except Exception:
-    _SABLON_SIHIRBAZ_OK = False
+    pass
 
 try:
     from app.core.proje_sablonlari import SablonYoneticisi
     _SABLON_YON_OK = True
 except Exception:
-    _SABLON_YON_OK = False
+    pass
 
-logger = logging.getLogger(__name__)
+try:
+    from app.core.gantt_engine import GanttEngine, Task
+except Exception as exc:
+    logger.error("GanttEngine import hatası: %s", exc)
+    GanttEngine = None
+    Task = None
+
+try:
+    import openpyxl
+    _OPENPYXL_OK = True
+except ImportError:
+    _OPENPYXL_OK = False
+
+try:
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (
+        Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    )
+    _REPORTLAB_OK = True
+except ImportError:
+    _REPORTLAB_OK = False
+
+# Görev dialog'u için son ek veri köprüsü (monkey-patch uyumluluğu)
+_LAST_TASK_DIALOG_EXTRA: Dict[str, Any] = {}
 
 
-# ==================== GÖRSEL GANTT CHART ====================
-
+# ===========================================================================
+# DraggableTaskBar
+# ===========================================================================
 class DraggableTaskBar(QGraphicsRectItem):
- """Sürüklenebilir görev çubuğu"""
+    """Gantt görsel panelinde sürüklenebilir iş çubuğu."""
 
- def __init__(self, x, y, width, height, task_id, gantt_view):
- super().__init__(x, y, width, height)
- self.task_id = task_id
- self.gantt_view = gantt_view
- self.original_x = x
- self.original_y = y # FIX: mouseMoveEvent'te her zaman erişilebilir
- self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, True)
- self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
- self.setCursor(Qt.CursorShape.OpenHandCursor)
+    def __init__(
+        self,
+        task_id: int,
+        label: str,
+        color: QColor,
+        callback,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.task_id = task_id
+        self.label = label
+        self.callback = callback
+        self._drag_start_x: float = 0.0
+        self._original_x: float = 0.0
 
- def mousePressEvent(self, event):
- self.setCursor(Qt.CursorShape.ClosedHandCursor)
- self.original_x = self.x()
- super().mousePressEvent(event)
+        self.setBrush(QBrush(color))
+        self.setPen(QPen(color.darker(130), 1))
+        self.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
+        )
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
 
- def mouseMoveEvent(self, event):
- # Sadece yatay hareket: Y koordinatı sabit tutulur
- super().mouseMoveEvent(event)
- current_pos = self.pos()
- self.setPos(current_pos.x(), 0) # Y offset sıfır, __init__'teki y scene koordinatıyla sabit
+        # Etiket
+        self._text = QGraphicsTextItem(label, self)
+        self._text.setDefaultTextColor(Qt.GlobalColor.white)
+        font = QFont("Arial", 7, QFont.Weight.Bold)
+        self._text.setFont(font)
 
- def mouseReleaseEvent(self, event):
- self.setCursor(Qt.CursorShape.OpenHandCursor)
- new_x = self.x()
+    def mousePressEvent(self, event) -> None:
+        self._drag_start_x = event.scenePos().x()
+        self._original_x = self.x()
+        super().mousePressEvent(event)
 
- # Hareket varsa
- if abs(new_x - self.original_x) > 5:
- # Yeni tarihi hesapla
- gun_farki = int((new_x - self.original_x) / self.gantt_view.day_width)
+    def mouseReleaseEvent(self, event) -> None:
+        delta_x = self.x() - self._original_x
+        if abs(delta_x) > 2 and self.callback:
+            self.callback(self.task_id, delta_x)
+        super().mouseReleaseEvent(event)
 
- if gun_farki != 0 and self.gantt_view.on_task_moved:
- self.gantt_view.on_task_moved(self.task_id, gun_farki)
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            new_pos = value
+            new_pos.setY(self.y())
+            return new_pos
+        return super().itemChange(change, value)
 
- super().mouseReleaseEvent(event)
 
-
+# ===========================================================================
+# GanttChartView
+# ===========================================================================
 class GanttChartView(QGraphicsView):
- """Görsel Gantt Chart widget'ı"""
-
- # Signal for task moved
- taskMoved = pyqtSignal(int, int) # task_id, gun_farki
-
- def __init__(self, parent=None):
- super().__init__(parent)
- self.scene = QGraphicsScene()
- self.setScene(self.scene)
- self.setRenderHint(QPainter.RenderHint.Antialiasing)
- self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
- self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-
- # Ayarlar
- self.row_height = 30
- self.day_width = 25
- self.header_height = 60
- self.task_name_width = 200
- self.show_baseline = True
- self.show_progress = True
- self.show_critical = True
-
- # Drag & Drop
- self.drag_enabled = True
- self.on_task_moved = None # Callback function
- self.task_bars = {} # task_id -> DraggableTaskBar
-
- def draw_gantt(self, data: Dict[str, Any]):
- """Gantt chart'ı çiz"""
- self.scene.clear()
-
- if 'error' in data:
- return
-
- cubuklar = data.get('cubuklar', [])
- gunler = data.get('gunler', [])
- aylar = data.get('aylar', [])
- tatil_gunleri = data.get('tatil_gunleri', [])
-
- if not cubuklar or not gunler:
- return
-
- toplam_gun = len(gunler)
- toplam_gorev = len(cubuklar)
-
- # Canvas boyutu
- canvas_width = self.task_name_width + (toplam_gun * self.day_width) + 50
- canvas_height = self.header_height + (toplam_gorev * self.row_height) + 50
-
- # Arka plan
- self.scene.setSceneRect(0, 0, canvas_width, canvas_height)
-
- # Ay başlıkları
- self._draw_month_headers(aylar, toplam_gun)
-
- # Gün çizgileri ve tatiller
- self._draw_day_grid(gunler, tatil_gunleri, toplam_gorev)
-
- # Görev çubukları
- self._draw_task_bars(cubuklar, data.get('baseline_var', False))
-
- # Bugün çizgisi
- self._draw_today_line(data.get('proje_baslangic'), toplam_gorev)
-
- def _draw_month_headers(self, aylar: List, toplam_gun: int):
- """Ay başlıklarını çiz"""
- for i, ay in enumerate(aylar):
- x = self.task_name_width + (ay['baslangic_index'] * self.day_width)
-
- # Sonraki ay'ın başlangıcına kadar genişlik
- if i + 1 < len(aylar):
- width = (aylar[i + 1]['baslangic_index'] - ay['baslangic_index']) * self.day_width
- else:
- width = (toplam_gun - ay['baslangic_index']) * self.day_width
-
- # Ay kutusu
- rect = QGraphicsRectItem(x, 0, width, 30)
- rect.setBrush(QBrush(QColor("#34495e")))
- rect.setPen(QPen(QColor("#2c3e50")))
- self.scene.addItem(rect)
-
- # Ay adı
- text = QGraphicsTextItem(ay['ad'])
- text.setDefaultTextColor(QColor("white"))
- text.setFont(QFont("Arial", 9, QFont.Weight.Bold))
- text.setPos(x + 5, 5)
- self.scene.addItem(text)
-
- def _draw_day_grid(self, gunler: List, tatil_gunleri: List, toplam_gorev: int):
- """Gün çizgilerini ve tatilleri çiz"""
- tatil_indeksleri = {t['index'] for t in tatil_gunleri}
-
- for i, gun in enumerate(gunler):
- x = self.task_name_width + (i * self.day_width)
-
- # Tatil arkaplanı
- if i in tatil_indeksleri:
- rect = QGraphicsRectItem(x, self.header_height, self.day_width,
- toplam_gorev * self.row_height)
- rect.setBrush(QBrush(QColor("#ffebee"))) # Açık kırmızı
- rect.setPen(QPen(Qt.PenStyle.NoPen))
- self.scene.addItem(rect)
-
- # Hafta sonu arkaplanı
- elif gun.weekday() >= 5:
- rect = QGraphicsRectItem(x, self.header_height, self.day_width,
- toplam_gorev * self.row_height)
- rect.setBrush(QBrush(QColor("#f5f5f5"))) # Açık gri
- rect.setPen(QPen(Qt.PenStyle.NoPen))
- self.scene.addItem(rect)
-
- # Dikey çizgi
- line_color = "#ddd" if gun.weekday() == 0 else "#eee"
- pen = QPen(QColor(line_color))
- self.scene.addLine(x, self.header_height, x,
- self.header_height + toplam_gorev * self.row_height, pen)
-
- # Gün numarası (sadece Pazartesi)
- if gun.weekday() == 0:
- text = QGraphicsTextItem(str(gun.day))
- text.setDefaultTextColor(QColor("#666"))
- text.setFont(QFont("Arial", 7))
- text.setPos(x + 2, 35)
- self.scene.addItem(text)
-
- def _draw_task_bars(self, cubuklar: List, baseline_var: bool):
- """Görev çubuklarını çiz"""
- self.task_bars.clear()
-
- for row, cubuk in enumerate(cubuklar):
- y = self.header_height + (row * self.row_height) + 5
-
- # Görev adı (solda)
- indent = " " * cubuk.get('seviye', 0)
- ad = f"{indent}{cubuk.get('wbs_kodu', '')} {cubuk['ad']}"
- if len(ad) > 25:
- ad = ad[:22] + "..."
-
- text = QGraphicsTextItem(ad)
- text.setDefaultTextColor(QColor("#2c3e50"))
- text.setFont(QFont("Arial", 8))
- text.setPos(5, y)
- self.scene.addItem(text)
-
- # Çubuk pozisyonu
- x = self.task_name_width + (cubuk['baslangic_index'] * self.day_width)
- width = cubuk['uzunluk'] * self.day_width
- bar_height = self.row_height - 12
- task_id = cubuk.get('task_id')
-
- # Baseline çubuğu (varsa ve açıksa)
- if baseline_var and self.show_baseline and cubuk.get('baseline_baslangic_index') is not None:
- baseline_x = self.task_name_width + (cubuk['baseline_baslangic_index'] * self.day_width)
- baseline_width = (cubuk['baseline_bitis_index'] - cubuk['baseline_baslangic_index'] + 1) * self.day_width
-
- baseline_rect = QGraphicsRectItem(baseline_x, y + bar_height - 4, baseline_width, 4)
- baseline_rect.setBrush(QBrush(QColor("#bdc3c7")))
- baseline_rect.setPen(QPen(Qt.PenStyle.NoPen))
- self.scene.addItem(baseline_rect)
-
- # Milestone ise elmas şekli (büyük ve belirgin)
- if cubuk.get('milestone'):
- # Elmas çiz (QPainterPath ile daha iyi görünüm)
- diamond_size = 14
- diamond_path = QPainterPath()
- cx = x + 5 # merkez x
- cy = y + bar_height / 2 # merkez y
- diamond_path.moveTo(cx, cy - diamond_size/2) # üst
- diamond_path.lineTo(cx + diamond_size/2, cy) # sağ
- diamond_path.lineTo(cx, cy + diamond_size/2) # alt
- diamond_path.lineTo(cx - diamond_size/2, cy) # sol
- diamond_path.closeSubpath()
-
- diamond = QGraphicsPathItem(diamond_path)
- gradient = QLinearGradient(cx, cy - diamond_size/2, cx, cy + diamond_size/2)
- gradient.setColorAt(0, QColor("#9b59b6").lighter(130))
- gradient.setColorAt(1, QColor("#9b59b6"))
- diamond.setBrush(QBrush(gradient))
- diamond.setPen(QPen(QColor("#6c3483"), 2))
- diamond.setToolTip(f"Milestone: {cubuk['ad']}")
- self.scene.addItem(diamond)
-
- # Milestone adı (sağında)
- ms_text = QGraphicsTextItem(cubuk['ad'][:20])
- ms_text.setDefaultTextColor(QColor("#6c3483"))
- ms_text.setFont(QFont("Arial", 8, QFont.Weight.Bold))
- ms_text.setPos(cx + diamond_size/2 + 3, cy - 8)
- self.scene.addItem(ms_text)
- else:
- # Drag & Drop etkinse sürüklenebilir çubuk kullan
- if self.drag_enabled and task_id and not cubuk.get('kritik'):
- rect = DraggableTaskBar(x, y, width, bar_height, task_id, self)
- rect.original_y = y
- else:
- rect = QGraphicsRectItem(x, y, width, bar_height)
-
- # Gradient dolgu
- gradient = QLinearGradient(x, y, x, y + bar_height)
- base_color = QColor(cubuk['renk'])
- gradient.setColorAt(0, base_color.lighter(120))
- gradient.setColorAt(1, base_color)
- rect.setBrush(QBrush(gradient))
-
- # Kritik çubuk için kalın kenar
- if cubuk.get('kritik') and self.show_critical:
- rect.setPen(QPen(QColor("#c0392b"), 2))
- else:
- rect.setPen(QPen(base_color.darker(120), 1))
-
- # Tooltip ekle
- if task_id:
- tooltip = f"{cubuk['ad']}\nBaşlangıç: {cubuk.get('baslangic_index', 0)}. gün\nSüre: {cubuk.get('uzunluk', 0)} gün"
- if cubuk.get('float_gun', 0) > 0:
- tooltip += f"\nFloat: {cubuk['float_gun']} gün"
- rect.setToolTip(tooltip)
-
- self.scene.addItem(rect)
-
- # Task bar'ı kaydet
- if task_id:
- self.task_bars[task_id] = rect
-
- # İlerleme çubuğu
- if self.show_progress and cubuk.get('ilerleme', 0) > 0:
- progress_width = width * (cubuk['ilerleme'] / 100)
- progress_rect = QGraphicsRectItem(x, y + bar_height - 6, progress_width, 4)
- progress_rect.setBrush(QBrush(QColor("#2ecc71")))
- progress_rect.setPen(QPen(Qt.PenStyle.NoPen))
- self.scene.addItem(progress_rect)
-
- # Float göstergesi (kritik değilse)
- if not cubuk.get('kritik') and cubuk.get('float_gun', 0) > 0:
- float_x = x + width
- float_width = cubuk['float_gun'] * self.day_width
- float_rect = QGraphicsRectItem(float_x, y + 8, float_width, bar_height - 16)
- float_rect.setBrush(QBrush(QColor(200, 200, 200, 100)))
- float_rect.setPen(QPen(QColor("#bdc3c7"), 1, Qt.PenStyle.DashLine))
- self.scene.addItem(float_rect)
-
- def _draw_today_line(self, proje_baslangic: datetime, toplam_gorev: int):
- """Bugün çizgisini çiz"""
- if not proje_baslangic:
- return
-
- bugun = datetime.now()
- if bugun < proje_baslangic:
- return
-
- gun_farki = (bugun - proje_baslangic).days
- x = self.task_name_width + (gun_farki * self.day_width)
-
- # Dikey kırmızı çizgi
- pen = QPen(QColor("#e74c3c"), 2)
- self.scene.addLine(x, 0, x, self.header_height + toplam_gorev * self.row_height, pen)
-
- # "Bugün" etiketi
- text = QGraphicsTextItem("Bugün")
- text.setDefaultTextColor(QColor("#e74c3c"))
- text.setFont(QFont("Arial", 8, QFont.Weight.Bold))
- text.setPos(x + 2, 45)
- self.scene.addItem(text)
-
- def zoom_in(self):
- """Yakınlaştır"""
- self.day_width = min(50, self.day_width + 5)
- self.row_height = min(50, self.row_height + 3)
-
- def zoom_out(self):
- """Uzaklaştır"""
- self.day_width = max(10, self.day_width - 5)
- self.row_height = max(20, self.row_height - 3)
-
- def set_zoom_preset(self, preset: str):
- """Zoom preset ayarla (Haftalık/Aylık/Yıllık)"""
- presets = {
- 'weekly': {'day_width': 40, 'row_height': 35}, # Haftalık - detaylı
- 'monthly': {'day_width': 20, 'row_height': 28}, # Aylık - orta
- 'quarterly': {'day_width': 8, 'row_height': 22}, # Çeyreklik - geniş
- 'yearly': {'day_width': 4, 'row_height': 18}, # Yıllık - çok geniş
- }
- if preset in presets:
- self.day_width = presets[preset]['day_width']
- self.row_height = presets[preset]['row_height']
-
-
-# ==================== S-CURVE WİDGET ====================
-
-class SCurveWidget(QGraphicsView):
- """S-Curve (S Eğrisi) görselleştirme widget'ı"""
-
- def __init__(self, parent=None):
- super().__init__(parent)
- self.scene = QGraphicsScene()
- self.setScene(self.scene)
- self.setRenderHint(QPainter.RenderHint.Antialiasing)
- self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
- self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
- # Grafik ayarları
- self.margin_left = 60
- self.margin_right = 30
- self.margin_top = 30
- self.margin_bottom = 50
- self.chart_width = 700
- self.chart_height = 400
-
- def draw_s_curve(self, data: Dict[str, Any]):
- """S-Curve grafiğini çiz"""
- self.scene.clear()
-
- if 'error' in data:
- text = QGraphicsTextItem(f"Hata: {data['error']}")
- text.setPos(50, 50)
- self.scene.addItem(text)
- return
-
- tarihler = data.get('tarihler', [])
- planlanan = data.get('planlanan', [])
- gerceklesen = data.get('gerceklesen', [])
-
- if not tarihler or not planlanan:
- return
-
- # Canvas boyutu
- total_width = self.margin_left + self.chart_width + self.margin_right
- total_height = self.margin_top + self.chart_height + self.margin_bottom
- self.scene.setSceneRect(0, 0, total_width, total_height)
-
- # Arka plan
- bg = QGraphicsRectItem(0, 0, total_width, total_height)
- bg.setBrush(QBrush(QColor("white")))
- bg.setPen(QPen(Qt.PenStyle.NoPen))
- self.scene.addItem(bg)
-
- # Grafik alanı
- chart_rect = QGraphicsRectItem(
- self.margin_left, self.margin_top,
- self.chart_width, self.chart_height
- )
- chart_rect.setBrush(QBrush(QColor("#f9f9f9")))
- chart_rect.setPen(QPen(QColor("#ddd")))
- self.scene.addItem(chart_rect)
-
- # Y ekseni çizgileri ve etiketleri (0%, 25%, 50%, 75%, 100%)
- for i in range(5):
- y_val = i * 25
- y_pos = self.margin_top + self.chart_height - (y_val / 100 * self.chart_height)
-
- # Yatay çizgi
- line = QGraphicsLineItem(
- self.margin_left, y_pos,
- self.margin_left + self.chart_width, y_pos
- )
- line.setPen(QPen(QColor("#e0e0e0"), 1, Qt.PenStyle.DotLine))
- self.scene.addItem(line)
-
- # Etiket
- label = QGraphicsTextItem(f"{y_val}%")
- label.setDefaultTextColor(QColor("#666"))
- label.setFont(QFont("Arial", 8))
- label.setPos(self.margin_left - 35, y_pos - 8)
- self.scene.addItem(label)
-
- # X ekseni etiketleri (ay bazlı)
- if len(tarihler) > 10:
- ay_sayisi = len(tarihler) // 30 + 1
- step = len(tarihler) // min(10, ay_sayisi)
- else:
- step = 1
-
- for i in range(0, len(tarihler), max(1, step)):
- x_pos = self.margin_left + (i / len(tarihler) * self.chart_width)
- tarih = tarihler[i]
-
- label = QGraphicsTextItem(tarih.strftime("%d.%m"))
- label.setDefaultTextColor(QColor("#666"))
- label.setFont(QFont("Arial", 7))
- label.setPos(x_pos - 15, self.margin_top + self.chart_height + 5)
- self.scene.addItem(label)
-
- # Planlanan eğri (Mavi)
- self._draw_curve(tarihler, planlanan, QColor("#3498db"), "Planlanan")
-
- # Gerçekleşen eğri (Yeşil)
- gercek_values = [v for v in gerceklesen if v is not None]
- if gercek_values:
- self._draw_curve(tarihler[:len(gercek_values)], gercek_values, QColor("#27ae60"), "Gerçekleşen")
-
- # Bugün çizgisi
- bugun = data.get('bugun')
- proje_baslangic = data.get('proje_baslangic')
- if bugun and proje_baslangic and tarihler:
- bugun_index = min((bugun - proje_baslangic).days, len(tarihler) - 1)
- if 0 <= bugun_index < len(tarihler):
- x_pos = self.margin_left + (bugun_index / len(tarihler) * self.chart_width)
- line = QGraphicsLineItem(
- x_pos, self.margin_top,
- x_pos, self.margin_top + self.chart_height
- )
- line.setPen(QPen(QColor("#e74c3c"), 2, Qt.PenStyle.DashLine))
- self.scene.addItem(line)
-
- label = QGraphicsTextItem("Bugün")
- label.setDefaultTextColor(QColor("#e74c3c"))
- label.setFont(QFont("Arial", 8, QFont.Weight.Bold))
- label.setPos(x_pos + 5, self.margin_top + 5)
- self.scene.addItem(label)
-
- # Lejant
- self._draw_legend()
-
- def _draw_curve(self, tarihler: List, values: List, color: QColor, label: str):
- """Eğri çiz"""
- if len(tarihler) < 2 or len(values) < 2:
- return
-
- path = QPainterPath()
- first_point = True
-
- for i, (tarih, val) in enumerate(zip(tarihler, values)):
- if val is None:
- continue
-
- x = self.margin_left + (i / len(tarihler) * self.chart_width)
- y = self.margin_top + self.chart_height - (val / 100 * self.chart_height)
-
- if first_point:
- path.moveTo(x, y)
- first_point = False
- else:
- path.lineTo(x, y)
-
- path_item = QGraphicsPathItem(path)
- path_item.setPen(QPen(color, 2.5))
- self.scene.addItem(path_item)
-
- def _draw_legend(self):
- """Lejant çiz"""
- legend_x = self.margin_left + self.chart_width - 150
- legend_y = self.margin_top + 10
-
- # Arka plan
- legend_bg = QGraphicsRectItem(legend_x - 5, legend_y - 5, 140, 50)
- legend_bg.setBrush(QBrush(QColor(255, 255, 255, 220)))
- legend_bg.setPen(QPen(QColor("#ccc")))
- self.scene.addItem(legend_bg)
-
- # Planlanan
- line1 = QGraphicsLineItem(legend_x, legend_y + 8, legend_x + 20, legend_y + 8)
- line1.setPen(QPen(QColor("#3498db"), 2.5))
- self.scene.addItem(line1)
-
- text1 = QGraphicsTextItem("Planlanan")
- text1.setDefaultTextColor(QColor("#333"))
- text1.setFont(QFont("Arial", 9))
- text1.setPos(legend_x + 25, legend_y)
- self.scene.addItem(text1)
-
- # Gerçekleşen
- line2 = QGraphicsLineItem(legend_x, legend_y + 28, legend_x + 20, legend_y + 28)
- line2.setPen(QPen(QColor("#27ae60"), 2.5))
- self.scene.addItem(line2)
-
- text2 = QGraphicsTextItem("Gerçekleşen")
- text2.setDefaultTextColor(QColor("#333"))
- text2.setFont(QFont("Arial", 9))
- text2.setPos(legend_x + 25, legend_y + 20)
- self.scene.addItem(text2)
-
-
-# ==================== ŞABLON SEÇİM DİALOG ====================
-
+    """Görsel Gantt grafiği — QGraphicsView tabanlı."""
+
+    task_dragged = pyqtSignal(int, float)
+
+    ROW_HEIGHT = 28
+    HEADER_HEIGHT = 48
+    DAY_WIDTH = 22
+    LEFT_MARGIN = 200
+    MIN_DATE_RANGE = 30
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self._tasks: List[Dict] = []
+        self._start_date: Optional[date] = None
+        self._end_date: Optional[date] = None
+        self._zoom = 1.0
+        self._today_line = None
+        self._task_bars: Dict[int, DraggableTaskBar] = {}
+
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    def draw_gantt(self, tasks: List[Dict], start: date, end: date) -> None:
+        self._tasks = tasks
+        self._start_date = start
+        self._end_date = end
+        self._scene.clear()
+        self._task_bars.clear()
+
+        if not tasks or not start or not end:
+            return
+
+        total_days = (end - start).days + 1
+        total_days = max(total_days, self.MIN_DATE_RANGE)
+        scene_w = self.LEFT_MARGIN + total_days * self.DAY_WIDTH * self._zoom
+        scene_h = self.HEADER_HEIGHT + len(tasks) * self.ROW_HEIGHT + 20
+
+        self._scene.setSceneRect(0, 0, scene_w, scene_h)
+        self._draw_month_headers(start, total_days)
+        self._draw_day_grid(start, total_days, len(tasks))
+        self._draw_task_bars(tasks, start)
+        self._draw_today_line(start, total_days, len(tasks))
+
+    def _draw_month_headers(self, start: date, total_days: int) -> None:
+        dw = self.DAY_WIDTH * self._zoom
+        font_bold = QFont("Arial", 8, QFont.Weight.Bold)
+        font_small = QFont("Arial", 7)
+        current = start
+        for i in range(total_days):
+            x = self.LEFT_MARGIN + i * dw
+            if current.day == 1:
+                month_label = current.strftime("%B %Y")
+                t = self._scene.addText(month_label, font_bold)
+                t.setPos(x + 2, 2)
+                t.setDefaultTextColor(QColor("#1976D2"))
+            day_t = self._scene.addText(str(current.day), font_small)
+            day_t.setPos(x + 1, 26)
+            day_t.setDefaultTextColor(QColor("#555"))
+            current += timedelta(days=1)
+
+        self._scene.addRect(
+            0, 0, self.LEFT_MARGIN, self.HEADER_HEIGHT,
+            QPen(Qt.PenStyle.NoPen), QBrush(QColor("#E3F2FD"))
+        )
+
+    def _draw_day_grid(self, start: date, total_days: int, row_count: int) -> None:
+        dw = self.DAY_WIDTH * self._zoom
+        scene_h = self.HEADER_HEIGHT + row_count * self.ROW_HEIGHT + 20
+
+        current = start
+        for i in range(total_days + 1):
+            x = self.LEFT_MARGIN + i * dw
+            is_weekend = current.weekday() >= 5 if i < total_days else False
+            if is_weekend:
+                self._scene.addRect(
+                    x, self.HEADER_HEIGHT, dw, scene_h - self.HEADER_HEIGHT,
+                    QPen(Qt.PenStyle.NoPen), QBrush(QColor("#FFF9C4"))
+                )
+            pen = QPen(QColor("#DDDDDD"), 0.5)
+            self._scene.addLine(x, self.HEADER_HEIGHT, x, scene_h, pen)
+            if i < total_days:
+                current += timedelta(days=1)
+
+        for row in range(row_count + 1):
+            y = self.HEADER_HEIGHT + row * self.ROW_HEIGHT
+            pen = QPen(QColor("#EEEEEE"), 0.5)
+            self._scene.addLine(0, y, self.LEFT_MARGIN + total_days * dw, y, pen)
+
+    def _draw_task_bars(self, tasks: List[Dict], start: date) -> None:
+        dw = self.DAY_WIDTH * self._zoom
+        font_label = QFont("Arial", 8)
+
+        COLORS = {
+            "kritik": QColor("#F44336"),
+            "normal": QColor("#2196F3"),
+            "milestone": QColor("#FF9800"),
+            "gecikme": QColor("#9C27B0"),
+        }
+
+        for row, task in enumerate(tasks):
+            y = self.HEADER_HEIGHT + row * self.ROW_HEIGHT
+
+            label_bg_color = QColor("#F5F5F5") if row % 2 == 0 else QColor("#FAFAFA")
+            self._scene.addRect(
+                0, y, self.LEFT_MARGIN, self.ROW_HEIGHT,
+                QPen(Qt.PenStyle.NoPen), QBrush(label_bg_color)
+            )
+            task_label = self._scene.addText(task.get("ad", ""), font_label)
+            indent = task.get("wbs_level", 0) * 12
+            task_label.setPos(4 + indent, y + 4)
+            task_label.setDefaultTextColor(QColor("#212121"))
+
+            t_start = task.get("baslangic")
+            t_end = task.get("bitis")
+            if not t_start or not t_end:
+                continue
+
+            if isinstance(t_start, str):
+                try:
+                    t_start = date.fromisoformat(t_start)
+                except ValueError:
+                    continue
+            if isinstance(t_end, str):
+                try:
+                    t_end = date.fromisoformat(t_end)
+                except ValueError:
+                    continue
+
+            offset_start = (t_start - start).days
+            offset_end = (t_end - start).days + 1
+            bar_x = self.LEFT_MARGIN + offset_start * dw
+            bar_w = (offset_end - offset_start) * dw
+
+            is_kritik = task.get("kritik_yol", False)
+            is_milestone = task.get("milestone", False)
+            is_gecikme = task.get("gecikme_var", False)
+
+            if is_milestone:
+                color = COLORS["milestone"]
+            elif is_gecikme:
+                color = COLORS["gecikme"]
+            elif is_kritik:
+                color = COLORS["kritik"]
+            else:
+                color = COLORS["normal"]
+
+            bar = DraggableTaskBar(
+                task.get("id", 0),
+                task.get("ad", ""),
+                color,
+                self._on_task_bar_dragged,
+            )
+            bar_h = self.ROW_HEIGHT - 6
+            bar.setRect(0, 0, max(bar_w, 4), bar_h)
+            bar.setPos(bar_x, y + 3)
+            self._scene.addItem(bar)
+            self._task_bars[task.get("id", 0)] = bar
+
+            float_days = task.get("float", 0)
+            if float_days and float_days > 0:
+                float_w = float_days * dw
+                self._scene.addRect(
+                    bar_x + bar_w, y + bar_h // 2 + 3, float_w, 3,
+                    QPen(Qt.PenStyle.NoPen), QBrush(QColor("#81D4FA"))
+                )
+
+            progress = task.get("tamamlanma_yuzdesi", 0)
+            if progress and progress > 0:
+                prog_w = bar_w * progress / 100.0
+                self._scene.addRect(
+                    bar_x, y + 3, prog_w, bar_h,
+                    QPen(Qt.PenStyle.NoPen), QBrush(QColor(255, 255, 255, 80))
+                )
+
+    def _draw_today_line(self, start: date, total_days: int, row_count: int) -> None:
+        today = date.today()
+        if start <= today <= start + timedelta(days=total_days):
+            dw = self.DAY_WIDTH * self._zoom
+            x = self.LEFT_MARGIN + (today - start).days * dw
+            scene_h = self.HEADER_HEIGHT + row_count * self.ROW_HEIGHT + 20
+            pen = QPen(QColor("#E53935"), 2, Qt.PenStyle.DashLine)
+            self._today_line = self._scene.addLine(x, 0, x, scene_h, pen)
+            label = self._scene.addText("Bugün", QFont("Arial", 7, QFont.Weight.Bold))
+            label.setPos(x + 2, 2)
+            label.setDefaultTextColor(QColor("#E53935"))
+
+    def _on_task_bar_dragged(self, task_id: int, delta_x: float) -> None:
+        dw = self.DAY_WIDTH * self._zoom
+        delta_days = round(delta_x / dw)
+        if delta_days != 0:
+            self.task_dragged.emit(task_id, float(delta_days))
+
+    def zoom_in(self) -> None:
+        self._zoom = min(self._zoom * 1.25, 4.0)
+        if self._tasks and self._start_date:
+            self.draw_gantt(self._tasks, self._start_date, self._end_date)
+
+    def zoom_out(self) -> None:
+        self._zoom = max(self._zoom / 1.25, 0.25)
+        if self._tasks and self._start_date:
+            self.draw_gantt(self._tasks, self._start_date, self._end_date)
+
+    def zoom_fit(self) -> None:
+        self._zoom = 1.0
+        if self._tasks and self._start_date:
+            self.draw_gantt(self._tasks, self._start_date, self._end_date)
+        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+
+# ===========================================================================
+# SCurveWidget
+# ===========================================================================
+class SCurveWidget(QWidget):
+    """S-Eğrisi (Planlanan vs Gerçekleşen değer) çizim widget'ı."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: Dict = {}
+        self.setMinimumHeight(300)
+
+    def set_data(self, data: Dict) -> None:
+        self._data = data
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._draw_background(painter)
+        if self._data:
+            self._draw_curve(painter)
+            self._draw_legend(painter)
+        else:
+            painter.drawText(
+                self.rect(), Qt.AlignmentFlag.AlignCenter,
+                "S-Eğrisi verisi yok — önce hesapla düğmesine tıklayın."
+            )
+
+    def _draw_background(self, painter: QPainter) -> None:
+        painter.fillRect(self.rect(), QColor("#FAFAFA"))
+        pen = QPen(QColor("#DDDDDD"), 1)
+        painter.setPen(pen)
+        w, h = self.width(), self.height()
+        margin = 60
+        for i in range(11):
+            y = margin + (h - 2 * margin) * i / 10
+            painter.drawLine(margin, int(y), w - 20, int(y))
+            label = f"{100 - i * 10}%"
+            painter.drawText(2, int(y) + 5, label)
+
+    def _draw_curve(self, painter: QPainter) -> None:
+        planned = self._data.get("planlanan", [])
+        actual = self._data.get("gerceklesen", [])
+        if not planned:
+            return
+
+        w, h = self.width(), self.height()
+        margin = 60
+        chart_w = w - margin - 20
+        chart_h = h - 2 * margin
+        n = len(planned)
+
+        def to_xy(idx, val):
+            x = margin + chart_w * idx / max(n - 1, 1)
+            y = margin + chart_h * (1.0 - val / 100.0)
+            return int(x), int(y)
+
+        pen = QPen(QColor("#1976D2"), 2, Qt.PenStyle.SolidLine)
+        painter.setPen(pen)
+        for i in range(1, len(planned)):
+            x1, y1 = to_xy(i - 1, planned[i - 1])
+            x2, y2 = to_xy(i, planned[i])
+            painter.drawLine(x1, y1, x2, y2)
+
+        if actual:
+            pen = QPen(QColor("#F57C00"), 2, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            for i in range(1, len(actual)):
+                x1, y1 = to_xy(i - 1, actual[i - 1])
+                x2, y2 = to_xy(i, actual[i])
+                painter.drawLine(x1, y1, x2, y2)
+
+    def _draw_legend(self, painter: QPainter) -> None:
+        w = self.width()
+        painter.setPen(QPen(QColor("#1976D2"), 2))
+        painter.drawLine(w - 180, 16, w - 155, 16)
+        painter.setPen(QColor("#333"))
+        painter.drawText(w - 150, 20, "Planlanan (PV)")
+
+        painter.setPen(QPen(QColor("#F57C00"), 2, Qt.PenStyle.DashLine))
+        painter.drawLine(w - 180, 36, w - 155, 36)
+        painter.setPen(QColor("#333"))
+        painter.drawText(w - 150, 40, "Gerçekleşen (EV)")
+
+
+# ===========================================================================
+# TemplateDialog
+# ===========================================================================
 class TemplateDialog(QDialog):
- """Görev şablonu seçim dialog'u"""
+    """Şablon seçim diyaloğu (eski yöntem fallback)."""
 
- def __init__(self, parent=None):
- super().__init__(parent)
- self.setWindowTitle("Görev Şablonu Ekle")
- self.setModal(True)
- self.resize(600, 500)
- self.selected_template_id = None
- self.init_ui()
+    def __init__(self, templates: List[Dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Şablon Seç")
+        self.setMinimumSize(500, 400)
+        self._templates = templates
+        self._selected: Optional[Dict] = None
+        self._build_ui()
 
- def init_ui(self):
- layout = QVBoxLayout()
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Hazır şablondan seçin:"))
 
- # Başlık
- baslik = QLabel("Hazır İş Paketi Şablonları")
- baslik.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2c3e50;")
- layout.addWidget(baslik)
+        self._list = QListWidget()
+        for t in self._templates:
+            item = QListWidgetItem(
+                f"[{t.get('kategori', '')}] {t.get('ad', '')} — "
+                f"{t.get('gorev_sayisi', t.get('is_sayisi', 0))} iş"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, t)
+            self._list.addItem(item)
+        layout.addWidget(self._list)
 
- aciklama = QLabel("Aşağıdaki şablonlardan birini seçerek hazır görev seti ekleyebilirsiniz.")
- aciklama.setWordWrap(True)
- aciklama.setStyleSheet("color: #7f8c8d; margin-bottom: 10px;")
- layout.addWidget(aciklama)
+        self._desc = QLabel("Açıklama: —")
+        self._desc.setWordWrap(True)
+        layout.addWidget(self._desc)
+        self._list.currentItemChanged.connect(self._on_selection_changed)
 
- # Şablon listesi
- self.template_list = QListWidget()
- self.template_list.setStyleSheet("""
- QListWidget {
- border: 1px solid #ddd;
- border-radius: 5px;
- background-color: white;
- }
- QListWidget::item {
- padding: 10px;
- border-bottom: 1px solid #eee;
- }
- QListWidget::item:selected {
- background-color: #3498db;
- color: white;
- }
- QListWidget::item:hover {
- background-color: #ecf0f1;
- }
- """)
- self.template_list.itemClicked.connect(self.on_template_selected)
- self.template_list.itemDoubleClicked.connect(self.accept)
- layout.addWidget(self.template_list)
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(self._accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
 
- # Şablonları yükle
- self._load_templates()
+    def _on_selection_changed(self, current, previous) -> None:
+        if current:
+            t = current.data(Qt.ItemDataRole.UserRole)
+            self._desc.setText(f"Açıklama: {t.get('aciklama', '—')}")
 
- # Başlangıç tarihi
- tarih_layout = QHBoxLayout()
- tarih_layout.addWidget(QLabel("Başlangıç Tarihi:"))
- self.baslangic_date = QDateEdit()
- self.baslangic_date.setDate(QDate.currentDate())
- self.baslangic_date.setCalendarPopup(True)
- self.baslangic_date.setDisplayFormat("dd-MM-yyyy")
- tarih_layout.addWidget(self.baslangic_date)
- tarih_layout.addStretch()
- layout.addLayout(tarih_layout)
+    def _accept(self) -> None:
+        item = self._list.currentItem()
+        if item:
+            self._selected = item.data(Qt.ItemDataRole.UserRole)
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Uyarı", "Lütfen bir şablon seçin.")
 
- # Seçili şablon bilgisi
- self.info_group = QGroupBox("Şablon Detayları")
- info_layout = QVBoxLayout()
- self.info_label = QLabel("Bir şablon seçin...")
- self.info_label.setWordWrap(True)
- info_layout.addWidget(self.info_label)
- self.info_group.setLayout(info_layout)
- layout.addWidget(self.info_group)
-
- # Butonlar
- buttons = QDialogButtonBox(
- QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
- )
- buttons.accepted.connect(self.accept)
- buttons.rejected.connect(self.reject)
- layout.addWidget(buttons)
-
- self.setLayout(layout)
-
- def _load_templates(self):
- """Şablonları yükle"""
- try:
- from app.data.gantt_templates import get_template_list
- templates = get_template_list()
-
- for tmpl in templates:
- item = QListWidgetItem()
- item.setText(f"{tmpl['ad']} ({tmpl['gorev_sayisi']} görev)")
- item.setData(Qt.ItemDataRole.UserRole, tmpl['id'])
- item.setToolTip(tmpl['aciklama'])
-
- # Renk göstergesi
- self.template_list.addItem(item)
-
- except ImportError:
- item = QListWidgetItem("Şablon modülü yüklenemedi")
- self.template_list.addItem(item)
-
- def on_template_selected(self, item):
- """Şablon seçildiğinde"""
- self.selected_template_id = item.data(Qt.ItemDataRole.UserRole)
-
- try:
- from app.data.gantt_templates import get_template
- template = get_template(self.selected_template_id)
-
- if template:
- gorevler = template.get('gorevler', [])
- toplam_sure = sum(g['sure'] for g in gorevler)
- info_text = f"""
-<b>{template['ad']}</b><br>
-<b>Kategori:</b> {template['kategori']}<br>
-<b>Açıklama:</b> {template['aciklama']}<br>
-<b>Görev Sayısı:</b> {len(gorevler)}<br>
-<b>Toplam Süre:</b> ~{toplam_sure} iş günü
- """
- self.info_label.setText(info_text)
- except Exception as e:
- self.info_label.setText(f"Hata: {e}")
-
- def get_selected_template(self) -> Optional[str]:
- """Seçilen şablon ID'sini döndür"""
- return self.selected_template_id
-
- def get_start_date(self) -> datetime:
- """Başlangıç tarihini döndür"""
- qdate = self.baslangic_date.date()
- return datetime(qdate.year(), qdate.month(), qdate.day())
+    def get_selected(self) -> Optional[Dict]:
+        return self._selected
 
 
-# ==================== WHAT-IF ANALİZ DİALOG ====================
-
+# ===========================================================================
+# WhatIfResultDialog
+# ===========================================================================
 class WhatIfResultDialog(QDialog):
- """What-If analiz sonuç dialog'u"""
+    """What-If analiz sonuçları diyaloğu."""
 
- def __init__(self, parent=None, sonuc: Dict[str, Any] = None):
- super().__init__(parent)
- self.sonuc = sonuc or {}
- self.setWindowTitle("What-If Analiz Sonucu")
- self.setModal(True)
- self.resize(700, 500)
- self.init_ui()
+    def __init__(self, original: Dict, scenario: Dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("What-If Analiz Sonucu")
+        self.setMinimumSize(640, 480)
+        self._original = original
+        self._scenario = scenario
+        self._build_ui()
 
- def init_ui(self):
- layout = QVBoxLayout()
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
 
- # Başlık
- baslik = QLabel(f" Senaryo: {self.sonuc.get('geciktirilen_gorev', '-')} - {self.sonuc.get('gecikme_gun', 0)} Gün Gecikme")
- baslik.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2c3e50;")
- layout.addWidget(baslik)
+        title = QLabel("Senaryo Analiz Karşılaştırması")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #1976D2;")
+        layout.addWidget(title)
 
- # Özet kartlar
- kart_layout = QHBoxLayout()
+        table = QTableWidget(0, 4)
+        table.setHorizontalHeaderLabels(
+            ["İş Adı", "Orijinal Bitiş", "Senaryo Bitiş", "Fark (Gün)"]
+        )
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
- # Proje gecikme
- proje_gecikme = self.sonuc.get('proje_gecikme_gun', 0)
- gecikme_renk = '#e74c3c' if proje_gecikme > 0 else '#27ae60'
- kart_layout.addWidget(self._create_card(
- " Proje Gecikmesi",
- f"{proje_gecikme} gün",
- gecikme_renk
- ))
+        orig_tasks = {t["id"]: t for t in self._original.get("tasks", [])}
+        for t in self._scenario.get("tasks", []):
+            tid = t.get("id")
+            orig = orig_tasks.get(tid)
+            if not orig:
+                continue
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(t.get("ad", "")))
+            table.setItem(row, 1, QTableWidgetItem(str(orig.get("bitis", ""))))
+            table.setItem(row, 2, QTableWidgetItem(str(t.get("bitis", ""))))
+            try:
+                o_end = date.fromisoformat(str(orig.get("bitis", "")))
+                s_end = date.fromisoformat(str(t.get("bitis", "")))
+                diff = (s_end - o_end).days
+                diff_item = QTableWidgetItem(f"{diff:+d}")
+                if diff > 0:
+                    diff_item.setForeground(QColor("#F44336"))
+                elif diff < 0:
+                    diff_item.setForeground(QColor("#4CAF50"))
+                table.setItem(row, 3, diff_item)
+            except (ValueError, TypeError):
+                table.setItem(row, 3, QTableWidgetItem("—"))
 
- # Etkilenen görev
- etkilenen = self.sonuc.get('etkilenen_gorev_sayisi', 0)
- kart_layout.addWidget(self._create_card(
- " Etkilenen Görev",
- str(etkilenen),
- '#e67e22'
- ))
+        layout.addWidget(table)
 
- # Kritik yol
- kritik_degisti = self.sonuc.get('kritik_yol_degisti', False)
- kritik_text = "Değişti" if kritik_degisti else "Aynı"
- kritik_renk = '#e74c3c' if kritik_degisti else '#27ae60'
- kart_layout.addWidget(self._create_card(
- " Kritik Yol",
- kritik_text,
- kritik_renk
- ))
+        orig_end = self._original.get("proje_bitis", "—")
+        scen_end = self._scenario.get("proje_bitis", "—")
+        summary = QLabel(
+            f"<b>Orijinal proje bitişi:</b> {orig_end} &nbsp;&nbsp; "
+            f"<b>Senaryo bitişi:</b> {scen_end}"
+        )
+        layout.addWidget(summary)
 
- layout.addLayout(kart_layout)
-
- # Tarih bilgileri
- tarih_group = QGroupBox(" Proje Tarihleri")
- tarih_layout = QFormLayout()
- tarih_layout.addRow("Eski Bitiş:", QLabel(self.sonuc.get('eski_proje_bitis', '-')))
- tarih_layout.addRow("Yeni Bitiş:", QLabel(f"<b style='color: {gecikme_renk}'>{self.sonuc.get('yeni_proje_bitis', '-')}</b>"))
- tarih_group.setLayout(tarih_layout)
- layout.addWidget(tarih_group)
-
- # Etkilenen görevler tablosu
- tablo_group = QGroupBox(" Etkilenen Görevler")
- tablo_layout = QVBoxLayout()
-
- self.etkilenen_table = QTableWidget()
- self.etkilenen_table.setColumnCount(5)
- self.etkilenen_table.setHorizontalHeaderLabels([
- "Görev", "Eski Başlangıç", "Yeni Başlangıç", "Eski Bitiş", "Yeni Bitiş"
- ])
- self.etkilenen_table.horizontalHeader().setStretchLastSection(True)
-
- for gorev in self.sonuc.get('etkilenen_gorevler', []):
- row = self.etkilenen_table.rowCount()
- self.etkilenen_table.insertRow(row)
- self.etkilenen_table.setItem(row, 0, QTableWidgetItem(gorev['ad']))
- self.etkilenen_table.setItem(row, 1, QTableWidgetItem(gorev['eski_baslangic']))
- self.etkilenen_table.setItem(row, 2, QTableWidgetItem(gorev['yeni_baslangic']))
- self.etkilenen_table.setItem(row, 3, QTableWidgetItem(gorev['eski_bitis']))
- self.etkilenen_table.setItem(row, 4, QTableWidgetItem(gorev['yeni_bitis']))
-
- tablo_layout.addWidget(self.etkilenen_table)
- tablo_group.setLayout(tablo_layout)
- layout.addWidget(tablo_group)
-
- # Butonlar
- btn_layout = QHBoxLayout()
- btn_layout.addStretch()
-
- kapat_btn = QPushButton("Kapat")
- kapat_btn.clicked.connect(self.reject)
- btn_layout.addWidget(kapat_btn)
-
- layout.addLayout(btn_layout)
- self.setLayout(layout)
-
- def _create_card(self, baslik: str, deger: str, renk: str) -> QFrame:
- """Mini kart oluştur"""
- card = QFrame()
- card.setFixedHeight(80)
- card.setStyleSheet(f"""
- QFrame {{
- background-color: {renk};
- border-radius: 8px;
- padding: 10px;
- }}
- """)
-
- layout = QVBoxLayout()
-
- baslik_label = QLabel(baslik)
- baslik_label.setStyleSheet("color: white; font-size: 10pt;")
- baslik_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
- layout.addWidget(baslik_label)
-
- deger_label = QLabel(deger)
- deger_label.setStyleSheet("color: white; font-size: 16pt; font-weight: bold;")
- deger_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
- layout.addWidget(deger_label)
-
- card.setLayout(layout)
- return card
+        btn = QPushButton("Kapat")
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn)
 
 
-# ==================== UYARILAR PANELİ ====================
+# ===========================================================================
+# AlertsPanel
+# ===========================================================================
+class AlertsPanel(QWidget):
+    """Proje uyarıları ve risk göstergesi paneli."""
 
-class AlertsPanel(QDialog):
- """Uyarılar/Bildirimler paneli"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build_ui()
 
- def __init__(self, parent=None, alerts: List[Dict] = None):
- super().__init__(parent)
- self.alerts = alerts or []
- self.setWindowTitle(" Uyarılar ve Bildirimler")
- self.setModal(False) # Modal olmayan
- self.resize(500, 400)
- self.init_ui()
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
- def init_ui(self):
- layout = QVBoxLayout()
+        header = QHBoxLayout()
+        title = QLabel("Proje Uyarıları")
+        title.setStyleSheet("font-weight: bold; font-size: 13px;")
+        header.addWidget(title)
+        header.addStretch()
+        self._badge = QLabel("0")
+        self._badge.setStyleSheet(
+            "background: #4CAF50; color: white; border-radius: 10px;"
+            " padding: 2px 8px; font-weight: bold;"
+        )
+        header.addWidget(self._badge)
+        layout.addLayout(header)
 
- # Özet
- ozet_layout = QHBoxLayout()
+        self._list = QListWidget()
+        layout.addWidget(self._list)
 
- kritik = sum(1 for a in self.alerts if a['tip'] == 'KRITIK')
- uyari = sum(1 for a in self.alerts if a['tip'] == 'UYARI')
- bilgi = sum(1 for a in self.alerts if a['tip'] == 'BILGI')
- kaynak = sum(1 for a in self.alerts if a['tip'] == 'KAYNAK')
+    def set_alerts(self, alerts: List[Dict]) -> None:
+        self._list.clear()
+        self._badge.setText(str(len(alerts)))
+        if len(alerts) == 0:
+            self._badge.setStyleSheet(
+                "background: #4CAF50; color: white; border-radius: 10px;"
+                " padding: 2px 8px; font-weight: bold;"
+            )
+        else:
+            self._badge.setStyleSheet(
+                "background: #F44336; color: white; border-radius: 10px;"
+                " padding: 2px 8px; font-weight: bold;"
+            )
 
- if kritik > 0:
- ozet_layout.addWidget(QLabel(f" {kritik} Kritik"))
- if uyari > 0:
- ozet_layout.addWidget(QLabel(f" {uyari} Uyarı"))
- if bilgi > 0:
- ozet_layout.addWidget(QLabel(f" {bilgi} Bilgi"))
- if kaynak > 0:
- ozet_layout.addWidget(QLabel(f" {kaynak} Kaynak"))
-
- ozet_layout.addStretch()
- layout.addLayout(ozet_layout)
-
- # Uyarı listesi
- scroll = QScrollArea()
- scroll.setWidgetResizable(True)
-
- container = QWidget()
- container_layout = QVBoxLayout()
-
- for alert in self.alerts:
- alert_widget = self._create_alert_widget(alert)
- container_layout.addWidget(alert_widget)
-
- container_layout.addStretch()
- container.setLayout(container_layout)
- scroll.setWidget(container)
-
- layout.addWidget(scroll)
-
- # Kapat butonu
- kapat_btn = QPushButton("Kapat")
- kapat_btn.clicked.connect(self.close)
- layout.addWidget(kapat_btn)
-
- self.setLayout(layout)
-
- def _create_alert_widget(self, alert: Dict) -> QFrame:
- """Tek bir uyarı widget'ı oluştur"""
- frame = QFrame()
- frame.setStyleSheet(f"""
- QFrame {{
- background-color: white;
- border-left: 4px solid {alert['renk']};
- border-radius: 5px;
- padding: 10px;
- margin: 5px 0;
- }}
- """)
-
- layout = QVBoxLayout()
-
- # Başlık
- baslik_layout = QHBoxLayout()
- icon = QLabel(alert['icon'])
- icon.setStyleSheet("font-size: 16pt;")
- baslik_layout.addWidget(icon)
-
- baslik = QLabel(alert['baslik'])
- baslik.setStyleSheet("font-weight: bold; font-size: 11pt;")
- baslik_layout.addWidget(baslik)
- baslik_layout.addStretch()
-
- tip = QLabel(alert['tip'])
- tip.setStyleSheet(f"color: {alert['renk']}; font-size: 9pt;")
- baslik_layout.addWidget(tip)
-
- layout.addLayout(baslik_layout)
-
- # Açıklama
- aciklama = QLabel(alert['aciklama'])
- aciklama.setStyleSheet("color: #666; font-size: 10pt;")
- aciklama.setWordWrap(True)
- layout.addWidget(aciklama)
-
- frame.setLayout(layout)
- return frame
+        severity_icons = {"kritik": "🔴", "uyari": "🟡", "bilgi": "🔵"}
+        for alert in alerts:
+            sev = alert.get("severity", "bilgi")
+            icon = severity_icons.get(sev, "⚪")
+            item = QListWidgetItem(f"{icon} {alert.get('mesaj', '')}")
+            if sev == "kritik":
+                item.setForeground(QColor("#F44336"))
+            elif sev == "uyari":
+                item.setForeground(QColor("#F57C00"))
+            self._list.addItem(item)
 
 
-# ==================== TATİL YÖNETİMİ DİALOG ====================
-
+# ===========================================================================
+# TatilDialog
+# ===========================================================================
 class TatilDialog(QDialog):
- """Tatil yönetimi dialog'u"""
+    """Tatil ve çalışma günü yönetimi diyaloğu."""
 
- def __init__(self, parent=None, tatil_yoneticisi=None):
- super().__init__(parent)
- self.tatil_yoneticisi = tatil_yoneticisi
- self.setWindowTitle("Tatil Yönetimi")
- self.setModal(True)
- self.resize(600, 500)
- self.init_ui()
- self.yukle_tatiller()
+    def __init__(self, engine, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Tatil & Çalışma Günü Yönetimi")
+        self.setMinimumSize(560, 420)
+        self._engine = engine
+        self._build_ui()
+        self._load_holidays()
 
- def init_ui(self):
- layout = QVBoxLayout()
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
 
- # Ayarlar
- ayarlar_group = QGroupBox("Çalışma Ayarları")
- ayarlar_layout = QFormLayout()
+        info = QLabel(
+            "Resmi tatiller ve özel iş günleri/tatilleri yönetin. "
+            "Bu bilgiler CPM hesaplamalarını etkiler."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
 
- self.cumartesi_check = QCheckBox("Cumartesi çalışılsın")
- self.cumartesi_check.stateChanged.connect(self.on_cumartesi_changed)
- ayarlar_layout.addRow("Hafta sonu:", self.cumartesi_check)
+        self._table = QTableWidget(0, 3)
+        self._table.setHorizontalHeaderLabels(["Tarih", "Açıklama", "Tip"])
+        self._table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self._table)
 
- ayarlar_group.setLayout(ayarlar_layout)
- layout.addWidget(ayarlar_group)
+        btn_row = QHBoxLayout()
+        btn_ekle = QPushButton("+ Tatil Ekle")
+        btn_ekle.clicked.connect(self._ekle_tatil)
+        btn_sil = QPushButton("Sil")
+        btn_sil.clicked.connect(self._sil_tatil)
+        btn_row.addWidget(btn_ekle)
+        btn_row.addWidget(btn_sil)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
 
- # Resmi tatiller listesi
- resmi_group = QGroupBox("Resmi Tatiller (Yıl Bazlı)")
- resmi_layout = QVBoxLayout()
+        chk_row = QHBoxLayout()
+        self._chk_cumartesi = QCheckBox("Cumartesi çalışılıyor")
+        self._chk_pazar = QCheckBox("Pazar çalışılıyor")
+        chk_row.addWidget(self._chk_cumartesi)
+        chk_row.addWidget(self._chk_pazar)
+        chk_row.addStretch()
+        layout.addLayout(chk_row)
 
- self.yil_combo = QComboBox()
- for yil in range(2024, 2031):
- self.yil_combo.addItem(str(yil), yil)
- self.yil_combo.setCurrentText(str(datetime.now().year))
- self.yil_combo.currentIndexChanged.connect(self.yukle_tatiller)
- resmi_layout.addWidget(self.yil_combo)
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(self._kaydet)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
 
- self.resmi_table = QTableWidget()
- self.resmi_table.setColumnCount(3)
- self.resmi_table.setHorizontalHeaderLabels(["Tarih", "Gün", "Açıklama"])
- self.resmi_table.horizontalHeader().setStretchLastSection(True)
- resmi_layout.addWidget(self.resmi_table)
+    def _load_holidays(self) -> None:
+        if not self._engine:
+            return
+        mgr = getattr(self._engine, "tatil_yoneticisi", None)
+        if not mgr:
+            return
+        holidays = getattr(mgr, "ozel_tatiller", [])
+        for h in holidays:
+            self._append_row(
+                str(h.get("tarih", "")),
+                h.get("aciklama", ""),
+                h.get("tip", "tatil"),
+            )
+        self._chk_cumartesi.setChecked(getattr(mgr, "cumartesi_calisma", False))
+        self._chk_pazar.setChecked(getattr(mgr, "pazar_calisma", False))
 
- resmi_group.setLayout(resmi_layout)
- layout.addWidget(resmi_group)
+    def _append_row(self, tarih: str, aciklama: str, tip: str) -> None:
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        self._table.setItem(row, 0, QTableWidgetItem(tarih))
+        self._table.setItem(row, 1, QTableWidgetItem(aciklama))
+        self._table.setItem(row, 2, QTableWidgetItem(tip))
 
- # Özel tatil ekleme
- ozel_group = QGroupBox("Özel Tatil Ekle")
- ozel_layout = QHBoxLayout()
+    def _ekle_tatil(self) -> None:
+        self._append_row(date.today().isoformat(), "Yeni Tatil", "tatil")
 
- self.ozel_tarih = QDateEdit()
- self.ozel_tarih.setDate(QDate.currentDate())
- self.ozel_tarih.setCalendarPopup(True)
- ozel_layout.addWidget(QLabel("Tarih:"))
- ozel_layout.addWidget(self.ozel_tarih)
+    def _sil_tatil(self) -> None:
+        row = self._table.currentRow()
+        if row >= 0:
+            self._table.removeRow(row)
 
- self.ozel_aciklama = QLineEdit()
- self.ozel_aciklama.setPlaceholderText("Tatil açıklaması")
- ozel_layout.addWidget(QLabel("Açıklama:"))
- ozel_layout.addWidget(self.ozel_aciklama)
-
- ekle_btn = QPushButton(" Ekle")
- ekle_btn.clicked.connect(self.ekle_ozel_tatil)
- ozel_layout.addWidget(ekle_btn)
-
- ozel_group.setLayout(ozel_layout)
- layout.addWidget(ozel_group)
-
- # Özel tatiller listesi
- self.ozel_table = QTableWidget()
- self.ozel_table.setColumnCount(3)
- self.ozel_table.setHorizontalHeaderLabels(["Tarih", "Açıklama", "Sil"])
- self.ozel_table.horizontalHeader().setStretchLastSection(True)
- layout.addWidget(self.ozel_table)
-
- # Butonlar
- buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
- buttons.accepted.connect(self.accept)
- layout.addWidget(buttons)
-
- self.setLayout(layout)
-
- def yukle_tatiller(self):
- """Resmi tatilleri yükle"""
- if not self.tatil_yoneticisi:
- return
-
- yil = self.yil_combo.currentData()
- tatiller = self.tatil_yoneticisi.get_yil_tatilleri(yil)
-
- self.resmi_table.setRowCount(0)
-
- gun_isimleri = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar']
-
- for tarih, aciklama in tatiller:
- row = self.resmi_table.rowCount()
- self.resmi_table.insertRow(row)
-
- self.resmi_table.setItem(row, 0, QTableWidgetItem(tarih.strftime('%d.%m.%Y')))
- self.resmi_table.setItem(row, 1, QTableWidgetItem(gun_isimleri[tarih.weekday()]))
- self.resmi_table.setItem(row, 2, QTableWidgetItem(aciklama))
-
- # Özel tatilleri yükle
- self.ozel_table.setRowCount(0)
- for tarih, aciklama in self.tatil_yoneticisi.ozel_tatiller:
- row = self.ozel_table.rowCount()
- self.ozel_table.insertRow(row)
-
- self.ozel_table.setItem(row, 0, QTableWidgetItem(tarih.strftime('%d.%m.%Y')))
- self.ozel_table.setItem(row, 1, QTableWidgetItem(aciklama))
-
- sil_btn = QPushButton("")
- sil_btn.clicked.connect(lambda checked, t=tarih: self.sil_ozel_tatil(t))
- self.ozel_table.setCellWidget(row, 2, sil_btn)
-
- # Cumartesi ayarı
- self.cumartesi_check.setChecked(self.tatil_yoneticisi.hafta_sonu_calisma)
-
- def on_cumartesi_changed(self, state):
- if self.tatil_yoneticisi:
- self.tatil_yoneticisi.hafta_sonu_calisma = state == Qt.CheckState.Checked.value
-
- def ekle_ozel_tatil(self):
- if not self.tatil_yoneticisi:
- return
-
- qdate = self.ozel_tarih.date()
- tarih = datetime(qdate.year(), qdate.month(), qdate.day())
- aciklama = self.ozel_aciklama.text() or "Özel Tatil"
-
- self.tatil_yoneticisi.ekle_ozel_tatil(tarih, aciklama)
- self.ozel_aciklama.clear()
- self.yukle_tatiller()
-
- def sil_ozel_tatil(self, tarih):
- if self.tatil_yoneticisi:
- self.tatil_yoneticisi.sil_ozel_tatil(tarih)
- self.yukle_tatiller()
+    def _kaydet(self) -> None:
+        if not self._engine:
+            self.accept()
+            return
+        mgr = getattr(self._engine, "tatil_yoneticisi", None)
+        if mgr and hasattr(mgr, "ozel_tatiller"):
+            holidays = []
+            for row in range(self._table.rowCount()):
+                holidays.append({
+                    "tarih": self._table.item(row, 0).text() if self._table.item(row, 0) else "",
+                    "aciklama": self._table.item(row, 1).text() if self._table.item(row, 1) else "",
+                    "tip": self._table.item(row, 2).text() if self._table.item(row, 2) else "tatil",
+                })
+            mgr.ozel_tatiller = holidays
+        self.accept()
 
 
+# ===========================================================================
+# TaskDialog
+# ===========================================================================
 class TaskDialog(QDialog):
- """İş kalemi ekleme/düzenleme dialog'u"""
+    """Görev ekle / düzenle diyaloğu — genişletilmiş Ekip & Verimlilik."""
 
- RENK_SECENEKLERI = [
- ("#3498db", "Mavi"),
- ("#2ecc71", "Yeşil"),
- ("#e74c3c", "Kırmızı"),
- ("#f39c12", "Turuncu"),
- ("#9b59b6", "Mor"),
- ("#1abc9c", "Turkuaz"),
- ("#34495e", "Koyu Gri"),
- ("#e67e22", "Koyu Turuncu"),
- ]
+    BIRIMLER = ["m²", "m³", "m", "adet", "kg", "ton", "takım", "lt"]
 
- def __init__(self, parent=None, task: Optional[Task] = None, db: Optional[DatabaseManager] = None,
- parent_tasks: Optional[Dict[int, Task]] = None):
- super().__init__(parent)
- self.task = task
- self.db = db
- self.parent_tasks = parent_tasks or {}
- self.selected_color = "#3498db"
- self.setWindowTitle("İş Kalemi Ekle/Düzenle")
- self.setModal(True)
- self.resize(550, 500)
- self.init_ui()
+    # (görünen ad, varsayılan birim)  —  None birim = grup başlığı (seçilemez)
+    EKIP_GRUPLARI: List[Tuple[str, Optional[str]]] = [
+        ("━━ KABA YAPI ━━",           None),
+        ("Demirci (Bağlama/Bükme)",    "kg"),
+        ("Demirci (Nervürlü Soğuk)",   "kg"),
+        ("Kalıpçı (Döşeme)",           "m²"),
+        ("Kalıpçı (Kiriş)",            "m²"),
+        ("Kalıpçı (Kolon)",            "m²"),
+        ("Kalıpçı (Karma)",            "m²"),
+        ("Kalıp Söküm Ekibi",          "m²"),
+        ("Betoncu",                    "m³"),
+        ("Duvarcı (Tuğla)",            "m²"),
+        ("Duvarcı (Gazbeton)",         "m²"),
+        ("━━ İNCE İŞLER ━━",          None),
+        ("Sıvacı (İç)",                "m²"),
+        ("Sıvacı (Dış)",               "m²"),
+        ("Boyacı (İç)",                "m²"),
+        ("Boyacı (Dış)",               "m²"),
+        ("Fayansçı / Seramikçi",       "m²"),
+        ("Mermerci",                   "m²"),
+        ("Parke / Laminat Ustası",     "m²"),
+        ("Şap Ustası",                 "m²"),
+        ("━━ TESİSAT ━━",             None),
+        ("Elektrikçi",                 "m"),
+        ("Tesisatçı (Su/Pis Su)",      "m"),
+        ("Tesisatçı (Isı)",            "adet"),
+        ("━━ DOĞRAMA & DIŞ CEPHE ━━", None),
+        ("Doğramacı (PVC)",            "adet"),
+        ("Doğramacı (Alüminyum)",      "adet"),
+        ("Çatıcı",                     "m²"),
+        ("Yalıtımcı (Mantolama)",      "m²"),
+        ("Yalıtımcı (Su)",             "m²"),
+        ("━━ DİĞER ━━",               None),
+        ("İskele Ustası",              "m²"),
+        ("Kazıcı / Hafriyatçı",        "m³"),
+        ("Vinç Operatörü",             "adet"),
+        ("Genel İşçi",                 "adet"),
+    ]
 
- if task:
- self.load_task_data()
+    # (label, verimlilik değeri, birim)  — Kaynak: ÇŞB Birim Fiyat Analizleri
+    EKIP_VERIMLILIK: Dict[str, List[Tuple[str, float, str]]] = {
+        "Demirci (Bağlama/Bükme)": [
+            ("ÇŞB — 333 kg/usta/gün",   333.0, "kg"),
+            ("Standart — 300 kg/usta/gün", 300.0, "kg"),
+            ("Ağır İş — 200 kg/usta/gün", 200.0, "kg"),
+        ],
+        "Demirci (Nervürlü Soğuk)": [
+            ("ÇŞB — 250 kg/usta/gün",   250.0, "kg"),
+            ("Standart — 220 kg/usta/gün", 220.0, "kg"),
+        ],
+        "Kalıpçı (Döşeme)": [
+            ("ÇŞB — 4.00 m²/usta/gün",  4.0,  "m²"),
+            ("Playwood — 12.5 m²/usta/gün", 12.5, "m²"),
+        ],
+        "Kalıpçı (Kiriş)": [
+            ("ÇŞB — 2.86 m²/usta/gün",  2.86, "m²"),
+        ],
+        "Kalıpçı (Kolon)": [
+            ("ÇŞB — 1.82 m²/usta/gün",  1.82, "m²"),
+        ],
+        "Kalıpçı (Karma)": [
+            ("ÇŞB — 3.33 m²/usta/gün",  3.33, "m²"),
+        ],
+        "Kalıp Söküm Ekibi": [
+            ("ÇŞB — 8.00 m²/usta/gün",  8.0,  "m²"),
+        ],
+        "Betoncu": [
+            ("Mikser İle — 20 m³/usta/gün",  20.0, "m³"),
+            ("Elle Beton — 5 m³/usta/gün",    5.0, "m³"),
+        ],
+        "Duvarcı (Tuğla)": [
+            ("İnce Tuğla 8.5 cm — 8 m²/usta/gün",  8.0, "m²"),
+            ("Kalın Tuğla 13.5 cm — 6 m²/usta/gün", 6.0, "m²"),
+        ],
+        "Duvarcı (Gazbeton)": [
+            ("Gazbeton — 12 m²/usta/gün", 12.0, "m²"),
+        ],
+        "Sıvacı (İç)": [
+            ("ÇŞB — 25 m²/usta/gün",   25.0, "m²"),
+            ("Alçı Sıva — 30 m²/usta/gün", 30.0, "m²"),
+        ],
+        "Sıvacı (Dış)": [
+            ("ÇŞB — 20 m²/usta/gün",   20.0, "m²"),
+        ],
+        "Boyacı (İç)": [
+            ("ÇŞB — 45 m²/usta/gün",   45.0, "m²"),
+        ],
+        "Boyacı (Dış)": [
+            ("ÇŞB — 30 m²/usta/gün",   30.0, "m²"),
+        ],
+        "Fayansçı / Seramikçi": [
+            ("ÇŞB — 8 m²/usta/gün",     8.0, "m²"),
+            ("Mozaik — 5 m²/usta/gün",  5.0, "m²"),
+        ],
+        "Mermerci": [
+            ("ÇŞB — 4 m²/usta/gün",     4.0, "m²"),
+        ],
+        "Parke / Laminat Ustası": [
+            ("ÇŞB — 25 m²/usta/gün",   25.0, "m²"),
+            ("Karo Parke — 15 m²/usta/gün", 15.0, "m²"),
+        ],
+        "Şap Ustası": [
+            ("Şap — 40 m²/usta/gün",   40.0, "m²"),
+            ("Kalın Şap — 25 m²/usta/gün", 25.0, "m²"),
+        ],
+        "Elektrikçi": [
+            ("Tesisat Hattı — 50 m/usta/gün",  50.0, "m"),
+            ("Pano Montaj — 5 adet/usta/gün",   5.0, "adet"),
+        ],
+        "Tesisatçı (Su/Pis Su)": [
+            ("Boru Döşeme — 30 m/usta/gün",  30.0, "m"),
+            ("PPR Boru — 40 m/usta/gün",     40.0, "m"),
+        ],
+        "Tesisatçı (Isı)": [
+            ("Radyatör Montaj — 8 adet/usta/gün", 8.0, "adet"),
+            ("Kombi Bağlantı — 2 adet/usta/gün",  2.0, "adet"),
+        ],
+        "Doğramacı (PVC)": [
+            ("PVC Standart — 4 adet/usta/gün",  4.0, "adet"),
+            ("PVC Büyük — 2 adet/usta/gün",     2.0, "adet"),
+        ],
+        "Doğramacı (Alüminyum)": [
+            ("Alüminyum — 3 adet/usta/gün",     3.0, "adet"),
+        ],
+        "Çatıcı": [
+            ("Kiremit — 80 m²/usta/gün",       80.0, "m²"),
+            ("Trapez Sac — 120 m²/usta/gün",  120.0, "m²"),
+        ],
+        "Yalıtımcı (Mantolama)": [
+            ("ÇŞB — 15 m²/usta/gün",   15.0, "m²"),
+            ("Hızlı — 20 m²/usta/gün", 20.0, "m²"),
+        ],
+        "Yalıtımcı (Su)": [
+            ("Su Yalıtımı — 25 m²/usta/gün", 25.0, "m²"),
+        ],
+        "İskele Ustası": [
+            ("Kurma — 20 m²/usta/gün",  20.0, "m²"),
+            ("Sökme — 30 m²/usta/gün",  30.0, "m²"),
+        ],
+        "Kazıcı / Hafriyatçı": [
+            ("Elle Kazı — 3 m³/usta/gün",       3.0, "m³"),
+            ("Makine Kazı — 100 m³/usta/gün", 100.0, "m³"),
+        ],
+        "Vinç Operatörü": [
+            ("Vinç — 20 tur/usta/gün", 20.0, "adet"),
+        ],
+        "Genel İşçi": [
+            ("Genel — 10 adet/usta/gün",    10.0, "adet"),
+            ("Temizlik — 100 m²/usta/gün", 100.0, "m²"),
+        ],
+    }
 
- def init_ui(self):
- layout = QVBoxLayout()
+    def __init__(self, task_data: Optional[Dict] = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("İş Ekle" if not task_data else "İş Düzenle")
+        self.setMinimumSize(560, 620)
+        self._task = task_data or {}
+        self._build_ui()
+        if task_data:
+            self._load_data(task_data)
 
- # Form
- form_layout = QFormLayout()
+    # ------------------------------------------------------------------
+    # UI İnşası
+    # ------------------------------------------------------------------
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
- # İş adı
- self.ad_input = QLineEdit()
- self.ad_input.setPlaceholderText("Örn: Temel kazısı")
- form_layout.addRow("İş Adı:", self.ad_input)
+        # İş Adı
+        self.ad_input = QLineEdit()
+        form.addRow("İş Adı:", self.ad_input)
 
- # Süre
- self.sure_input = QSpinBox()
- self.sure_input.setRange(1, 365)
- self.sure_input.setValue(5)
- self.sure_input.setSuffix(" gün")
- form_layout.addRow("Süre (İş Günü):", self.sure_input)
+        # Süre
+        self.sure_input = QSpinBox()
+        self.sure_input.setRange(1, 3650)
+        self.sure_input.setSuffix(" gün")
+        form.addRow("Süre:", self.sure_input)
 
- # Üst Görev (WBS için)
- self.parent_combo = QComboBox()
- self.parent_combo.addItem("Ana Görev (Üst yok)", None)
- for tid, t in self.parent_tasks.items():
- self.parent_combo.addItem(f"{t.wbs_kodu} - {t.ad}", tid)
- form_layout.addRow("Üst Görev (WBS):", self.parent_combo)
+        # Tarih
+        date_row = QHBoxLayout()
+        self.baslangic_input = QDateEdit(QDate.currentDate())
+        self.baslangic_input.setCalendarPopup(True)
+        self.baslangic_input.setDisplayFormat("dd.MM.yyyy")
+        date_row.addWidget(self.baslangic_input)
+        date_row.addWidget(QLabel("—"))
+        self.bitis_input = QDateEdit(QDate.currentDate().addDays(7))
+        self.bitis_input.setCalendarPopup(True)
+        self.bitis_input.setDisplayFormat("dd.MM.yyyy")
+        date_row.addWidget(self.bitis_input)
+        form.addRow("Tarih:", date_row)
 
- # Kaynak/Ekip
- self.kaynak_input = QLineEdit()
- self.kaynak_input.setPlaceholderText("Örn: Ekip 1, Taşeron A")
- form_layout.addRow("Kaynak/Ekip:", self.kaynak_input)
+        # Miktar + Birim combo + Otomatik süre butonu
+        miktar_row = QHBoxLayout()
+        self.miktar_input = QDoubleSpinBox()
+        self.miktar_input.setRange(0, 999_999_999)
+        self.miktar_input.setDecimals(2)
+        self.miktar_input.setMinimumWidth(110)
+        self.miktar_input.valueChanged.connect(self._auto_butce)
+        miktar_row.addWidget(self.miktar_input)
 
- # Renk seçimi
- renk_layout = QHBoxLayout()
- self.renk_combo = QComboBox()
- for renk, ad in self.RENK_SECENEKLERI:
- self.renk_combo.addItem(ad, renk)
- self.renk_combo.currentIndexChanged.connect(self.on_renk_changed)
- renk_layout.addWidget(self.renk_combo)
+        self.birim_combo = QComboBox()
+        self.birim_combo.addItems(self.BIRIMLER)
+        self.birim_combo.setFixedWidth(72)
+        self.birim_combo.setToolTip("Miktar birimi")
+        self.birim_combo.currentTextChanged.connect(self._on_birim_degisti)
+        miktar_row.addWidget(self.birim_combo)
 
- self.renk_preview = QLabel(" ")
- self.renk_preview.setFixedSize(30, 20)
- self.renk_preview.setStyleSheet(f"background-color: {self.selected_color}; border: 1px solid #ccc;")
- renk_layout.addWidget(self.renk_preview)
+        auto_btn = QPushButton("🔄 Süre")
+        auto_btn.setFixedWidth(72)
+        auto_btn.setToolTip("Miktar / (Verimlilik × Usta Sayısı) → Süre otomatik hesapla")
+        auto_btn.clicked.connect(self._auto_sure)
+        miktar_row.addWidget(auto_btn)
+        form.addRow("Miktar:", miktar_row)
 
- ozel_renk_btn = QPushButton("")
- ozel_renk_btn.setFixedWidth(30)
- ozel_renk_btn.clicked.connect(self.sec_ozel_renk)
- renk_layout.addWidget(ozel_renk_btn)
- renk_layout.addStretch()
+        # Ekip Türü (grup başlıklı)
+        self.ekip_turu_input = QComboBox()
+        self.ekip_turu_input.setMinimumWidth(220)
+        self._ekip_doldur()
+        self.ekip_turu_input.currentIndexChanged.connect(self._on_ekip_degisti)
+        form.addRow("Ekip Türü:", self.ekip_turu_input)
 
- form_layout.addRow("Çubuk Rengi:", renk_layout)
+        # Usta Sayısı
+        self.usta_sayisi_input = QSpinBox()
+        self.usta_sayisi_input.setRange(1, 50)
+        self.usta_sayisi_input.setValue(2)
+        form.addRow("Usta Sayısı:", self.usta_sayisi_input)
 
- # Milestone
- self.milestone_check = QCheckBox("Bu iş bir milestone (kilometre taşı)")
- form_layout.addRow("", self.milestone_check)
+        # Verimlilik: Preset combo + manuel spin
+        verim_row = QHBoxLayout()
+        self.verimlilik_preset_combo = QComboBox()
+        self.verimlilik_preset_combo.setMinimumWidth(240)
+        self.verimlilik_preset_combo.setToolTip("ÇŞB birim fiyat analizine göre hazır değerler")
+        self.verimlilik_preset_combo.currentIndexChanged.connect(
+            self._on_verimlilik_preset_degisti
+        )
+        verim_row.addWidget(self.verimlilik_preset_combo)
 
- # Metraj kalemi bağlantısı
- self.metraj_combo = QComboBox()
- self.metraj_combo.addItem("Bağlantı yok", None)
- self._yukle_metraj_kalemleri()
- form_layout.addRow("Metraj Kalemi:", self.metraj_combo)
+        self.verimlilik_input = QDoubleSpinBox()
+        self.verimlilik_input.setRange(0.01, 100_000)
+        self.verimlilik_input.setDecimals(2)
+        self.verimlilik_input.setValue(10.0)
+        self.verimlilik_input.setFixedWidth(110)
+        self.verimlilik_input.setToolTip("Manuel düzenleme yapabilirsiniz")
+        verim_row.addWidget(self.verimlilik_input)
 
- # Açıklama
- self.aciklama_input = QTextEdit()
- self.aciklama_input.setMaximumHeight(80)
- self.aciklama_input.setPlaceholderText("Opsiyonel açıklama...")
- form_layout.addRow("Açıklama:", self.aciklama_input)
+        self._verim_birim_label = QLabel("birim/usta/gün")
+        self._verim_birim_label.setStyleSheet("color: #666; font-size: 10px;")
+        verim_row.addWidget(self._verim_birim_label)
+        form.addRow("Verimlilik:", verim_row)
 
- layout.addLayout(form_layout)
+        # Tamamlanma
+        self.tamamlanma_input = QSpinBox()
+        self.tamamlanma_input.setRange(0, 100)
+        self.tamamlanma_input.setSuffix(" %")
+        form.addRow("Tamamlanma:", self.tamamlanma_input)
 
- # Butonlar
- buttons = QDialogButtonBox(
- QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
- )
- buttons.accepted.connect(self.accept)
- buttons.rejected.connect(self.reject)
- layout.addWidget(buttons)
+        # Maliyet
+        self.maliyet_input = QDoubleSpinBox()
+        self.maliyet_input.setRange(0, 999_999_999)
+        self.maliyet_input.setDecimals(2)
+        self.maliyet_input.setSuffix(" ₺")
+        form.addRow("Maliyet:", self.maliyet_input)
 
- self.setLayout(layout)
+        # Birim Fiyat
+        self.birim_fiyat_input = QDoubleSpinBox()
+        self.birim_fiyat_input.setRange(0, 999_999_999)
+        self.birim_fiyat_input.setDecimals(2)
+        self.birim_fiyat_input.setSuffix(" ₺/birim")
+        self.birim_fiyat_input.setToolTip("Birim Fiyat × Miktar = Bütçe (otomatik)")
+        self.birim_fiyat_input.valueChanged.connect(self._auto_butce)
+        form.addRow("Birim Fiyat:", self.birim_fiyat_input)
 
- def _yukle_metraj_kalemleri(self):
- """Metraj kalemlerini yükle"""
- if not self.db:
- return
- try:
- with self.db.get_connection() as conn:
- cursor = conn.cursor()
- cursor.execute("SELECT id, is_kalemi FROM metraj_kalemleri ORDER BY id DESC LIMIT 100")
- kalemler = cursor.fetchall()
- for kalem in kalemler:
- self.metraj_combo.addItem(f"{kalem['id']} - {kalem['is_kalemi'][:30]}", kalem['id'])
- except Exception as e:
- logger.debug(f"Metraj kalemleri yüklenemedi: {e}")
+        # Bütçe
+        self.butce_input = QDoubleSpinBox()
+        self.butce_input.setRange(0, 999_999_999)
+        self.butce_input.setDecimals(2)
+        self.butce_input.setSuffix(" ₺")
+        self.butce_input.setToolTip("Planlanan bütçe — hakediş hesabında kullanılır")
+        form.addRow("Bütçe (Planlanan):", self.butce_input)
 
- def on_renk_changed(self, index):
- self.selected_color = self.renk_combo.currentData()
- self.renk_preview.setStyleSheet(f"background-color: {self.selected_color}; border: 1px solid #ccc;")
+        # Gerçek Maliyet
+        self.gercek_maliyet_input = QDoubleSpinBox()
+        self.gercek_maliyet_input.setRange(0, 999_999_999)
+        self.gercek_maliyet_input.setDecimals(2)
+        self.gercek_maliyet_input.setSuffix(" ₺")
+        self.gercek_maliyet_input.setToolTip("Gerçekleşen maliyet — EVM/CPI hesabında kullanılır")
+        form.addRow("Gerçek Maliyet:", self.gercek_maliyet_input)
 
- def sec_ozel_renk(self):
- color = QColorDialog.getColor(QColor(self.selected_color), self, "Renk Seç")
- if color.isValid():
- self.selected_color = color.name()
- self.renk_preview.setStyleSheet(f"background-color: {self.selected_color}; border: 1px solid #ccc;")
+        # Kaynak
+        self.kaynak_input = QLineEdit()
+        form.addRow("Kaynak:", self.kaynak_input)
 
- def load_task_data(self):
- """Task verilerini form'a yükle"""
- if not self.task:
- return
+        # Milestone
+        self.milestone_chk = QCheckBox("Kilometre Taşı (Milestone)")
+        form.addRow("", self.milestone_chk)
 
- self.ad_input.setText(self.task.ad)
- self.sure_input.setValue(self.task.sure_gun)
- self.kaynak_input.setText(self.task.kaynak)
- self.milestone_check.setChecked(self.task.milestone)
- self.aciklama_input.setPlainText(self.task.aciklama)
- self.selected_color = self.task.renk or "#3498db"
- self.renk_preview.setStyleSheet(f"background-color: {self.selected_color}; border: 1px solid #ccc;")
+        # Açıklama
+        self.aciklama_input = QTextEdit()
+        self.aciklama_input.setMaximumHeight(60)
+        form.addRow("Açıklama:", self.aciklama_input)
 
- # Parent seçimi
- if self.task.parent_id:
- for i in range(self.parent_combo.count()):
- if self.parent_combo.itemData(i) == self.task.parent_id:
- self.parent_combo.setCurrentIndex(i)
- break
+        layout.addLayout(form)
 
- def get_task_data(self) -> Dict[str, Any]:
- """Form'dan task verilerini al"""
- return {
- 'ad': self.ad_input.text(),
- 'sure_gun': self.sure_input.value(),
- 'kaynak': self.kaynak_input.text(),
- 'milestone': self.milestone_check.isChecked(),
- 'aciklama': self.aciklama_input.toPlainText(),
- 'metraj_kalem_id': self.metraj_combo.currentData(),
- 'parent_id': self.parent_combo.currentData(),
- 'renk': self.selected_color
- }
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(self._validate_and_accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+        # İlk ekip türüne göre verimlilik listesini doldur
+        self._on_ekip_degisti(self.ekip_turu_input.currentIndex())
+
+    # ------------------------------------------------------------------
+    # Yardımcı: Ekip combo'yu grup başlıklı doldur
+    # ------------------------------------------------------------------
+    def _ekip_doldur(self) -> None:
+        from PyQt6.QtGui import QStandardItem
+        from PyQt6.QtGui import QFont as _QFont
+        model = self.ekip_turu_input.model()
+        for ad, birim in self.EKIP_GRUPLARI:
+            self.ekip_turu_input.addItem(ad)
+            idx = self.ekip_turu_input.count() - 1
+            item = model.item(idx)
+            if birim is None:
+                # Grup başlığı: seçilemez, kalın-italik stil
+                item.setEnabled(False)
+                font = _QFont()
+                font.setBold(True)
+                font.setItalic(True)
+                item.setFont(font)
+                item.setForeground(QColor("#1976D2"))
+
+    # ------------------------------------------------------------------
+    # Sinyaller
+    # ------------------------------------------------------------------
+    def _on_ekip_degisti(self, idx: int) -> None:
+        """Ekip türü değişince verimlilik presetlerini ve varsayılan birimi güncelle."""
+        ekip_ad = self.ekip_turu_input.itemText(idx)
+        presetler = self.EKIP_VERIMLILIK.get(ekip_ad, [])
+
+        self.verimlilik_preset_combo.blockSignals(True)
+        self.verimlilik_preset_combo.clear()
+        if presetler:
+            self.verimlilik_preset_combo.addItem("— Preset seçin —")
+            for label, _val, _birim in presetler:
+                self.verimlilik_preset_combo.addItem(label)
+        else:
+            self.verimlilik_preset_combo.addItem("— Bu ekip için preset yok —")
+        self.verimlilik_preset_combo.blockSignals(False)
+
+        # Ekip türünün varsayılan birimini birim_combo'ya yansıt
+        varsayilan_birim = next(
+            (b for a, b in self.EKIP_GRUPLARI if a == ekip_ad and b is not None),
+            None
+        )
+        if varsayilan_birim:
+            birim_idx = self.birim_combo.findText(varsayilan_birim)
+            if birim_idx >= 0:
+                self.birim_combo.setCurrentIndex(birim_idx)
+
+        # İlk preset varsa otomatik uygula
+        if presetler:
+            _label, val, birim = presetler[0]
+            self.verimlilik_input.setValue(val)
+            self._verim_birim_label.setText(f"{birim}/usta/gün")
+            self.verimlilik_preset_combo.setCurrentIndex(1)
+
+    def _on_verimlilik_preset_degisti(self, idx: int) -> None:
+        """Preset seçilince verimlilik değerini ve birimi güncelle."""
+        if idx <= 0:
+            return
+        ekip_ad = self.ekip_turu_input.currentText()
+        presetler = self.EKIP_VERIMLILIK.get(ekip_ad, [])
+        preset_idx = idx - 1  # ilk item "— Preset seçin —"
+        if 0 <= preset_idx < len(presetler):
+            _label, val, birim = presetler[preset_idx]
+            self.verimlilik_input.setValue(val)
+            self._verim_birim_label.setText(f"{birim}/usta/gün")
+            # Birimi miktar combo'ya yansıt
+            b_idx = self.birim_combo.findText(birim)
+            if b_idx >= 0:
+                self.birim_combo.setCurrentIndex(b_idx)
+
+    def _on_birim_degisti(self, birim: str) -> None:
+        """Birim değişince verimlilik birim etiketini güncelle."""
+        self._verim_birim_label.setText(f"{birim}/usta/gün")
+
+    # ------------------------------------------------------------------
+    # Veri Yükleme
+    # ------------------------------------------------------------------
+    def _load_data(self, task: Dict) -> None:
+        self.ad_input.setText(task.get("ad", ""))
+        self.sure_input.setValue(task.get("sure", 1))
+        if task.get("baslangic"):
+            try:
+                d = date.fromisoformat(str(task["baslangic"]))
+                self.baslangic_input.setDate(QDate(d.year, d.month, d.day))
+            except (ValueError, TypeError):
+                pass
+        if task.get("bitis"):
+            try:
+                d = date.fromisoformat(str(task["bitis"]))
+                self.bitis_input.setDate(QDate(d.year, d.month, d.day))
+            except (ValueError, TypeError):
+                pass
+        self.miktar_input.setValue(task.get("miktar", 0.0))
+        # Birim
+        birim = task.get("miktar_birim", "m²")
+        b_idx = self.birim_combo.findText(birim)
+        if b_idx >= 0:
+            self.birim_combo.setCurrentIndex(b_idx)
+        # Ekip türü
+        ekip = task.get("ekip_turu", "")
+        e_idx = self.ekip_turu_input.findText(ekip)
+        if e_idx >= 0:
+            self.ekip_turu_input.setCurrentIndex(e_idx)
+        # Verimlilik sonradan setlenir (ekip değişimi sinyali tetiklemiş olabilir)
+        verimlilik = task.get("verimlilik", 0.0)
+        if verimlilik > 0:
+            self.verimlilik_input.setValue(verimlilik)
+        self.usta_sayisi_input.setValue(task.get("usta_sayisi", 2))
+        self.tamamlanma_input.setValue(task.get("tamamlanma_yuzdesi", 0))
+        self.maliyet_input.setValue(task.get("maliyet", 0.0))
+        self.birim_fiyat_input.setValue(task.get("birim_fiyat", 0.0))
+        self.butce_input.setValue(task.get("butce", 0.0))
+        self.gercek_maliyet_input.setValue(task.get("gercek_maliyet", 0.0))
+        self.kaynak_input.setText(task.get("kaynak", ""))
+        self.milestone_chk.setChecked(task.get("milestone", False))
+        self.aciklama_input.setText(task.get("aciklama", ""))
+
+    # ------------------------------------------------------------------
+    # Hesaplama Yardımcıları
+    # ------------------------------------------------------------------
+    def _auto_sure(self) -> None:
+        """Miktar / (Verimlilik × Usta Sayısı) → Süre hesapla."""
+        miktar = self.miktar_input.value()
+        usta = self.usta_sayisi_input.value()
+        verimlilik = self.verimlilik_input.value()
+        if verimlilik > 0 and usta > 0 and miktar > 0:
+            sure = math.ceil(miktar / (verimlilik * usta))
+            self.sure_input.setValue(max(sure, 1))
+
+    def _auto_butce(self) -> None:
+        """Birim Fiyat × Miktar → Bütçe otomatik hesabı."""
+        birim_fiyat = self.birim_fiyat_input.value()
+        miktar = self.miktar_input.value()
+        if birim_fiyat > 0 and miktar > 0:
+            self.butce_input.setValue(birim_fiyat * miktar)
+
+    def _validate_and_accept(self) -> None:
+        if not self.ad_input.text().strip():
+            QMessageBox.warning(self, "Hata", "İş adı boş olamaz.")
+            return
+        self.accept()
+
+    # ------------------------------------------------------------------
+    # Veri Çıkarma
+    # ------------------------------------------------------------------
+    def get_task_data(self) -> Dict:
+        baslangic_qdate = self.baslangic_input.date()
+        bitis_qdate = self.bitis_input.date()
+        return {
+            "ad": self.ad_input.text().strip(),
+            "sure": self.sure_input.value(),
+            "baslangic": date(
+                baslangic_qdate.year(), baslangic_qdate.month(), baslangic_qdate.day()
+            ).isoformat(),
+            "bitis": date(
+                bitis_qdate.year(), bitis_qdate.month(), bitis_qdate.day()
+            ).isoformat(),
+            "miktar": self.miktar_input.value(),
+            "miktar_birim": self.birim_combo.currentText(),
+            "ekip_turu": self.ekip_turu_input.currentText(),
+            "usta_sayisi": self.usta_sayisi_input.value(),
+            "verimlilik": self.verimlilik_input.value(),
+            "tamamlanma_yuzdesi": self.tamamlanma_input.value(),
+            "maliyet": self.maliyet_input.value(),
+            "birim_fiyat": self.birim_fiyat_input.value(),
+            "butce": self.butce_input.value(),
+            "gercek_maliyet": self.gercek_maliyet_input.value(),
+            "kaynak": self.kaynak_input.text().strip(),
+            "milestone": self.milestone_chk.isChecked(),
+            "aciklama": self.aciklama_input.toPlainText().strip(),
+        }
 
 
+# ===========================================================================
+# DependencyDialog
+# ===========================================================================
 class DependencyDialog(QDialog):
- """Bağımlılık ekleme dialog'u"""
+    """Bağımlılık yönetimi diyaloğu."""
 
- def __init__(self, parent=None, tasks: Dict[int, Task] = None):
- super().__init__(parent)
- self.tasks = tasks or {}
- self.setWindowTitle("Bağımlılık Ekle")
- self.setModal(True)
- self.resize(400, 250)
- self.init_ui()
+    def __init__(self, tasks: List[Dict], current_id: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Bağımlılıkları Düzenle")
+        self.setMinimumSize(480, 360)
+        self._tasks = [t for t in tasks if t.get("id") != current_id]
+        self._current_id = current_id
+        self._build_ui()
 
- def init_ui(self):
- layout = QVBoxLayout()
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "Bu iş hangi işlerin bitmesini bekler? (FS — Finish-to-Start)"
+        ))
 
- # Form
- form_layout = QFormLayout()
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        for t in self._tasks:
+            item = QListWidgetItem(f"[{t.get('id')}] {t.get('ad', '')}")
+            item.setData(Qt.ItemDataRole.UserRole, t.get("id"))
+            self._list.addItem(item)
+        layout.addWidget(self._list)
 
- # Önceki iş
- self.onceki_combo = QComboBox()
- for task_id, task in self.tasks.items():
- self.onceki_combo.addItem(f"{task.ad} ({task.sure_gun} gün)", task_id)
- form_layout.addRow("Önceki İş:", self.onceki_combo)
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
 
- # Sonraki iş
- self.sonraki_combo = QComboBox()
- for task_id, task in self.tasks.items():
- self.sonraki_combo.addItem(f"{task.ad} ({task.sure_gun} gün)", task_id)
- form_layout.addRow("Sonraki İş:", self.sonraki_combo)
-
- # Bağımlılık tipi
- self.tip_combo = QComboBox()
- self.tip_combo.addItem("Finish-to-Start (FS) - En yaygın", "FS")
- self.tip_combo.addItem("Start-to-Start (SS)", "SS")
- self.tip_combo.addItem("Finish-to-Finish (FF)", "FF")
- self.tip_combo.addItem("Start-to-Finish (SF)", "SF")
- form_layout.addRow("Bağımlılık Tipi:", self.tip_combo)
-
- # Lag (gecikme)
- self.lag_input = QSpinBox()
- self.lag_input.setRange(-30, 30)
- self.lag_input.setValue(0)
- self.lag_input.setSuffix(" gün")
- form_layout.addRow("Gecikme/Öne Alma:", self.lag_input)
-
- # Açıklama
- aciklama_label = QLabel("""
- <b>Bağımlılık Tipleri:</b><br>
- <b>FS:</b> Önceki iş bitsin, sonraki başlasın<br>
- <b>SS:</b> Önceki iş başlasın, sonraki de başlasın<br>
- <b>FF:</b> Önceki iş bitsin, sonraki de bitsin<br>
- <b>SF:</b> Önceki iş başlasın, sonraki bitsin
- """)
- aciklama_label.setWordWrap(True)
- aciklama_label.setStyleSheet("background-color: #ecf0f1; padding: 10px; border-radius: 5px;")
- layout.addWidget(aciklama_label)
-
- layout.addLayout(form_layout)
-
- # Butonlar
- buttons = QDialogButtonBox(
- QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
- )
- buttons.accepted.connect(self.accept)
- buttons.rejected.connect(self.reject)
- layout.addWidget(buttons)
-
- self.setLayout(layout)
-
- def get_dependency_data(self) -> Dict[str, Any]:
- """Bağımlılık verilerini al"""
- return {
- 'onceki_id': self.onceki_combo.currentData(),
- 'sonraki_id': self.sonraki_combo.currentData(),
- 'tip': self.tip_combo.currentData(),
- 'lag': self.lag_input.value()
- }
+    def get_selected_ids(self) -> List[int]:
+        return [
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self._list.selectedItems()
+        ]
 
 
+# ===========================================================================
+# GanttWindow
+# ===========================================================================
 class GanttWindow(QWidget):
- """Gantt Chart ve CPM widget'i"""
-
- def __init__(self, db: DatabaseManager):
- super().__init__()
- self.db = db
- self.engine = GanttEngine(db)
- self.current_project_id: Optional[int] = None
- self.next_task_id = 1
- self.init_ui()
- self.load_projeler()
-
- def init_ui(self):
- """UI elementlerini oluştur"""
- layout = QVBoxLayout()
-
- # Başlık
- baslik = QLabel("Gantt Chart ve İş Programı (Gelişmiş)")
- baslik.setStyleSheet("font-size: 20pt; font-weight: bold; margin: 10px; color: #2c3e50;")
- layout.addWidget(baslik)
-
- # Proje seçimi ve kontroller
- kontrol_layout = QHBoxLayout()
-
- proje_label = QLabel("Proje:")
- proje_label.setStyleSheet("font-size: 12pt; font-weight: bold;")
- self.proje_combo = QComboBox()
- self.proje_combo.currentIndexChanged.connect(self.on_proje_changed)
- kontrol_layout.addWidget(proje_label)
- kontrol_layout.addWidget(self.proje_combo)
-
- kontrol_layout.addStretch()
-
- # Tatil Yönetimi butonu
- tatil_btn = QPushButton(" Tatiller")
- tatil_btn.setStyleSheet("background-color: #9b59b6; color: white; padding: 5px 10px; border-radius: 3px;")
- tatil_btn.clicked.connect(self.goster_tatil_dialog)
- kontrol_layout.addWidget(tatil_btn)
-
- # Baseline butonu
- baseline_btn = QPushButton(" Baseline Kaydet")
- baseline_btn.setStyleSheet("background-color: #e67e22; color: white; padding: 5px 10px; border-radius: 3px;")
- baseline_btn.clicked.connect(self.kaydet_baseline)
- kontrol_layout.addWidget(baseline_btn)
-
- # Yükle butonu
- yukle_btn = QPushButton(" Yükle")
- yukle_btn.clicked.connect(self.yukle_program)
- kontrol_layout.addWidget(yukle_btn)
-
- # Kaydet butonu
- kaydet_btn = QPushButton(" Kaydet")
- kaydet_btn.clicked.connect(self.kaydet_program)
- kontrol_layout.addWidget(kaydet_btn)
-
- # Export butonu
- export_btn = QPushButton(" Export")
- export_btn.setStyleSheet("background-color: #27ae60; color: white; padding: 5px 10px; border-radius: 3px;")
- export_btn.clicked.connect(self.goster_export_menu)
- kontrol_layout.addWidget(export_btn)
-
- # Şablon Sihirbazı butonu
- sablon_btn = QPushButton("🧩 Şablon Sihirbazı")
- sablon_btn.setStyleSheet("background-color: #1abc9c; color: white; padding: 5px 10px; border-radius: 3px; font-weight: bold;")
- sablon_btn.setToolTip("Hazır proje şablonundan otomatik iş programı oluştur")
- sablon_btn.clicked.connect(self.goster_sablon_dialog)
- kontrol_layout.addWidget(sablon_btn)
-
- # Uyarılar butonu
- self.alerts_btn = QPushButton(" Uyarılar")
- self.alerts_btn.setStyleSheet("background-color: #f39c12; color: white; padding: 5px 10px; border-radius: 3px;")
- self.alerts_btn.clicked.connect(self.goster_uyarilar)
- kontrol_layout.addWidget(self.alerts_btn)
-
- layout.addLayout(kontrol_layout)
-
- # Sekmeler
- self.tab_widget = QTabWidget()
- self.tab_widget.setStyleSheet("""
- QTabWidget::pane {
- border: 1px solid #ccc;
- border-radius: 5px;
- background-color: white;
- }
- QTabBar::tab {
- background-color: #ecf0f1;
- padding: 10px 15px;
- margin-right: 2px;
- border-top-left-radius: 5px;
- border-top-right-radius: 5px;
- }
- QTabBar::tab:selected {
- background-color: #3498db;
- color: white;
- font-weight: bold;
- }
- """)
-
- # Sekmeler oluştur
- self.tab_widget.addTab(self._create_program_tab(), " İş Programı")
- self.tab_widget.addTab(self._create_visual_gantt_tab(), " Görsel Gantt")
- self.tab_widget.addTab(self._create_gantt_tab(), " Tablo Görünüm")
- self.tab_widget.addTab(self._create_kritik_tab(), " Kritik Yol")
- self.tab_widget.addTab(self._create_s_curve_tab(), " S-Curve")
- self.tab_widget.addTab(self._create_what_if_tab(), " What-If")
- self.tab_widget.addTab(self._create_baseline_tab(), " Baseline")
- self.tab_widget.addTab(self._create_kaynak_tab(), " Kaynaklar")
- self.tab_widget.addTab(self._create_gecikme_tab(), " Gecikme")
-
- # Bugün Paneli sekmesi
- self.bugun_panel = None
- if _BUGUN_PANEL_OK:
-  self.bugun_panel = BugunPaneli()
-  self.tab_widget.addTab(self.bugun_panel, "📋 Bugün")
-
- layout.addWidget(self.tab_widget)
- self.setLayout(layout)
-
- def _create_visual_gantt_tab(self) -> QWidget:
- """Görsel Gantt Chart sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Kontrol butonları
- kontrol_layout = QHBoxLayout()
-
- # Zoom preset butonları
- zoom_label = QLabel("Görünüm:")
- zoom_label.setStyleSheet("font-weight: bold;")
- kontrol_layout.addWidget(zoom_label)
-
- zoom_weekly_btn = QPushButton("Haftalık")
- zoom_weekly_btn.setStyleSheet("padding: 3px 8px;")
- zoom_weekly_btn.clicked.connect(lambda: self.set_zoom_preset('weekly'))
- kontrol_layout.addWidget(zoom_weekly_btn)
-
- zoom_monthly_btn = QPushButton("Aylık")
- zoom_monthly_btn.setStyleSheet("padding: 3px 8px;")
- zoom_monthly_btn.clicked.connect(lambda: self.set_zoom_preset('monthly'))
- kontrol_layout.addWidget(zoom_monthly_btn)
-
- zoom_quarterly_btn = QPushButton("3 Aylık")
- zoom_quarterly_btn.setStyleSheet("padding: 3px 8px;")
- zoom_quarterly_btn.clicked.connect(lambda: self.set_zoom_preset('quarterly'))
- kontrol_layout.addWidget(zoom_quarterly_btn)
-
- zoom_yearly_btn = QPushButton("Yıllık")
- zoom_yearly_btn.setStyleSheet("padding: 3px 8px;")
- zoom_yearly_btn.clicked.connect(lambda: self.set_zoom_preset('yearly'))
- kontrol_layout.addWidget(zoom_yearly_btn)
-
- kontrol_layout.addWidget(QLabel("|"))
-
- zoom_in_btn = QPushButton("+")
- zoom_in_btn.setFixedWidth(35)
- zoom_in_btn.clicked.connect(self.zoom_in_gantt)
- kontrol_layout.addWidget(zoom_in_btn)
-
- zoom_out_btn = QPushButton("-")
- zoom_out_btn.setFixedWidth(35)
- zoom_out_btn.clicked.connect(self.zoom_out_gantt)
- kontrol_layout.addWidget(zoom_out_btn)
-
- kontrol_layout.addStretch()
-
- # Görünüm seçenekleri
- self.show_baseline_check = QCheckBox("Baseline Göster")
- self.show_baseline_check.setChecked(True)
- self.show_baseline_check.stateChanged.connect(self.refresh_visual_gantt)
- kontrol_layout.addWidget(self.show_baseline_check)
-
- self.show_progress_check = QCheckBox("İlerleme Göster")
- self.show_progress_check.setChecked(True)
- self.show_progress_check.stateChanged.connect(self.refresh_visual_gantt)
- kontrol_layout.addWidget(self.show_progress_check)
-
- self.show_critical_check = QCheckBox("Kritik Vurgula")
- self.show_critical_check.setChecked(True)
- self.show_critical_check.stateChanged.connect(self.refresh_visual_gantt)
- kontrol_layout.addWidget(self.show_critical_check)
-
- # Drag & Drop seçeneği
- self.drag_drop_check = QCheckBox("Drag & Drop")
- self.drag_drop_check.setChecked(True)
- self.drag_drop_check.setToolTip("Görevleri sürükleyerek tarih değiştir (sadece kritik olmayan görevler)")
- self.drag_drop_check.stateChanged.connect(self.toggle_drag_drop)
- kontrol_layout.addWidget(self.drag_drop_check)
-
- # Otomatik cascade seçeneği
- self.cascade_check = QCheckBox("Otomatik Kaydır")
- self.cascade_check.setChecked(True)
- self.cascade_check.setToolTip("Görev taşındığında bağımlı görevleri de otomatik kaydır")
- kontrol_layout.addWidget(self.cascade_check)
-
- yenile_btn = QPushButton(" Yenile")
- yenile_btn.clicked.connect(self.refresh_visual_gantt)
- kontrol_layout.addWidget(yenile_btn)
-
- layout.addLayout(kontrol_layout)
-
- # Gantt Chart görünümü
- self.gantt_view = GanttChartView()
- self.gantt_view.on_task_moved = self.on_task_dragged # Drag callback
- layout.addWidget(self.gantt_view)
-
- # Renk açıklamaları
- renk_layout = QHBoxLayout()
- renk_layout.addWidget(QLabel("Renkler:"))
-
- self._add_renk_aciklama(renk_layout, "#3498db", "Normal")
- self._add_renk_aciklama(renk_layout, "#e74c3c", "Kritik")
- self._add_renk_aciklama(renk_layout, "#27ae60", "Tamamlandı")
- self._add_renk_aciklama(renk_layout, "#9b59b6", "Milestone")
- self._add_renk_aciklama(renk_layout, "#bdc3c7", "Baseline")
- self._add_renk_aciklama(renk_layout, "#ffebee", "Tatil")
-
- renk_layout.addStretch()
- layout.addLayout(renk_layout)
-
- widget.setLayout(layout)
- return widget
-
- def _create_baseline_tab(self) -> QWidget:
- """Baseline karşılaştırma sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Özet kartlar
- kart_layout = QHBoxLayout()
-
- self.baseline_tarih_kart = self._create_kpi_card(
- " Baseline Tarihi",
- "Kayıtlı Değil",
- "#9b59b6",
- "İlk plan tarihi"
- )
- kart_layout.addWidget(self.baseline_tarih_kart)
-
- self.geciken_gorev_kart = self._create_kpi_card(
- " Geciken Görev",
- "0",
- "#e74c3c",
- "Baseline'dan geç"
- )
- kart_layout.addWidget(self.geciken_gorev_kart)
-
- self.proje_sapma_kart = self._create_kpi_card(
- " Proje Sapması",
- "0 gün",
- "#e67e22",
- "Toplam gecikme"
- )
- kart_layout.addWidget(self.proje_sapma_kart)
-
- self.zamaninda_kart = self._create_kpi_card(
- " Zamanında",
- "0",
- "#27ae60",
- "Plana uygun"
- )
- kart_layout.addWidget(self.zamaninda_kart)
-
- layout.addLayout(kart_layout)
-
- # Karşılaştırma tablosu
- baseline_group = QGroupBox(" Baseline vs Mevcut Durum Karşılaştırması")
- baseline_layout = QVBoxLayout()
-
- analiz_btn = QPushButton(" Baseline Analizi Yap")
- analiz_btn.setStyleSheet("""
- QPushButton {
- background-color: #9b59b6;
- color: white;
- padding: 10px;
- font-size: 12pt;
- font-weight: bold;
- border-radius: 5px;
- }
- QPushButton:hover { background-color: #8e44ad; }
- """)
- analiz_btn.clicked.connect(self.analiz_baseline)
- baseline_layout.addWidget(analiz_btn)
-
- self.baseline_table = QTableWidget()
- self.baseline_table.setColumnCount(9)
- self.baseline_table.setHorizontalHeaderLabels([
- "WBS", "İş Adı", "Baseline Başlangıç", "Mevcut Başlangıç", "Başlangıç Sapma",
- "Baseline Bitiş", "Mevcut Bitiş", "Bitiş Sapma", "Durum"
- ])
- self.baseline_table.horizontalHeader().setStretchLastSection(True)
- baseline_layout.addWidget(self.baseline_table)
-
- baseline_group.setLayout(baseline_layout)
- layout.addWidget(baseline_group)
-
- widget.setLayout(layout)
- return widget
-
- def _create_kaynak_tab(self) -> QWidget:
- """Kaynak yönetimi ve çakışma kontrolü sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Kaynak ekleme
- ekle_group = QGroupBox(" Kaynak Ekle")
- ekle_layout = QHBoxLayout()
-
- self.kaynak_ad_input = QLineEdit()
- self.kaynak_ad_input.setPlaceholderText("Kaynak adı (Ekip 1, Usta Ali, vb.)")
- ekle_layout.addWidget(self.kaynak_ad_input)
-
- self.kaynak_kapasite_input = QSpinBox()
- self.kaynak_kapasite_input.setRange(1, 10)
- self.kaynak_kapasite_input.setValue(1)
- self.kaynak_kapasite_input.setPrefix("Kapasite: ")
- ekle_layout.addWidget(self.kaynak_kapasite_input)
-
- kaynak_ekle_btn = QPushButton(" Ekle")
- kaynak_ekle_btn.clicked.connect(self.ekle_kaynak)
- ekle_layout.addWidget(kaynak_ekle_btn)
-
- ekle_group.setLayout(ekle_layout)
- layout.addWidget(ekle_group)
-
- # Kaynak listesi
- kaynak_group = QGroupBox(" Kaynaklar")
- kaynak_layout = QVBoxLayout()
-
- self.kaynak_table = QTableWidget()
- self.kaynak_table.setColumnCount(4)
- self.kaynak_table.setHorizontalHeaderLabels(["Kaynak Adı", "Kapasite", "Atama Sayısı", "Durum"])
- self.kaynak_table.horizontalHeader().setStretchLastSection(True)
- kaynak_layout.addWidget(self.kaynak_table)
-
- kaynak_group.setLayout(kaynak_layout)
- layout.addWidget(kaynak_group)
-
- # Çakışma kontrolü
- cakisma_group = QGroupBox(" Kaynak Çakışmaları")
- cakisma_layout = QVBoxLayout()
-
- # Butonlar yan yana
- btn_layout = QHBoxLayout()
-
- cakisma_btn = QPushButton(" Çakışma Kontrolü Yap")
- cakisma_btn.setStyleSheet("""
- QPushButton {
- background-color: #e74c3c;
- color: white;
- padding: 10px;
- font-size: 12pt;
- font-weight: bold;
- border-radius: 5px;
- }
- QPushButton:hover { background-color: #c0392b; }
- """)
- cakisma_btn.clicked.connect(self.kontrol_kaynak_cakisma)
- btn_layout.addWidget(cakisma_btn)
-
- # Otomatik Dengeleme butonu
- dengele_btn = QPushButton(" Otomatik Dengele")
- dengele_btn.setStyleSheet("""
- QPushButton {
- background-color: #27ae60;
- color: white;
- padding: 10px;
- font-size: 12pt;
- font-weight: bold;
- border-radius: 5px;
- }
- QPushButton:hover { background-color: #219a52; }
- """)
- dengele_btn.clicked.connect(self.otomatik_kaynak_dengele)
- btn_layout.addWidget(dengele_btn)
-
- cakisma_layout.addLayout(btn_layout)
-
- self.cakisma_table = QTableWidget()
- self.cakisma_table.setColumnCount(5)
- self.cakisma_table.setHorizontalHeaderLabels(["Kaynak", "Tarih", "Görev Sayısı", "Kapasite", "Çakışan Görevler"])
- self.cakisma_table.horizontalHeader().setStretchLastSection(True)
- cakisma_layout.addWidget(self.cakisma_table)
-
- cakisma_group.setLayout(cakisma_layout)
- layout.addWidget(cakisma_group)
-
- widget.setLayout(layout)
- return widget
-
- # Yeni metodlar
- def goster_tatil_dialog(self):
- """Tatil yönetimi dialog'unu göster"""
- dialog = TatilDialog(self, self.engine.tatil_yoneticisi)
- dialog.exec()
- # Tatil değişikliklerinden sonra yeniden hesapla
- if self.engine.tasks:
- self.hesapla_program()
-
- def kaydet_baseline(self):
- """Mevcut planı baseline olarak kaydet"""
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Önce iş programı oluşturun")
- return
-
- if not self.engine.proje_baslangic:
- QMessageBox.warning(self, "Uyarı", "Önce iş programını hesaplayın")
- return
-
- reply = QMessageBox.question(
- self, "Baseline Kaydet",
- "Mevcut plan baseline olarak kaydedilecek.\nEski baseline varsa üzerine yazılacak.\n\nDevam edilsin mi?",
- QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
- )
-
- if reply == QMessageBox.StandardButton.Yes:
- sonuc = self.engine.save_baseline()
- if sonuc['success']:
- QMessageBox.information(
- self, "Başarılı",
- f"Baseline kaydedildi!\nTarih: {sonuc['tarih'].strftime('%d.%m.%Y %H:%M')}\nGörev: {sonuc['gorev_sayisi']}"
- )
- self.refresh_visual_gantt()
- else:
- QMessageBox.critical(self, "Hata", sonuc.get('error', 'Bilinmeyen hata'))
-
- def goster_export_menu(self):
- """Export menüsünü göster"""
- menu = QMenu(self)
-
- excel_action = menu.addAction(" Excel'e Aktar")
- excel_action.triggered.connect(self.export_excel)
-
- pdf_action = menu.addAction(" PDF'e Aktar")
- pdf_action.triggered.connect(self.export_pdf)
-
- menu.addSeparator()
-
- json_action = menu.addAction(" JSON'a Aktar")
- json_action.triggered.connect(self.export_json)
-
- # Butona göre menüyü göster
- sender = self.sender()
- if sender:
- menu.exec(sender.mapToGlobal(sender.rect().bottomLeft()))
-
- def export_excel(self):
- """Excel'e aktar"""
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Dışa aktarılacak veri yok")
- return
-
- dosya_yolu, _ = QFileDialog.getSaveFileName(
- self, "Excel Kaydet", "", "Excel Dosyası (*.xlsx)"
- )
-
- if dosya_yolu:
- try:
- import openpyxl
- from openpyxl.styles import Font, PatternFill, Alignment
-
- wb = openpyxl.Workbook()
- ws = wb.active
- ws.title = "İş Programı"
-
- # Başlıklar
- basliklar = ["WBS", "İş Adı", "Süre", "Başlangıç", "Bitiş", "İlerleme", "Float", "Kritik", "Kaynak"]
- for col, baslik in enumerate(basliklar, 1):
- cell = ws.cell(row=1, column=col, value=baslik)
- cell.font = Font(bold=True, color="FFFFFF")
- cell.fill = PatternFill(start_color="3498DB", end_color="3498DB", fill_type="solid")
-
- # Veriler
- data = self.engine.export_to_excel_data()
- for row_idx, row_data in enumerate(data, 2):
- ws.cell(row=row_idx, column=1, value=row_data['WBS'])
- ws.cell(row=row_idx, column=2, value=row_data['İş Adı'])
- ws.cell(row=row_idx, column=3, value=row_data['Süre (Gün)'])
- ws.cell(row=row_idx, column=4, value=row_data['Başlangıç'])
- ws.cell(row=row_idx, column=5, value=row_data['Bitiş'])
- ws.cell(row=row_idx, column=6, value=row_data['İlerleme (%)'])
- ws.cell(row=row_idx, column=7, value=row_data['Float (Gün)'])
- ws.cell(row=row_idx, column=8, value=row_data['Kritik'])
- ws.cell(row=row_idx, column=9, value=row_data['Kaynak'])
-
- # Kritik satırları vurgula
- if row_data['Kritik'] == 'Evet':
- for col in range(1, 10):
- ws.cell(row=row_idx, column=col).fill = PatternFill(
- start_color="FFEBEE", end_color="FFEBEE", fill_type="solid"
- )
-
- # Sütun genişlikleri
- ws.column_dimensions['A'].width = 10
- ws.column_dimensions['B'].width = 30
- ws.column_dimensions['C'].width = 10
- ws.column_dimensions['D'].width = 12
- ws.column_dimensions['E'].width = 12
- ws.column_dimensions['I'].width = 15
-
- wb.save(dosya_yolu)
- QMessageBox.information(self, "Başarılı", f"Excel dosyası kaydedildi:\n{dosya_yolu}")
-
- except ImportError:
- QMessageBox.critical(self, "Hata", "openpyxl kütüphanesi yüklü değil.\npip install openpyxl")
- except Exception as e:
- QMessageBox.critical(self, "Hata", f"Export hatası: {e}")
-
- def export_pdf(self):
- """PDF'e aktar"""
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Dışa aktarılacak veri yok")
- return
-
- dosya_yolu, _ = QFileDialog.getSaveFileName(
- self, "PDF Kaydet", "", "PDF Dosyası (*.pdf)"
- )
-
- if dosya_yolu:
- try:
- from reportlab.lib.pagesizes import A4, landscape
- from reportlab.lib import colors
- from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
- from reportlab.lib.styles import getSampleStyleSheet
-
- doc = SimpleDocTemplate(dosya_yolu, pagesize=landscape(A4))
- elements = []
- styles = getSampleStyleSheet()
-
- # Başlık
- elements.append(Paragraph("İŞ PROGRAMI RAPORU", styles['Heading1']))
- elements.append(Spacer(1, 20))
-
- # Proje bilgileri
- if self.engine.proje_baslangic and self.engine.proje_bitis:
- info_text = f"""
- Proje Başlangıç: {self.engine.proje_baslangic.strftime('%d.%m.%Y')}<br/>
- Proje Bitiş: {self.engine.proje_bitis.strftime('%d.%m.%Y')}<br/>
- Toplam Görev: {len(self.engine.tasks)}<br/>
- Kritik Görev: {len(self.engine.kritik_yol)}
- """
- elements.append(Paragraph(info_text, styles['Normal']))
- elements.append(Spacer(1, 20))
-
- # Tablo
- data = [["WBS", "İş Adı", "Süre", "Başlangıç", "Bitiş", "İlerleme", "Kritik"]]
-
- for row_data in self.engine.export_to_excel_data():
- data.append([
- row_data['WBS'],
- row_data['İş Adı'][:25],
- str(row_data['Süre (Gün)']),
- row_data['Başlangıç'],
- row_data['Bitiş'],
- f"{row_data['İlerleme (%)']}%",
- row_data['Kritik']
- ])
-
- table = Table(data)
- table.setStyle(TableStyle([
- ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
- ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
- ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
- ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
- ('FONTSIZE', (0, 0), (-1, 0), 10),
- ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
- ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
- ('GRID', (0, 0), (-1, -1), 1, colors.black)
- ]))
-
- elements.append(table)
- doc.build(elements)
-
- QMessageBox.information(self, "Başarılı", f"PDF dosyası kaydedildi:\n{dosya_yolu}")
-
- except ImportError:
- QMessageBox.critical(self, "Hata", "reportlab kütüphanesi yüklü değil.\npip install reportlab")
- except Exception as e:
- QMessageBox.critical(self, "Hata", f"Export hatası: {e}")
-
- def export_json(self):
- """JSON'a aktar"""
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Dışa aktarılacak veri yok")
- return
-
- dosya_yolu, _ = QFileDialog.getSaveFileName(
- self, "JSON Kaydet", "", "JSON Dosyası (*.json)"
- )
-
- if dosya_yolu:
- try:
- import json
- data = self.engine.export_to_dict()
-
- with open(dosya_yolu, 'w', encoding='utf-8') as f:
- json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-
- QMessageBox.information(self, "Başarılı", f"JSON dosyası kaydedildi:\n{dosya_yolu}")
-
- except Exception as e:
- QMessageBox.critical(self, "Hata", f"Export hatası: {e}")
-
- def zoom_in_gantt(self):
- """Gantt chart yakınlaştır"""
- self.gantt_view.zoom_in()
- self.refresh_visual_gantt()
-
- def zoom_out_gantt(self):
- """Gantt chart uzaklaştır"""
- self.gantt_view.zoom_out()
- self.refresh_visual_gantt()
-
- def set_zoom_preset(self, preset: str):
- """Zoom preset ayarla"""
- self.gantt_view.set_zoom_preset(preset)
- self.refresh_visual_gantt()
-
- def refresh_visual_gantt(self):
- """Görsel Gantt chart'ı yenile"""
- self.gantt_view.show_baseline = self.show_baseline_check.isChecked()
- self.gantt_view.show_progress = self.show_progress_check.isChecked()
- self.gantt_view.show_critical = self.show_critical_check.isChecked()
-
- data = self.engine.get_gantt_chart_data()
- self.gantt_view.draw_gantt(data)
-
- def analiz_baseline(self):
- """Baseline analizi yap"""
- if not self.engine.baseline_kayitli:
- QMessageBox.warning(self, "Uyarı", "Önce baseline kaydedin")
- return
-
- ozet = self.engine.get_baseline_summary()
- karsilastirma = self.engine.get_baseline_comparison()
-
- # KPI kartları güncelle
- deger_label = self.baseline_tarih_kart.findChild(QLabel, "deger_label")
- if deger_label and ozet.get('baseline_tarihi'):
- deger_label.setText(ozet['baseline_tarihi'].strftime('%d.%m.%Y'))
-
- deger_label = self.geciken_gorev_kart.findChild(QLabel, "deger_label")
- if deger_label:
- deger_label.setText(str(ozet.get('geciken_gorev', 0)))
-
- deger_label = self.proje_sapma_kart.findChild(QLabel, "deger_label")
- if deger_label:
- sapma = ozet.get('proje_sapmasi', 0)
- deger_label.setText(f"{'+' if sapma > 0 else ''}{sapma} gün")
-
- deger_label = self.zamaninda_kart.findChild(QLabel, "deger_label")
- if deger_label:
- deger_label.setText(str(ozet.get('zamaninda_gorev', 0)))
-
- # Tablo güncelle
- self.baseline_table.setRowCount(0)
-
- for item in karsilastirma:
- row = self.baseline_table.rowCount()
- self.baseline_table.insertRow(row)
-
- self.baseline_table.setItem(row, 0, QTableWidgetItem(item['wbs_kodu'] or ''))
- self.baseline_table.setItem(row, 1, QTableWidgetItem(item['ad']))
- self.baseline_table.setItem(row, 2, QTableWidgetItem(
- item['baseline_baslangic'].strftime('%d.%m.%Y') if item['baseline_baslangic'] else '-'))
- self.baseline_table.setItem(row, 3, QTableWidgetItem(
- item['mevcut_baslangic'].strftime('%d.%m.%Y') if item['mevcut_baslangic'] else '-'))
-
- # Başlangıç sapma
- sapma_item = QTableWidgetItem(f"{item['baslangic_sapma']:+d} gün")
- if item['baslangic_sapma'] > 0:
- sapma_item.setBackground(QBrush(QColor("#ffebee")))
- self.baseline_table.setItem(row, 4, sapma_item)
-
- self.baseline_table.setItem(row, 5, QTableWidgetItem(
- item['baseline_bitis'].strftime('%d.%m.%Y') if item['baseline_bitis'] else '-'))
- self.baseline_table.setItem(row, 6, QTableWidgetItem(
- item['mevcut_bitis'].strftime('%d.%m.%Y') if item['mevcut_bitis'] else '-'))
-
- # Bitiş sapma
- sapma_item = QTableWidgetItem(f"{item['bitis_sapma']:+d} gün")
- if item['bitis_sapma'] > 0:
- sapma_item.setBackground(QBrush(QColor("#ffebee")))
- self.baseline_table.setItem(row, 7, sapma_item)
-
- # Durum
- if item['gecikme_var']:
- durum = " Gecikme"
- renk = QColor("#e74c3c")
- else:
- durum = " Zamanında"
- renk = QColor("#27ae60")
-
- durum_item = QTableWidgetItem(durum)
- durum_item.setForeground(QBrush(renk))
- self.baseline_table.setItem(row, 8, durum_item)
-
- def ekle_kaynak(self):
- """Yeni kaynak ekle"""
- ad = self.kaynak_ad_input.text().strip()
- if not ad:
- QMessageBox.warning(self, "Uyarı", "Kaynak adı girin")
- return
-
- kapasite = self.kaynak_kapasite_input.value()
- self.engine.add_kaynak(ad, kapasite)
-
- self.kaynak_ad_input.clear()
- self.yukle_kaynaklar()
- QMessageBox.information(self, "Başarılı", f"Kaynak eklendi: {ad}")
-
- def yukle_kaynaklar(self):
- """Kaynak listesini yükle"""
- self.kaynak_table.setRowCount(0)
-
- for kaynak_adi, bilgi in self.engine.kaynaklar.items():
- row = self.kaynak_table.rowCount()
- self.kaynak_table.insertRow(row)
-
- self.kaynak_table.setItem(row, 0, QTableWidgetItem(kaynak_adi))
- self.kaynak_table.setItem(row, 1, QTableWidgetItem(str(bilgi['kapasite'])))
- self.kaynak_table.setItem(row, 2, QTableWidgetItem(str(len(bilgi['atamalar']))))
-
- # Durum
- atama = len(bilgi['atamalar'])
- if atama == 0:
- durum = "Boşta"
- renk = "#95a5a6"
- elif atama <= bilgi['kapasite']:
- durum = "Normal"
- renk = "#27ae60"
- else:
- durum = "Aşırı Yük"
- renk = "#e74c3c"
-
- durum_item = QTableWidgetItem(durum)
- durum_item.setForeground(QBrush(QColor(renk)))
- self.kaynak_table.setItem(row, 3, durum_item)
-
- def kontrol_kaynak_cakisma(self):
- """Kaynak çakışmalarını kontrol et"""
- cakismalar = self.engine.check_kaynak_cakisma()
-
- self.cakisma_table.setRowCount(0)
-
- if not cakismalar:
- QMessageBox.information(self, "Sonuç", "Kaynak çakışması bulunamadı! ")
- return
-
- for cakisma in cakismalar:
- row = self.cakisma_table.rowCount()
- self.cakisma_table.insertRow(row)
-
- self.cakisma_table.setItem(row, 0, QTableWidgetItem(cakisma['kaynak']))
- self.cakisma_table.setItem(row, 1, QTableWidgetItem(cakisma['tarih']))
- self.cakisma_table.setItem(row, 2, QTableWidgetItem(str(cakisma['gorev_sayisi'])))
- self.cakisma_table.setItem(row, 3, QTableWidgetItem(str(cakisma['kapasite'])))
- self.cakisma_table.setItem(row, 4, QTableWidgetItem(", ".join(cakisma['gorevler'])))
-
- QMessageBox.warning(self, "Uyarı", f"{len(cakismalar)} adet kaynak çakışması tespit edildi!")
-
- def _create_program_tab(self) -> QWidget:
- """İş programı oluşturma sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Proje ayarları
- ayarlar_group = QGroupBox("Proje Ayarları")
- ayarlar_layout = QFormLayout()
-
- # Başlangıç tarihi
- self.baslangic_date = QDateEdit()
- self.baslangic_date.setDate(QDate.currentDate())
- self.baslangic_date.setCalendarPopup(True)
- self.baslangic_date.setDisplayFormat("dd-MM-yyyy")
- ayarlar_layout.addRow("Proje Başlangıç Tarihi:", self.baslangic_date)
-
- # Hesapla butonu
- hesapla_btn = QPushButton(" İş Programını Hesapla (CPM)")
- hesapla_btn.setStyleSheet("""
- QPushButton {
- background-color: #e67e22;
- color: white;
- padding: 10px;
- font-size: 12pt;
- font-weight: bold;
- border-radius: 5px;
- }
- QPushButton:hover {
- background-color: #d35400;
- }
- """)
- hesapla_btn.clicked.connect(self.hesapla_program)
- ayarlar_layout.addRow("", hesapla_btn)
-
- ayarlar_group.setLayout(ayarlar_layout)
- layout.addWidget(ayarlar_group)
-
- # İş listesi ve işlemler
- is_group = QGroupBox("İş Kalemleri")
- is_layout = QVBoxLayout()
-
- # Butonlar
- btn_layout = QHBoxLayout()
-
- ekle_btn = QPushButton(" İş Ekle")
- ekle_btn.clicked.connect(self.ekle_is)
- btn_layout.addWidget(ekle_btn)
-
- duzenle_btn = QPushButton(" Düzenle")
- duzenle_btn.clicked.connect(self.duzenle_is)
- btn_layout.addWidget(duzenle_btn)
-
- sil_btn = QPushButton(" Sil")
- sil_btn.clicked.connect(self.sil_is)
- btn_layout.addWidget(sil_btn)
-
- btn_layout.addStretch()
-
- bagimlilk_btn = QPushButton(" Bağımlılık Ekle")
- bagimlilk_btn.clicked.connect(self.ekle_bagimliluk)
- btn_layout.addWidget(bagimlilk_btn)
-
- is_layout.addLayout(btn_layout)
-
- # İş tablosu
- self.is_table = QTableWidget()
- self.is_table.setColumnCount(6)
- self.is_table.setHorizontalHeaderLabels([
- "ID", "İş Adı", "Süre (Gün)", "Kaynak", "Milestone", "Bağımlılıklar"
- ])
- self.is_table.horizontalHeader().setStretchLastSection(True)
- self.is_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
- is_layout.addWidget(self.is_table)
-
- is_group.setLayout(is_layout)
- layout.addWidget(is_group)
-
- widget.setLayout(layout)
- return widget
-
- def _create_gantt_tab(self) -> QWidget:
- """Gantt chart görünüm sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Özet bilgiler
- ozet_layout = QHBoxLayout()
-
- self.toplam_sure_label = QLabel("Toplam Süre: - gün")
- self.toplam_sure_label.setStyleSheet("font-size: 12pt; font-weight: bold;")
- ozet_layout.addWidget(self.toplam_sure_label)
-
- self.baslangic_label = QLabel("Başlangıç: -")
- ozet_layout.addWidget(self.baslangic_label)
-
- self.bitis_label = QLabel("Bitiş: -")
- ozet_layout.addWidget(self.bitis_label)
-
- ozet_layout.addStretch()
-
- layout.addLayout(ozet_layout)
-
- # Gantt tablosu
- self.gantt_table = QTableWidget()
- self.gantt_table.setColumnCount(8)
- self.gantt_table.setHorizontalHeaderLabels([
- "İş Adı", "Başlangıç", "Bitiş", "Süre", "İlerleme", "Float", "Durum", "Kritik"
- ])
- self.gantt_table.horizontalHeader().setStretchLastSection(True)
- layout.addWidget(self.gantt_table)
-
- # Renk açıklamaları
- renk_layout = QHBoxLayout()
- renk_layout.addWidget(QLabel("Renkler:"))
-
- self._add_renk_aciklama(renk_layout, "#27ae60", "Tamamlandı")
- self._add_renk_aciklama(renk_layout, "#3498db", "Devam Ediyor")
- self._add_renk_aciklama(renk_layout, "#e74c3c", "Gecikmeli")
- self._add_renk_aciklama(renk_layout, "#95a5a6", "Başlanmadı")
- self._add_renk_aciklama(renk_layout, "#f39c12", "Kritik Yol")
-
- renk_layout.addStretch()
- layout.addLayout(renk_layout)
-
- widget.setLayout(layout)
- return widget
-
- def _create_kritik_tab(self) -> QWidget:
- """Kritik yol analizi sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Özet kartlar
- kart_layout = QHBoxLayout()
-
- self.kritik_sure_kart = self._create_kpi_card(
- " Kritik Yol Süresi",
- "0 gün",
- "#e74c3c",
- "Minimum proje süresi"
- )
- kart_layout.addWidget(self.kritik_sure_kart)
-
- self.kritik_is_kart = self._create_kpi_card(
- " Kritik İş Sayısı",
- "0",
- "#e67e22",
- "Float = 0 olan işler"
- )
- kart_layout.addWidget(self.kritik_is_kart)
-
- self.kritik_yuzde_kart = self._create_kpi_card(
- " Kritik Oran",
- "0%",
- "#3498db",
- "Toplam içinde"
- )
- kart_layout.addWidget(self.kritik_yuzde_kart)
-
- layout.addLayout(kart_layout)
-
- # Kritik yol listesi
- kritik_group = QGroupBox(" Kritik Yol İşleri (Float = 0)")
- kritik_layout = QVBoxLayout()
-
- self.kritik_table = QTableWidget()
- self.kritik_table.setColumnCount(6)
- self.kritik_table.setHorizontalHeaderLabels([
- "İş Adı", "Başlangıç", "Bitiş", "Süre (Gün)", "İlerleme (%)", "Durum"
- ])
- self.kritik_table.horizontalHeader().setStretchLastSection(True)
- kritik_layout.addWidget(self.kritik_table)
-
- kritik_group.setLayout(kritik_layout)
- layout.addWidget(kritik_group)
-
- # Esneklik (Float) analizi
- float_group = QGroupBox(" Esneklik (Float) Analizi")
- float_layout = QVBoxLayout()
-
- self.float_table = QTableWidget()
- self.float_table.setColumnCount(7)
- self.float_table.setHorizontalHeaderLabels([
- "İş Adı", "Early Start", "Late Start", "Early Finish", "Late Finish", "Float (Gün)", "Kritik"
- ])
- self.float_table.horizontalHeader().setStretchLastSection(True)
- float_layout.addWidget(self.float_table)
-
- float_group.setLayout(float_layout)
- layout.addWidget(float_group)
-
- widget.setLayout(layout)
- return widget
-
- def _create_gecikme_tab(self) -> QWidget:
- """Gecikme analizi sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Durum kartları
- durum_layout = QHBoxLayout()
-
- self.gecikmis_kart = self._create_kpi_card(
- " Gecikmiş İşler",
- "0",
- "#e74c3c",
- "Beklenen ilerleme < Gerçek"
- )
- durum_layout.addWidget(self.gecikmis_kart)
-
- self.riskli_kart = self._create_kpi_card(
- " Riskli İşler",
- "0",
- "#e67e22",
- "Kritik yolda, başlamamış"
- )
- durum_layout.addWidget(self.riskli_kart)
-
- self.durum_kart = self._create_kpi_card(
- " Genel Durum",
- "Normal",
- "#27ae60",
- "Proje sağlığı"
- )
- durum_layout.addWidget(self.durum_kart)
-
- layout.addLayout(durum_layout)
-
- # Analiz butonu
- analiz_btn = QPushButton(" Gecikme Analizi Yap")
- analiz_btn.setStyleSheet("""
- QPushButton {
- background-color: #e74c3c;
- color: white;
- padding: 10px;
- font-size: 12pt;
- font-weight: bold;
- border-radius: 5px;
- }
- QPushButton:hover {
- background-color: #c0392b;
- }
- """)
- analiz_btn.clicked.connect(self.analiz_gecikme)
- layout.addWidget(analiz_btn)
-
- # Gecikmiş işler
- gecikmis_group = QGroupBox(" Gecikmiş İşler")
- gecikmis_layout = QVBoxLayout()
-
- self.gecikmis_table = QTableWidget()
- self.gecikmis_table.setColumnCount(5)
- self.gecikmis_table.setHorizontalHeaderLabels([
- "İş Adı", "Beklenen İlerleme (%)", "Gerçek İlerleme (%)", "Fark (%)", "Kritik"
- ])
- self.gecikmis_table.horizontalHeader().setStretchLastSection(True)
- gecikmis_layout.addWidget(self.gecikmis_table)
-
- gecikmis_group.setLayout(gecikmis_layout)
- layout.addWidget(gecikmis_group)
-
- # Riskli işler
- riskli_group = QGroupBox(" Riskli İşler (Kritik Yolda)")
- riskli_layout = QVBoxLayout()
-
- self.riskli_table = QTableWidget()
- self.riskli_table.setColumnCount(3)
- self.riskli_table.setHorizontalHeaderLabels([
- "İş Adı", "Başlaması Gereken", "Gecikme (Gün)"
- ])
- self.riskli_table.horizontalHeader().setStretchLastSection(True)
- riskli_layout.addWidget(self.riskli_table)
-
- riskli_group.setLayout(riskli_layout)
- layout.addWidget(riskli_group)
-
- widget.setLayout(layout)
- return widget
-
- def _create_kpi_card(self, baslik: str, deger: str, renk: str, alt_metin: str) -> QFrame:
- """KPI kartı oluştur"""
- card = QFrame()
- card.setFrameShape(QFrame.Shape.StyledPanel)
- card.setStyleSheet(f"""
- QFrame {{
- background-color: {renk};
- border-radius: 10px;
- padding: 15px;
- }}
- """)
-
- layout = QVBoxLayout()
-
- # Başlık
- baslik_label = QLabel(baslik)
- baslik_label.setStyleSheet("color: white; font-size: 11pt; font-weight: bold;")
- baslik_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
- layout.addWidget(baslik_label)
-
- # Değer
- deger_label = QLabel(deger)
- deger_label.setObjectName("deger_label")
- deger_label.setStyleSheet("color: white; font-size: 22pt; font-weight: bold;")
- deger_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
- layout.addWidget(deger_label)
-
- # Alt metin
- alt_label = QLabel(alt_metin)
- alt_label.setObjectName("alt_label")
- alt_label.setStyleSheet("color: rgba(255,255,255,0.8); font-size: 9pt;")
- alt_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
- layout.addWidget(alt_label)
-
- card.setLayout(layout)
- return card
-
- def _add_renk_aciklama(self, layout: QHBoxLayout, renk: str, metin: str):
- """Renk açıklama kutusu ekle"""
- box = QLabel(" ")
- box.setStyleSheet(f"background-color: {renk}; border: 1px solid #ccc; border-radius: 3px;")
- box.setFixedSize(20, 20)
- layout.addWidget(box)
-
- label = QLabel(metin)
- layout.addWidget(label)
-
- # Veri yükleme metodları
-
- def load_projeler(self):
- """Projeleri yükle"""
- try:
- with self.db.get_connection() as conn:
- cursor = conn.cursor()
- cursor.execute("SELECT id, ad FROM projects ORDER BY id DESC")
- projeler = cursor.fetchall()
-
- self.proje_combo.clear()
- for proje in projeler:
- self.proje_combo.addItem(proje['ad'], proje['id'])
-
- except Exception as e:
- logger.error(f"Proje yükleme hatası: {e}")
- QMessageBox.warning(self, "Hata", f"Projeler yüklenemedi: {e}")
-
- def on_proje_changed(self, index: int):
- """Proje değiştiğinde"""
- if index >= 0:
- self.current_project_id = self.proje_combo.itemData(index)
-
- def yukle_is_listesi(self):
- """İş listesini tabloya yükle"""
- self.is_table.setRowCount(0)
-
- for task_id, task in self.engine.tasks.items():
- row = self.is_table.rowCount()
- self.is_table.insertRow(row)
-
- self.is_table.setItem(row, 0, QTableWidgetItem(str(task_id)))
- self.is_table.setItem(row, 1, QTableWidgetItem(task.ad))
- self.is_table.setItem(row, 2, QTableWidgetItem(str(task.sure_gun)))
- self.is_table.setItem(row, 3, QTableWidgetItem(task.kaynak))
- self.is_table.setItem(row, 4, QTableWidgetItem("" if task.milestone else ""))
-
- # Bağımlılıklar
- deps = []
- for pred_id, dep_type, lag in task.predecessors:
- pred_name = self.engine.tasks[pred_id].ad if pred_id in self.engine.tasks else f"#{pred_id}"
- deps.append(f"{pred_name} ({dep_type})")
-
- self.is_table.setItem(row, 5, QTableWidgetItem(", ".join(deps) if deps else "-"))
-
- # İş işlemleri
-
- def ekle_is(self):
- """Yeni iş ekle"""
- dialog = TaskDialog(self, db=self.db)
-
- if dialog.exec() == QDialog.DialogCode.Accepted:
- data = dialog.get_task_data()
-
- task = Task(
- task_id=self.next_task_id,
- ad=data['ad'],
- sure_gun=data['sure_gun'],
- kaynak=data['kaynak'],
- milestone=data['milestone'],
- aciklama=data['aciklama'],
- metraj_kalem_id=data['metraj_kalem_id']
- )
-
- self.engine.add_task(task)
- self.next_task_id += 1
- self.yukle_is_listesi()
-
- QMessageBox.information(self, "Başarılı", f"İş eklendi: {task.ad}")
-
- def duzenle_is(self):
- """Seçili işi düzenle"""
- selected = self.is_table.selectedItems()
- if not selected:
- QMessageBox.warning(self, "Uyarı", "Lütfen düzenlemek için bir iş seçin")
- return
-
- row = selected[0].row()
- task_id = int(self.is_table.item(row, 0).text())
-
- if task_id not in self.engine.tasks:
- QMessageBox.warning(self, "Hata", "İş bulunamadı")
- return
-
- task = self.engine.tasks[task_id]
- dialog = TaskDialog(self, task=task, db=self.db)
-
- if dialog.exec() == QDialog.DialogCode.Accepted:
- data = dialog.get_task_data()
-
- task.ad = data['ad']
- task.sure_gun = data['sure_gun']
- task.kaynak = data['kaynak']
- task.milestone = data['milestone']
- task.aciklama = data['aciklama']
- task.metraj_kalem_id = data['metraj_kalem_id']
-
- self.yukle_is_listesi()
- QMessageBox.information(self, "Başarılı", "İş güncellendi")
-
- def sil_is(self):
- """Seçili işi sil"""
- selected = self.is_table.selectedItems()
- if not selected:
- QMessageBox.warning(self, "Uyarı", "Lütfen silmek için bir iş seçin")
- return
-
- row = selected[0].row()
- task_id = int(self.is_table.item(row, 0).text())
-
- reply = QMessageBox.question(
- self, "Onay",
- f"'{self.engine.tasks[task_id].ad}' işini silmek istediğinizden emin misiniz?",
- QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
- )
-
- if reply == QMessageBox.StandardButton.Yes:
- if task_id in self.engine.tasks:
- del self.engine.tasks[task_id]
- self.yukle_is_listesi()
- QMessageBox.information(self, "Başarılı", "İş silindi")
-
- def ekle_bagimliluk(self):
- """Bağımlılık ekle"""
- if len(self.engine.tasks) < 2:
- QMessageBox.warning(self, "Uyarı", "Bağımlılık eklemek için en az 2 iş gerekli")
- return
-
- dialog = DependencyDialog(self, self.engine.tasks)
-
- if dialog.exec() == QDialog.DialogCode.Accepted:
- data = dialog.get_dependency_data()
-
- success = self.engine.add_dependency(
- data['onceki_id'],
- data['sonraki_id'],
- data['tip'],
- data['lag']
- )
-
- if success:
- self.yukle_is_listesi()
- QMessageBox.information(self, "Başarılı", "Bağımlılık eklendi")
- else:
- QMessageBox.warning(self, "Hata", "Bağımlılık eklenemedi (döngüsel bağımlılık olabilir)")
-
- def hesapla_program(self):
- """İş programını hesapla (CPM)"""
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Hesaplamak için en az bir iş ekleyin")
- return
-
- # Başlangıç tarihi al
- baslangic_qdate = self.baslangic_date.date()
- baslangic = datetime(baslangic_qdate.year(), baslangic_qdate.month(), baslangic_qdate.day())
-
- # CPM hesapla
- sonuc = self.engine.calculate_schedule(baslangic)
-
- if 'error' in sonuc:
- QMessageBox.critical(self, "Hata", sonuc['error'])
- return
-
- # Sonuçları göster
- QMessageBox.information(
- self, "Hesaplama Başarılı",
- f"""
-İş programı hesaplandı!
-
-Toplam Süre: {sonuc['toplam_sure_gun']} iş günü
-Başlangıç: {sonuc['proje_baslangic'].strftime('%d.%m.%Y')}
-Bitiş: {sonuc['proje_bitis'].strftime('%d.%m.%Y')}
-
-Toplam İş: {sonuc['toplam_is']}
-Kritik İş: {sonuc['kritik_is_sayisi']} (%{sonuc['kritik_yuzde']})
-Ortalama Float: {sonuc['ortalama_float']} gün
- """
- )
-
- # Tabloları güncelle
- self.yukle_gantt_chart()
- self.yukle_kritik_yol()
- self.refresh_visual_gantt()
-
- # What-If görev listesini güncelle
- self.refresh_whatif_gorevler()
-
- # Uyarı badge'ini güncelle
- self.guncelle_uyari_badge()
-
- # Bugün panelini güncelle
- if self.bugun_panel is not None:
-  self.bugun_panel.guncelle(self.engine)
-
- def yukle_gantt_chart(self):
- """Gantt chart tablosunu yükle"""
- timeline = self.engine.get_timeline_data()
-
- self.gantt_table.setRowCount(0)
-
- for item in timeline:
- row = self.gantt_table.rowCount()
- self.gantt_table.insertRow(row)
-
- # İş adı
- ad_item = QTableWidgetItem(item['ad'])
- if item['kritik']:
- ad_item.setBackground(QBrush(QColor("#f39c12")))
- ad_item.setForeground(QBrush(QColor("white")))
- self.gantt_table.setItem(row, 0, ad_item)
-
- # Tarihler
- self.gantt_table.setItem(row, 1, QTableWidgetItem(item['baslangic'].strftime('%d.%m.%Y')))
- self.gantt_table.setItem(row, 2, QTableWidgetItem(item['bitis'].strftime('%d.%m.%Y')))
-
- # Süre
- self.gantt_table.setItem(row, 3, QTableWidgetItem(f"{item['sure_gun']} gün"))
-
- # İlerleme
- ilerleme_item = QTableWidgetItem(f"{item['ilerleme']:.0f}%")
- self.gantt_table.setItem(row, 4, ilerleme_item)
-
- # Float
- float_item = QTableWidgetItem(f"{item['float_gun']} gün")
- if item['float_gun'] == 0:
- float_item.setBackground(QBrush(QColor("#e74c3c")))
- float_item.setForeground(QBrush(QColor("white")))
- self.gantt_table.setItem(row, 5, float_item)
-
- # Durum
- durum_item = QTableWidgetItem(item['durum'].replace('_', ' ').title())
- durum_item.setBackground(QBrush(QColor(item['renk'])))
- durum_item.setForeground(QBrush(QColor("white")))
- self.gantt_table.setItem(row, 6, durum_item)
-
- # Kritik
- kritik_item = QTableWidgetItem(" Kritik" if item['kritik'] else "")
- self.gantt_table.setItem(row, 7, kritik_item)
-
- # Özet bilgileri güncelle
- if self.engine.proje_baslangic and self.engine.proje_bitis:
- self.toplam_sure_label.setText(
- f"Toplam Süre: {self.engine._calculate_working_days(self.engine.proje_baslangic, self.engine.proje_bitis)} gün"
- )
- self.baslangic_label.setText(f"Başlangıç: {self.engine.proje_baslangic.strftime('%d.%m.%Y')}")
- self.bitis_label.setText(f"Bitiş: {self.engine.proje_bitis.strftime('%d.%m.%Y')}")
-
- def yukle_kritik_yol(self):
- """Kritik yol analizini yükle"""
- kritik_info = self.engine.get_critical_path_info()
-
- if 'error' in kritik_info:
- return
-
- # KPI kartları güncelle
- deger_label = self.kritik_sure_kart.findChild(QLabel, "deger_label")
- if deger_label:
- deger_label.setText(f"{kritik_info['toplam_sure_gun']} gün")
-
- deger_label = self.kritik_is_kart.findChild(QLabel, "deger_label")
- if deger_label:
- deger_label.setText(str(kritik_info['toplam_is']))
-
- toplam_is = len(self.engine.tasks)
- yuzde = (kritik_info['toplam_is'] / toplam_is * 100) if toplam_is > 0 else 0
- deger_label = self.kritik_yuzde_kart.findChild(QLabel, "deger_label")
- if deger_label:
- deger_label.setText(f"{yuzde:.1f}%")
-
- # Kritik yol tablosu
- self.kritik_table.setRowCount(0)
-
- for task_data in kritik_info['tasks']:
- row = self.kritik_table.rowCount()
- self.kritik_table.insertRow(row)
-
- self.kritik_table.setItem(row, 0, QTableWidgetItem(task_data['ad']))
- self.kritik_table.setItem(row, 1, QTableWidgetItem(task_data['baslangic'].strftime('%d.%m.%Y')))
- self.kritik_table.setItem(row, 2, QTableWidgetItem(task_data['bitis'].strftime('%d.%m.%Y')))
- self.kritik_table.setItem(row, 3, QTableWidgetItem(str(task_data['sure_gun'])))
- self.kritik_table.setItem(row, 4, QTableWidgetItem(f"{task_data['ilerleme']:.0f}"))
-
- durum = "Tamamlandı" if task_data['ilerleme'] >= 100 else \
- "Devam Ediyor" if task_data['ilerleme'] > 0 else "Başlanmadı"
- self.kritik_table.setItem(row, 5, QTableWidgetItem(durum))
-
- # Float analiz tablosu
- self.float_table.setRowCount(0)
-
- for task in sorted(self.engine.tasks.values(), key=lambda t: t.float_gun):
- row = self.float_table.rowCount()
- self.float_table.insertRow(row)
-
- self.float_table.setItem(row, 0, QTableWidgetItem(task.ad))
- self.float_table.setItem(row, 1, QTableWidgetItem(task.early_start.strftime('%d.%m.%Y') if task.early_start else '-'))
- self.float_table.setItem(row, 2, QTableWidgetItem(task.late_start.strftime('%d.%m.%Y') if task.late_start else '-'))
- self.float_table.setItem(row, 3, QTableWidgetItem(task.early_finish.strftime('%d.%m.%Y') if task.early_finish else '-'))
- self.float_table.setItem(row, 4, QTableWidgetItem(task.late_finish.strftime('%d.%m.%Y') if task.late_finish else '-'))
-
- float_item = QTableWidgetItem(f"{task.float_gun} gün")
- if task.float_gun == 0:
- float_item.setBackground(QBrush(QColor("#e74c3c")))
- float_item.setForeground(QBrush(QColor("white")))
- self.float_table.setItem(row, 5, float_item)
-
- self.float_table.setItem(row, 6, QTableWidgetItem("" if task.kritik else ""))
-
- def analiz_gecikme(self):
- """Gecikme analizi yap"""
- analiz = self.engine.analyze_delays()
-
- # KPI kartları güncelle
- deger_label = self.gecikmis_kart.findChild(QLabel, "deger_label")
- if deger_label:
- deger_label.setText(str(analiz['gecikmis_is_sayisi']))
-
- deger_label = self.riskli_kart.findChild(QLabel, "deger_label")
- if deger_label:
- deger_label.setText(str(analiz['riskli_is_sayisi']))
-
- deger_label = self.durum_kart.findChild(QLabel, "deger_label")
- alt_label = self.durum_kart.findChild(QLabel, "alt_label")
- if deger_label and alt_label:
- durum = analiz['genel_durum'].title()
- deger_label.setText(durum)
-
- # Renk değiştir
- renk = {
- 'Kritik': '#e74c3c',
- 'Dikkat': '#e67e22',
- 'Normal': '#27ae60'
- }.get(durum, '#27ae60')
-
- self.durum_kart.setStyleSheet(f"""
- QFrame {{
- background-color: {renk};
- border-radius: 10px;
- padding: 15px;
- }}
- """)
-
- # Gecikmiş işler tablosu
- self.gecikmis_table.setRowCount(0)
-
- for task in analiz['gecikmis_tasks']:
- row = self.gecikmis_table.rowCount()
- self.gecikmis_table.insertRow(row)
-
- self.gecikmis_table.setItem(row, 0, QTableWidgetItem(task['ad']))
- self.gecikmis_table.setItem(row, 1, QTableWidgetItem(f"{task['beklenen_ilerleme']:.1f}"))
- self.gecikmis_table.setItem(row, 2, QTableWidgetItem(f"{task['gercek_ilerleme']:.1f}"))
- self.gecikmis_table.setItem(row, 3, QTableWidgetItem(f"{task['fark']:.1f}"))
-
- kritik_item = QTableWidgetItem(" Kritik" if task['kritik'] else "")
- if task['kritik']:
- kritik_item.setBackground(QBrush(QColor("#e74c3c")))
- kritik_item.setForeground(QBrush(QColor("white")))
- self.gecikmis_table.setItem(row, 4, kritik_item)
-
- # Riskli işler tablosu
- self.riskli_table.setRowCount(0)
-
- for task in analiz['riskli_tasks']:
- row = self.riskli_table.rowCount()
- self.riskli_table.insertRow(row)
-
- self.riskli_table.setItem(row, 0, QTableWidgetItem(task['ad']))
- self.riskli_table.setItem(row, 1, QTableWidgetItem(task['baslamali'].strftime('%d.%m.%Y')))
- self.riskli_table.setItem(row, 2, QTableWidgetItem(f"{task['gecikme_gun']} gün"))
-
- QMessageBox.information(
- self, "Gecikme Analizi",
- f"""
-Analiz tarihi: {analiz['bugun'].strftime('%d.%m.%Y')}
-
-Gecikmiş İş: {analiz['gecikmis_is_sayisi']}
-Riskli İş: {analiz['riskli_is_sayisi']}
-
-Genel Durum: {analiz['genel_durum'].upper()}
- """
- )
-
- # ==================== S-CURVE SEKMESİ ====================
-
- def _create_s_curve_tab(self) -> QWidget:
- """S-Curve (S Eğrisi) sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Başlık ve açıklama
- baslik = QLabel(" S-Curve (S Eğrisi) Analizi")
- baslik.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2c3e50;")
- layout.addWidget(baslik)
-
- aciklama = QLabel("Planlanan (PV) vs Gerçekleşen (EV) ilerleme karşılaştırması")
- aciklama.setStyleSheet("color: #7f8c8d; margin-bottom: 10px;")
- layout.addWidget(aciklama)
-
- # Kontrol butonları
- kontrol_layout = QHBoxLayout()
-
- yenile_btn = QPushButton(" S-Curve Güncelle")
- yenile_btn.setStyleSheet("""
- QPushButton {
- background-color: #3498db;
- color: white;
- padding: 10px 20px;
- font-size: 11pt;
- font-weight: bold;
- border-radius: 5px;
- }
- QPushButton:hover { background-color: #2980b9; }
- """)
- yenile_btn.clicked.connect(self.refresh_s_curve)
- kontrol_layout.addWidget(yenile_btn)
-
- kontrol_layout.addStretch()
- layout.addLayout(kontrol_layout)
-
- # S-Curve Widget
- self.s_curve_widget = SCurveWidget()
- self.s_curve_widget.setMinimumHeight(400)
- layout.addWidget(self.s_curve_widget)
-
- # Özet bilgiler
- ozet_group = QGroupBox(" Özet")
- ozet_layout = QHBoxLayout()
-
- self.scurve_planlanan_label = QLabel("Planlanan: -%")
- self.scurve_planlanan_label.setStyleSheet("font-size: 12pt; color: #3498db;")
- ozet_layout.addWidget(self.scurve_planlanan_label)
-
- self.scurve_gerceklesen_label = QLabel("Gerçekleşen: -%")
- self.scurve_gerceklesen_label.setStyleSheet("font-size: 12pt; color: #27ae60;")
- ozet_layout.addWidget(self.scurve_gerceklesen_label)
-
- self.scurve_fark_label = QLabel("Fark: -%")
- self.scurve_fark_label.setStyleSheet("font-size: 12pt; color: #e74c3c;")
- ozet_layout.addWidget(self.scurve_fark_label)
-
- ozet_layout.addStretch()
- ozet_group.setLayout(ozet_layout)
- layout.addWidget(ozet_group)
-
- widget.setLayout(layout)
- return widget
-
- def refresh_s_curve(self):
- """S-Curve grafiğini güncelle"""
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Önce iş programını oluşturun ve hesaplayın")
- return
-
- data = self.engine.get_s_curve_data()
-
- if 'error' in data:
- QMessageBox.warning(self, "Uyarı", data['error'])
- return
-
- self.s_curve_widget.draw_s_curve(data)
-
- # Özet bilgileri güncelle
- planlanan = data.get('planlanan', [])
- gerceklesen = data.get('gerceklesen', [])
-
- if planlanan:
- # Bugüne kadarki planlanan
- bugun_idx = min(len(planlanan) - 1, (datetime.now() - data['proje_baslangic']).days)
- if 0 <= bugun_idx < len(planlanan):
- planlanan_yuzde = planlanan[bugun_idx]
- self.scurve_planlanan_label.setText(f"Planlanan: %{planlanan_yuzde:.1f}")
-
- if gerceklesen:
- gercek_values = [v for v in gerceklesen if v is not None]
- if gercek_values:
- gercek_yuzde = gercek_values[-1]
- self.scurve_gerceklesen_label.setText(f"Gerçekleşen: %{gercek_yuzde:.1f}")
-
- # Fark
- if planlanan and 0 <= bugun_idx < len(planlanan):
- fark = gercek_yuzde - planlanan[bugun_idx]
- renk = '#27ae60' if fark >= 0 else '#e74c3c'
- self.scurve_fark_label.setText(f"Fark: %{fark:+.1f}")
- self.scurve_fark_label.setStyleSheet(f"font-size: 12pt; color: {renk};")
-
- # ==================== WHAT-IF SEKMESİ ====================
-
- def _create_what_if_tab(self) -> QWidget:
- """What-If Analizi sekmesi"""
- widget = QWidget()
- layout = QVBoxLayout()
-
- # Başlık
- baslik = QLabel(" What-If Senaryo Analizi")
- baslik.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2c3e50;")
- layout.addWidget(baslik)
-
- aciklama = QLabel("\"Ya şu görev X gün gecikirse?\" simülasyonu yapın.")
- aciklama.setStyleSheet("color: #7f8c8d; margin-bottom: 10px;")
- layout.addWidget(aciklama)
-
- # Senaryo oluşturma
- senaryo_group = QGroupBox(" Senaryo Oluştur")
- senaryo_layout = QFormLayout()
-
- # Görev seçimi
- self.whatif_gorev_combo = QComboBox()
- self.whatif_gorev_combo.setMinimumWidth(300)
- senaryo_layout.addRow("Görev Seç:", self.whatif_gorev_combo)
-
- # Gecikme gün sayısı
- self.whatif_gecikme_spin = QSpinBox()
- self.whatif_gecikme_spin.setRange(1, 365)
- self.whatif_gecikme_spin.setValue(5)
- self.whatif_gecikme_spin.setSuffix(" gün")
- senaryo_layout.addRow("Gecikme Süresi:", self.whatif_gecikme_spin)
-
- # Simüle et butonu
- simule_btn = QPushButton(" Simüle Et")
- simule_btn.setStyleSheet("""
- QPushButton {
- background-color: #9b59b6;
- color: white;
- padding: 10px 20px;
- font-size: 11pt;
- font-weight: bold;
- border-radius: 5px;
- }
- QPushButton:hover { background-color: #8e44ad; }
- """)
- simule_btn.clicked.connect(self.calistir_what_if)
- senaryo_layout.addRow("", simule_btn)
-
- senaryo_group.setLayout(senaryo_layout)
- layout.addWidget(senaryo_group)
-
- # Son senaryo sonucu
- sonuc_group = QGroupBox(" Son Senaryo Sonucu")
- sonuc_layout = QVBoxLayout()
-
- self.whatif_sonuc_label = QLabel("Henüz bir senaryo simüle edilmedi.")
- self.whatif_sonuc_label.setWordWrap(True)
- self.whatif_sonuc_label.setStyleSheet("font-size: 11pt; padding: 10px; background-color: #f9f9f9; border-radius: 5px;")
- sonuc_layout.addWidget(self.whatif_sonuc_label)
-
- # Etkilenen görevler tablosu
- self.whatif_table = QTableWidget()
- self.whatif_table.setColumnCount(5)
- self.whatif_table.setHorizontalHeaderLabels([
- "Görev", "Eski Başlangıç", "Yeni Başlangıç", "Eski Bitiş", "Yeni Bitiş"
- ])
- self.whatif_table.horizontalHeader().setStretchLastSection(True)
- sonuc_layout.addWidget(self.whatif_table)
-
- sonuc_group.setLayout(sonuc_layout)
- layout.addWidget(sonuc_group)
-
- widget.setLayout(layout)
- return widget
-
- def refresh_whatif_gorevler(self):
- """What-If görev listesini güncelle"""
- self.whatif_gorev_combo.clear()
-
- for task_id, task in self.engine.tasks.items():
- label = f"{task.ad}"
- if task.kritik:
- label += " "
- self.whatif_gorev_combo.addItem(label, task_id)
-
- def calistir_what_if(self):
- """What-If analizini çalıştır"""
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Önce iş programını oluşturun")
- return
-
- task_id = self.whatif_gorev_combo.currentData()
- if task_id is None:
- QMessageBox.warning(self, "Uyarı", "Lütfen bir görev seçin")
- return
-
- gecikme_gun = self.whatif_gecikme_spin.value()
-
- # Analizi çalıştır
- sonuc = self.engine.what_if_analysis(task_id, gecikme_gun)
-
- if 'error' in sonuc:
- QMessageBox.warning(self, "Hata", sonuc['error'])
- return
-
- # Sonucu göster
- self._goster_whatif_sonuc(sonuc)
-
- def _goster_whatif_sonuc(self, sonuc: Dict[str, Any]):
- """What-If sonucunu göster"""
- # Özet metin
- proje_gecikme = sonuc.get('proje_gecikme_gun', 0)
- kritik_degisti = sonuc.get('kritik_yol_degisti', False)
-
- renk = '#e74c3c' if proje_gecikme > 0 else '#27ae60'
- kritik_text = '<span style="color: #e74c3c">EVET</span>' if kritik_degisti else '<span style="color: #27ae60">HAYIR</span>'
-
- ozet_html = f"""
-<b>Senaryo:</b> {sonuc.get('geciktirilen_gorev', '-')} görevinin {sonuc.get('gecikme_gun', 0)} gün gecikmesi<br><br>
-<b>Proje Bitiş:</b> {sonuc.get('eski_proje_bitis', '-')} → <span style="color: {renk}">{sonuc.get('yeni_proje_bitis', '-')}</span><br>
-<b>Proje Gecikmesi:</b> <span style="color: {renk}">{proje_gecikme} gün</span><br>
-<b>Etkilenen Görev:</b> {sonuc.get('etkilenen_gorev_sayisi', 0)}<br>
-<b>Kritik Yol Değişti:</b> {kritik_text}
- """
- self.whatif_sonuc_label.setText(ozet_html)
-
- # Tablo güncelle
- self.whatif_table.setRowCount(0)
-
- for gorev in sonuc.get('etkilenen_gorevler', []):
- row = self.whatif_table.rowCount()
- self.whatif_table.insertRow(row)
-
- self.whatif_table.setItem(row, 0, QTableWidgetItem(gorev['ad']))
- self.whatif_table.setItem(row, 1, QTableWidgetItem(gorev['eski_baslangic']))
- self.whatif_table.setItem(row, 2, QTableWidgetItem(gorev['yeni_baslangic']))
- self.whatif_table.setItem(row, 3, QTableWidgetItem(gorev['eski_bitis']))
- self.whatif_table.setItem(row, 4, QTableWidgetItem(gorev['yeni_bitis']))
-
- # Detaylı sonuç dialog'u
- dialog = WhatIfResultDialog(self, sonuc)
- dialog.exec()
-
- # ==================== ŞABLON VE UYARI METODLARI ====================
-
- def goster_sablon_dialog(self):
-  """Şablon Sihirbazı dialog'unu göster (yeni SablonSihirbazi öncelikli)"""
-  if _SABLON_SIHIRBAZ_OK and _SABLON_YON_OK:
-   self._goster_yeni_sablon_sihirbazi()
-  else:
-   self._goster_eski_sablon_dialog()
-
- def _goster_yeni_sablon_sihirbazi(self):
-  """Yeni 4-adımlı SablonSihirbazi'nı aç"""
-  try:
-   sihirbaz = SablonSihirbazi(self)
-   if sihirbaz.exec() == QDialog.DialogCode.Accepted:
-    secim = sihirbaz.get_secim()
-    if not secim:
-     return
-    sablon = secim['sablon']
-    baslangic = secim['baslangic']
-    sehir = secim.get('sehir', '')
-    mevcut_max = max(self.engine.tasks.keys()) if self.engine.tasks else 0
-    yonetici = SablonYoneticisi()
-    sonuc = yonetici.engine_yukle(self.engine, sablon, baslangic, mevcut_max)
-    if sonuc.get('success'):
-     self.yukle_is_listesi()
-     if self.engine.tasks:
-      self.next_task_id = max(self.engine.tasks.keys()) + 1
-     q_tarih = QDate(baslangic.year, baslangic.month, baslangic.day)
-     if hasattr(self, 'baslangic_date'):
-      self.baslangic_date.setDate(q_tarih)
-     if sehir and self.bugun_panel is not None:
-      self.bugun_panel.set_sehir(sehir)
-     QMessageBox.information(
-      self, "✅ Şablon Yüklendi",
-      f"{sonuc.get('sablon_adi', sablon.tip)} başarıyla eklendi!\n"
-      f"{sonuc.get('eklenen_gorev', 0)} iş kalemi oluşturuldu.\n\n"
-      f"'Hesapla' butonuna basarak CPM analizi yapabilirsiniz."
-     )
-    else:
-     QMessageBox.warning(self, "Hata", sonuc.get('hata', 'Bilinmeyen hata'))
-  except Exception as e:
-   logger.error(f"Şablon sihirbazı hatası: {e}")
-   QMessageBox.warning(self, "Hata", f"Şablon yüklenemedi: {e}")
-
- def _goster_eski_sablon_dialog(self):
-  """Eski TemplateDialog fallback"""
-  try:
-   dialog = TemplateDialog(self)
-   if dialog.exec() == QDialog.DialogCode.Accepted:
-    template_id = dialog.get_selected_template()
-    start_date = dialog.get_start_date()
-    if template_id:
-     sonuc = self.engine.load_template(template_id, start_date)
-     if sonuc.get('success'):
-      self.yukle_is_listesi()
-      if self.engine.tasks:
-       self.next_task_id = max(self.engine.tasks.keys()) + 1
-      QMessageBox.information(
-       self, "Başarılı",
-       f"{sonuc.get('sablon_adi', 'Şablon')} eklendi.\n{sonuc.get('eklenen_gorev', 0)} görev eklendi."
-      )
-     else:
-      QMessageBox.warning(self, "Hata", sonuc.get('error', 'Bilinmeyen hata'))
-  except Exception as e:
-   logger.error(f"Eski şablon dialog hatası: {e}")
-
- def goster_uyarilar(self):
- """Uyarılar panelini göster"""
- alerts = self.engine.get_alerts()
-
- if not alerts:
- QMessageBox.information(self, "Bilgi", "Aktif uyarı bulunmuyor. ")
- return
-
- # Uyarı sayısını buton üzerinde göster
- ozet = self.engine.get_alert_summary()
- toplam = ozet.get('toplam', 0)
- if toplam > 0:
- self.alerts_btn.setText(f" Uyarılar ({toplam})")
- else:
- self.alerts_btn.setText(" Uyarılar")
-
- # Panel göster
- panel = AlertsPanel(self, alerts)
- panel.show()
-
- def guncelle_uyari_badge(self):
- """Uyarı badge'ini güncelle"""
- if hasattr(self, 'alerts_btn'):
- ozet = self.engine.get_alert_summary()
- toplam = ozet.get('toplam', 0)
- kritik = ozet.get('kritik', 0)
-
- if kritik > 0:
- self.alerts_btn.setText(f" Uyarılar ({toplam}) ")
- self.alerts_btn.setStyleSheet("background-color: #e74c3c; color: white; padding: 5px 10px; border-radius: 3px;")
- elif toplam > 0:
- self.alerts_btn.setText(f" Uyarılar ({toplam})")
- self.alerts_btn.setStyleSheet("background-color: #f39c12; color: white; padding: 5px 10px; border-radius: 3px;")
- else:
- self.alerts_btn.setText(" Uyarılar")
- self.alerts_btn.setStyleSheet("background-color: #27ae60; color: white; padding: 5px 10px; border-radius: 3px;")
-
- # ==================== DRAG & DROP ====================
-
- def toggle_drag_drop(self, state):
- """Drag & Drop'u aç/kapat"""
- if hasattr(self, 'gantt_view'):
- self.gantt_view.drag_enabled = (state == Qt.CheckState.Checked.value)
- self.refresh_visual_gantt()
-
- def on_task_dragged(self, task_id: int, gun_farki: int):
- """Görev sürüklendiğinde çağrılır"""
- if task_id not in self.engine.tasks:
- return
-
- task = self.engine.tasks[task_id]
-
- # Yeni tarih hesapla
- if not task.early_start:
- return
-
- yeni_baslangic = task.early_start + timedelta(days=gun_farki)
- cascade_aktif = self.cascade_check.isChecked()
-
- # Onay dialog'u
- cascade_mesaj = "\n\nOtomatik Kaydır: AÇIK - Bağımlı görevler de kaydırılacak." if cascade_aktif else ""
- reply = QMessageBox.question(
- self, "Görev Taşı",
- f"'{task.ad}' görevini {gun_farki:+d} gün kaydırmak istediğinizden emin misiniz?\n\n"
- f"Eski başlangıç: {task.early_start.strftime('%d.%m.%Y')}\n"
- f"Yeni başlangıç: {yeni_baslangic.strftime('%d.%m.%Y')}"
- f"{cascade_mesaj}",
- QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
- )
-
- if reply == QMessageBox.StandardButton.Yes:
- # Engine'deki move_task metodunu kullan
- sonuc = self.engine.move_task(task_id, yeni_baslangic)
-
- if sonuc.get('success'):
- # Uyarı varsa göster
- if sonuc.get('uyari'):
- QMessageBox.warning(self, "Uyarı", sonuc['uyari'])
-
- # Otomatik cascade aktifse bağımlı görevleri de kaydır
- cascade_bilgi = ""
- if cascade_aktif:
- cascade_sonuc = self.engine.cascade_dependents(task_id, gun_farki)
- if cascade_sonuc.get('success') and cascade_sonuc.get('kaydirilan_sayisi', 0) > 0:
- cascade_bilgi = f"\n\nOtomatik kaydırılan görevler ({cascade_sonuc['kaydirilan_sayisi']}):\n"
- for g in cascade_sonuc['kaydirilan_gorevler'][:5]: # İlk 5'i göster
- cascade_bilgi += f" - {g['ad']}\n"
- if cascade_sonuc['kaydirilan_sayisi'] > 5:
- cascade_bilgi += f" ... ve {cascade_sonuc['kaydirilan_sayisi'] - 5} görev daha"
-
- # Görünümleri güncelle
- self.refresh_visual_gantt()
- self.yukle_gantt_chart()
-
- QMessageBox.information(
- self, "Başarılı",
- f"Görev taşındı.\n"
- f"Yeni başlangıç: {sonuc['yeni_baslangic'].strftime('%d.%m.%Y')}\n"
- f"Kalan float: {sonuc['yeni_float']} gün"
- f"{cascade_bilgi}"
- )
- else:
- QMessageBox.warning(self, "Hata", sonuc.get('error', 'Taşıma başarısız'))
- self.refresh_visual_gantt() # Geri al
- else:
- # İptal edildi, görünümü yenile
- self.refresh_visual_gantt()
-
- # ==================== KAYNAK DENGELEME ====================
-
- def otomatik_kaynak_dengele(self):
- """Otomatik kaynak dengeleme"""
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Önce iş programını oluşturun")
- return
-
- # Önce mevcut çakışmaları kontrol et
- cakismalar = self.engine.check_kaynak_cakisma()
-
- if not cakismalar:
- QMessageBox.information(self, "Bilgi", "Kaynak çakışması bulunmuyor. ")
- return
-
- # Onay al
- reply = QMessageBox.question(
- self, "Kaynak Dengeleme",
- f"{len(cakismalar)} adet kaynak çakışması tespit edildi.\n\n"
- "Otomatik dengeleme yapılsın mı?\n"
- "(Kritik olmayan görevler float aralığında kaydırılacak)",
- QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
- )
-
- if reply == QMessageBox.StandardButton.Yes:
- sonuc = self.engine.resource_leveling()
-
- if sonuc.get('success'):
- # Sonuç dialog'u
- mesaj = f"""
-Kaynak Dengeleme Tamamlandı!
-
- Çözülen Çakışma: {sonuc.get('cozulen_cakisma', 0)}
- Kalan Çakışma: {sonuc.get('kalan_cakisma', 0)}
-
-Yapılan Değişiklikler:
-"""
- for deg in sonuc.get('degisiklikler', [])[:5]: # İlk 5
- mesaj += f"\n• {deg['ad']}: {deg['eski_baslangic']} → {deg['yeni_baslangic']}"
-
- if len(sonuc.get('degisiklikler', [])) > 5:
- mesaj += f"\n... ve {len(sonuc['degisiklikler']) - 5} değişiklik daha"
-
- QMessageBox.information(self, "Sonuç", mesaj)
-
- # Görünümleri güncelle
- self.refresh_visual_gantt()
- self.yukle_gantt_chart()
- self.kontrol_kaynak_cakisma()
- else:
- QMessageBox.warning(self, "Hata", sonuc.get('error', 'Dengeleme başarısız'))
-
- def kaydet_program(self):
- """İş programını kaydet"""
- if not self.current_project_id:
- QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
- return
-
- if not self.engine.tasks:
- QMessageBox.warning(self, "Uyarı", "Kaydedilecek iş yok")
- return
-
- sonuc = self.engine.save_to_database(self.current_project_id)
-
- if sonuc['success']:
- QMessageBox.information(self, "Başarılı", "İş programı kaydedildi")
- else:
- QMessageBox.critical(self, "Hata", f"Kayıt başarısız: {sonuc['error']}")
-
- def yukle_program(self):
- """İş programını yükle"""
- if not self.current_project_id:
- QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
- return
-
- sonuc = self.engine.load_from_database(self.current_project_id)
-
- if sonuc['success']:
- self.yukle_is_listesi()
- self.yukle_gantt_chart()
- self.yukle_kritik_yol()
- QMessageBox.information(self, "Başarılı", f"İş programı yüklendi ({sonuc['toplam_is']} iş)")
- else:
- QMessageBox.warning(self, "Bilgi", sonuc['error'])
+    """
+    Ana Gantt iş programı penceresi.
+    Sekmeler: İş Programı, Görsel Gantt, Tablo, Kritik Yol, S-Curve,
+              What-If, Baseline, Kaynaklar, Gecikme, Bugün
+    """
+
+    def __init__(self, db_manager=None, parent=None):
+        super().__init__(parent)
+        self._db = db_manager
+        self._engine = GanttEngine() if GanttEngine else None
+        self._current_project_id: Optional[int] = None
+        self._undo_stack: List[List[Dict]] = []
+        self._max_undo = 20
+        self._drag_drop_enabled = False
+        self._baseline_data: Optional[Dict] = None
+        self._alerts: List[Dict] = []
+        self._is_list: List[Dict] = []
+
+        self.setWindowTitle("Gantt İş Programı")
+        self.setMinimumSize(1200, 750)
+        self._build_ui()
+        self._load_projeler()
+
+    # ------------------------------------------------------------------
+    # Ana UI
+    # ------------------------------------------------------------------
+    def _build_ui(self) -> None:
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        toolbar = self._create_toolbar()
+        main_layout.addWidget(toolbar)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        left_panel = self._create_left_panel()
+        splitter.addWidget(left_panel)
+
+        self._tabs = QTabWidget()
+        self._tabs.setTabPosition(QTabWidget.TabPosition.North)
+        self._create_program_tab()
+        self._create_gantt_tab()
+        self._create_tablo_tab()
+        self._create_kritik_tab()
+        self._create_s_curve_tab()
+        self._create_what_if_tab()
+        self._create_baseline_tab()
+        self._create_kaynak_tab()
+        self._create_gecikme_tab()
+        self._create_hakedis_tab()
+        self._create_maliyet_takibi_tab()
+        self._create_bugun_tab()
+        splitter.addWidget(self._tabs)
+
+        splitter.setSizes([220, 980])
+        main_layout.addWidget(splitter)
+
+        status_bar = self._create_status_bar()
+        main_layout.addWidget(status_bar)
+
+    def _create_toolbar(self) -> QToolBar:
+        toolbar = QToolBar()
+        toolbar.setMovable(False)
+        toolbar.setStyleSheet(
+            "QToolBar { background: #1565C0; padding: 4px; spacing: 4px; }"
+            "QPushButton { color: white; background: #1976D2; border: none;"
+            " border-radius: 4px; padding: 5px 10px; }"
+            "QPushButton:hover { background: #1E88E5; }"
+        )
+
+        title = QLabel("  Gantt İş Programı")
+        title.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
+        toolbar.addWidget(title)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+
+        for label, slot in [
+            ("▶ Hesapla (CPM)", self.hesapla_program),
+            ("💾 Kaydet", self.kaydet_program),
+            ("📂 Yükle", self.yukle_program),
+            ("📤 Dışa Aktar", self.goster_export_menu),
+            ("↩ Geri Al", self._undo),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            toolbar.addWidget(btn)
+
+        self._uyari_btn = QPushButton("⚠ Uyarılar [0]")
+        self._uyari_btn.clicked.connect(self.goster_uyarilar)
+        toolbar.addWidget(self._uyari_btn)
+
+        return toolbar
+
+    def _create_left_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setFrameShape(QFrame.Shape.StyledPanel)
+        panel.setMaximumWidth(220)
+        layout = QVBoxLayout(panel)
+
+        lbl = QLabel("Proje Seç")
+        lbl.setStyleSheet("font-weight: bold;")
+        layout.addWidget(lbl)
+
+        self._proje_combo = QComboBox()
+        self._proje_combo.currentIndexChanged.connect(self.on_proje_changed)
+        layout.addWidget(self._proje_combo)
+
+        for label, slot in [
+            ("🧩 Şablon Sihirbazı", self.goster_sablon_dialog),
+            ("📅 Tatil Ayarları", self.goster_tatil_dialog),
+            ("📌 Baseline Kaydet", self.kaydet_baseline),
+            ("⚖ Kaynak Dengele", self.otomatik_kaynak_dengele),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            layout.addWidget(btn)
+
+        self._drag_btn = QPushButton("🔀 Sürükle-Bırak: KAPALI")
+        self._drag_btn.setCheckable(True)
+        self._drag_btn.clicked.connect(self.toggle_drag_drop)
+        layout.addWidget(self._drag_btn)
+
+        layout.addStretch()
+
+        self._alerts_panel = AlertsPanel()
+        layout.addWidget(self._alerts_panel)
+
+        return panel
+
+    def _create_status_bar(self) -> QLabel:
+        self._status_label = QLabel("Hazır")
+        self._status_label.setStyleSheet(
+            "background: #E3F2FD; padding: 3px 8px; border-top: 1px solid #90CAF9;"
+        )
+        return self._status_label
+
+    # ------------------------------------------------------------------
+    # Sekmeler
+    # ------------------------------------------------------------------
+    def _create_program_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        btn_row = QHBoxLayout()
+        for label, slot in [
+            ("+ İş Ekle", self.ekle_is),
+            ("✏ Düzenle", self.duzenle_is),
+            ("🗑 Sil", self.sil_is),
+            ("🔗 Bağımlılık", self.ekle_bagimliluk),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            btn_row.addWidget(btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self._is_table = QTableWidget(0, 8)
+        self._is_table.setHorizontalHeaderLabels([
+            "ID", "İş Adı", "Süre (Gün)", "Miktar", "Ekip", "Kaynak",
+            "Milestone", "Bağımlılıklar",
+        ])
+        hdr = self._is_table.horizontalHeader()
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self._is_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._is_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._is_table.doubleClicked.connect(self.duzenle_is)
+        layout.addWidget(self._is_table)
+
+        self._tabs.addTab(tab, "📋 İş Programı")
+
+    def _create_gantt_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        ctrl = QHBoxLayout()
+        for label, slot in [
+            ("🔍+", self._zoom_in),
+            ("🔍-", self._zoom_out),
+            ("⊡ Sığdır", self._zoom_fit),
+            ("🔄 Yenile", self.refresh_visual_gantt),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(slot)
+            ctrl.addWidget(btn)
+        ctrl.addStretch()
+        layout.addLayout(ctrl)
+
+        self._gantt_view = GanttChartView()
+        self._gantt_view.task_dragged.connect(self.on_task_dragged)
+        layout.addWidget(self._gantt_view)
+
+        self._tabs.addTab(tab, "📊 Görsel Gantt")
+
+    def _create_tablo_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        self._tablo = QTableWidget(0, 9)
+        self._tablo.setHorizontalHeaderLabels([
+            "İş Adı", "Süre", "ES", "EF", "LS", "LF",
+            "Float", "Kritik", "Tamamlanma",
+        ])
+        self._tablo.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self._tablo)
+
+        self._tabs.addTab(tab, "📑 Tablo Görünüm")
+
+    def _create_kritik_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        info = QLabel(
+            "Kritik Yol — Float=0 olan görevler; gecikme proje bitiş tarihini doğrudan etkiler."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #B71C1C; font-weight: bold;")
+        layout.addWidget(info)
+
+        self._kritik_table = QTableWidget(0, 5)
+        self._kritik_table.setHorizontalHeaderLabels([
+            "İş Adı", "Başlangıç", "Bitiş", "Süre", "Bağımlılıklar",
+        ])
+        self._kritik_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self._kritik_table)
+
+        kpi_row = QHBoxLayout()
+        self._kpi_proje_suresi = self._create_kpi_card(
+            "Proje Süresi", "— gün", "#1976D2"
+        )
+        self._kpi_kritik_sayisi = self._create_kpi_card("Kritik İş", "—", "#F44336")
+        self._kpi_toplam_float = self._create_kpi_card(
+            "Toplam Float", "— gün", "#388E3C"
+        )
+        kpi_row.addWidget(self._kpi_proje_suresi)
+        kpi_row.addWidget(self._kpi_kritik_sayisi)
+        kpi_row.addWidget(self._kpi_toplam_float)
+        layout.addLayout(kpi_row)
+
+        renk_row = QHBoxLayout()
+        for color, label in [
+            ("#F44336", "Kritik Yol"),
+            ("#2196F3", "Normal İş"),
+            ("#FF9800", "Milestone"),
+            ("#81D4FA", "Float (Bolluk)"),
+        ]:
+            self._add_renk_aciklama(renk_row, color, label)
+        renk_row.addStretch()
+        layout.addLayout(renk_row)
+
+        self._tabs.addTab(tab, "🔴 Kritik Yol")
+
+    def _create_s_curve_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        ctrl = QHBoxLayout()
+        btn_refresh = QPushButton("🔄 S-Eğrisi Güncelle")
+        btn_refresh.clicked.connect(self.refresh_s_curve)
+        ctrl.addWidget(btn_refresh)
+        ctrl.addStretch()
+        layout.addLayout(ctrl)
+
+        self._s_curve = SCurveWidget()
+        layout.addWidget(self._s_curve)
+
+        evm_frame = QGroupBox("Kazanılmış Değer (EVM) Özeti")
+        evm_layout = QGridLayout(evm_frame)
+        self._evm_labels: Dict[str, QLabel] = {}
+        evm_fields = [
+            ("BAC", "Bütçe (BAC)"), ("PV", "Planlanan Değer (PV)"),
+            ("EV", "Kazanılmış Değer (EV)"), ("AC", "Gerçek Maliyet (AC)"),
+            ("SPI", "Zaman Performansı (SPI)"), ("CPI", "Maliyet Performansı (CPI)"),
+        ]
+        for i, (key, lbl_text) in enumerate(evm_fields):
+            row, col = divmod(i, 3)
+            evm_layout.addWidget(QLabel(lbl_text + ":"), row, col * 2)
+            val_lbl = QLabel("—")
+            val_lbl.setStyleSheet("font-weight: bold;")
+            self._evm_labels[key] = val_lbl
+            evm_layout.addWidget(val_lbl, row, col * 2 + 1)
+        layout.addWidget(evm_frame)
+
+        self._tabs.addTab(tab, "📈 S-Curve")
+
+    def _create_what_if_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        layout.addWidget(QLabel(
+            "What-If analizi — seçilen işin süresini değiştirerek proje etkisini simüle edin."
+        ))
+
+        form = QFormLayout()
+        self._whatif_is_combo = QComboBox()
+        form.addRow("İş Seç:", self._whatif_is_combo)
+
+        self._whatif_delta_spin = QSpinBox()
+        self._whatif_delta_spin.setRange(-365, 365)
+        self._whatif_delta_spin.setSuffix(" gün")
+        form.addRow("Süre Değişimi:", self._whatif_delta_spin)
+        layout.addLayout(form)
+
+        btn_run = QPushButton("▶ Senaryoyu Çalıştır")
+        btn_run.clicked.connect(self.calistir_what_if)
+        layout.addWidget(btn_run)
+
+        self._whatif_result_label = QLabel("Sonuç: —")
+        self._whatif_result_label.setWordWrap(True)
+        layout.addWidget(self._whatif_result_label)
+        layout.addStretch()
+
+        self._tabs.addTab(tab, "🧪 What-If")
+
+    def _create_baseline_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        ctrl = QHBoxLayout()
+        btn_analiz = QPushButton("📊 Baseline Karşılaştır")
+        btn_analiz.clicked.connect(self.analiz_baseline)
+        ctrl.addWidget(btn_analiz)
+        ctrl.addStretch()
+        layout.addLayout(ctrl)
+
+        self._baseline_table = QTableWidget(0, 5)
+        self._baseline_table.setHorizontalHeaderLabels([
+            "İş Adı", "Plan Bitiş", "Gerçek Bitiş", "Sapma (Gün)", "Durum",
+        ])
+        self._baseline_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self._baseline_table)
+
+        self._tabs.addTab(tab, "📌 Baseline")
+
+    def _create_kaynak_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        ctrl = QHBoxLayout()
+        btn_ekle = QPushButton("+ Kaynak Ekle")
+        btn_ekle.clicked.connect(self.ekle_kaynak)
+        btn_kontrol = QPushButton("⚠ Çakışma Kontrol")
+        btn_kontrol.clicked.connect(self.kontrol_kaynak_cakisma)
+        ctrl.addWidget(btn_ekle)
+        ctrl.addWidget(btn_kontrol)
+        ctrl.addStretch()
+        layout.addLayout(ctrl)
+
+        self._kaynak_table = QTableWidget(0, 4)
+        self._kaynak_table.setHorizontalHeaderLabels([
+            "Kaynak", "Kapasite", "Kullanım (%)", "Durum",
+        ])
+        self._kaynak_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self._kaynak_table)
+
+        self._tabs.addTab(tab, "👷 Kaynaklar")
+
+    def _create_gecikme_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        layout.addWidget(QLabel("Gecikme Analizi — Taahüt vs Gerçekleşen"))
+
+        self._gecikme_table = QTableWidget(0, 6)
+        self._gecikme_table.setHorizontalHeaderLabels([
+            "İş Adı", "Plan Bitiş", "Gerçek Bitiş",
+            "Gecikme (Gün)", "Gecikme Türü", "Risk Skoru",
+        ])
+        self._gecikme_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        layout.addWidget(self._gecikme_table)
+
+        risk_row = QHBoxLayout()
+        self._risk_label = QLabel("Risk Skoru: —")
+        self._risk_label.setStyleSheet("font-size: 13px; font-weight: bold;")
+        risk_row.addWidget(self._risk_label)
+        risk_row.addStretch()
+        layout.addLayout(risk_row)
+
+        self._tabs.addTab(tab, "⏰ Gecikme")
+
+    def _create_hakedis_tab(self) -> None:
+        """Hakediş Entegrasyonu — ilerleme% × bütçe = hak edilen tutar."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # KPI satırı
+        kpi_row = QHBoxLayout()
+        self._hak_kpi_toplam = self._create_kpi_card("Toplam Bütçe", "—", "#1976D2")
+        self._hak_kpi_hakedis = self._create_kpi_card("Hak Edilen Tutar", "—", "#388E3C")
+        self._hak_kpi_kalan = self._create_kpi_card("Kalan Bütçe", "—", "#F57C00")
+        self._hak_kpi_yuzde = self._create_kpi_card("Tamamlanma", "—", "#7B1FA2")
+        kpi_row.addWidget(self._hak_kpi_toplam)
+        kpi_row.addWidget(self._hak_kpi_hakedis)
+        kpi_row.addWidget(self._hak_kpi_kalan)
+        kpi_row.addWidget(self._hak_kpi_yuzde)
+        layout.addLayout(kpi_row)
+
+        # Tablo
+        self._hakedis_table = QTableWidget(0, 7)
+        self._hakedis_table.setHorizontalHeaderLabels([
+            "WBS", "İş Adı", "Tamamlanma%", "Bütçe (₺)",
+            "Hak Edilen (₺)", "Kalan (₺)", "Durum",
+        ])
+        hdr = self._hakedis_table.horizontalHeader()
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._hakedis_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._hakedis_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self._hakedis_table)
+
+        # Butonlar
+        btn_row = QHBoxLayout()
+        btn_guncelle = QPushButton("🔄 Hakediş Hesapla")
+        btn_guncelle.clicked.connect(self.guncelle_hakedis)
+        btn_excel = QPushButton("📊 Excel'e Aktar")
+        btn_excel.clicked.connect(self._hakedis_excel_export)
+        btn_row.addWidget(btn_guncelle)
+        btn_row.addWidget(btn_excel)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self._tabs.addTab(tab, "💰 Hakediş")
+
+    def _create_maliyet_takibi_tab(self) -> None:
+        """Maliyet Takibi — EVM (Earned Value Management) analizi."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # EVM KPI kartları
+        evm_row = QHBoxLayout()
+        self._evm_bac = self._create_kpi_card("BAC (Toplam Bütçe)", "—", "#1565C0")
+        self._evm_pv = self._create_kpi_card("PV (Planlanan Değer)", "—", "#0277BD")
+        self._evm_ev = self._create_kpi_card("EV (Kazanılan Değer)", "—", "#2E7D32")
+        self._evm_ac = self._create_kpi_card("AC (Gerçek Maliyet)", "—", "#C62828")
+        evm_row.addWidget(self._evm_bac)
+        evm_row.addWidget(self._evm_pv)
+        evm_row.addWidget(self._evm_ev)
+        evm_row.addWidget(self._evm_ac)
+        layout.addLayout(evm_row)
+
+        # Performans endeksleri
+        perf_row = QHBoxLayout()
+        self._evm_cpi = self._create_kpi_card("CPI (Maliyet Perf.)", "—", "#6A1B9A")
+        self._evm_spi = self._create_kpi_card("SPI (Zaman Perf.)", "—", "#AD1457")
+        self._evm_eac = self._create_kpi_card("EAC (Tahmini Toplam)", "—", "#E65100")
+        self._evm_etc = self._create_kpi_card("ETC (Kalan Tahmin)", "—", "#4E342E")
+        perf_row.addWidget(self._evm_cpi)
+        perf_row.addWidget(self._evm_spi)
+        perf_row.addWidget(self._evm_eac)
+        perf_row.addWidget(self._evm_etc)
+        layout.addLayout(perf_row)
+
+        # Durum uyarı etiketi
+        self._evm_durum_label = QLabel("Proje hesaplanmadı — önce CPM hesaplayın.")
+        self._evm_durum_label.setStyleSheet(
+            "padding: 6px; border-radius: 4px; font-weight: bold; "
+            "background: #E3F2FD; color: #1565C0;"
+        )
+        layout.addWidget(self._evm_durum_label)
+
+        # Görev bazlı detay tablosu
+        self._maliyet_table = QTableWidget(0, 6)
+        self._maliyet_table.setHorizontalHeaderLabels([
+            "WBS", "İş Adı", "Bütçe (₺)", "Gerçek Maliyet (₺)",
+            "EV (₺)", "CV (₺) Sapma",
+        ])
+        hdr = self._maliyet_table.horizontalHeader()
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._maliyet_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._maliyet_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self._maliyet_table)
+
+        btn_row = QHBoxLayout()
+        btn_guncelle = QPushButton("🔄 Maliyet Analizi Yap")
+        btn_guncelle.clicked.connect(self.guncelle_maliyet_takibi)
+        btn_excel = QPushButton("📊 Excel'e Aktar")
+        btn_excel.clicked.connect(self._maliyet_excel_export)
+        btn_row.addWidget(btn_guncelle)
+        btn_row.addWidget(btn_excel)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self._tabs.addTab(tab, "📊 Maliyet Takibi")
+
+    # ------------------------------------------------------------------
+    # Hakediş Metodları
+    # ------------------------------------------------------------------
+    def guncelle_hakedis(self) -> None:
+        """Hakediş tablosunu ve KPI kartlarını güncelle."""
+        if not self._engine or not self._is_list:
+            QMessageBox.information(self, "Bilgi", "Önce iş listesi oluşturun ve CPM hesaplayın.")
+            return
+
+        # Engine tasks'larını güncel is_list ile doldur
+        self._sync_engine_tasks()
+
+        try:
+            sonuc = self._engine.calculate_hakedis()
+        except Exception as exc:
+            logger.error("Hakediş hesaplama hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", f"Hakediş hesaplanamadı:\n{exc}")
+            return
+
+        # KPI kartları
+        def fmt(v): return f"{v:,.2f} ₺"
+        self._hak_kpi_toplam.property("value_label").setText(fmt(sonuc['toplam_butce']))
+        self._hak_kpi_hakedis.property("value_label").setText(fmt(sonuc['toplam_hakedis']))
+        self._hak_kpi_kalan.property("value_label").setText(fmt(sonuc['kalan_butce']))
+        self._hak_kpi_yuzde.property("value_label").setText(
+            f"%{sonuc['tamamlanma_yuzdesi']:.1f}"
+        )
+
+        # Tablo doldur
+        self._hakedis_table.setRowCount(0)
+        for kalem in sonuc['kalemler']:
+            row = self._hakedis_table.rowCount()
+            self._hakedis_table.insertRow(row)
+            self._hakedis_table.setItem(row, 0, QTableWidgetItem(kalem.get('wbs_kodu', '')))
+            self._hakedis_table.setItem(row, 1, QTableWidgetItem(kalem.get('ad', '')))
+            self._hakedis_table.setItem(
+                row, 2, QTableWidgetItem(f"%{kalem.get('ilerleme', 0):.1f}")
+            )
+            self._hakedis_table.setItem(
+                row, 3, QTableWidgetItem(f"{kalem.get('butce', 0):,.2f}")
+            )
+            self._hakedis_table.setItem(
+                row, 4, QTableWidgetItem(f"{kalem.get('hak_edilen', 0):,.2f}")
+            )
+            self._hakedis_table.setItem(
+                row, 5, QTableWidgetItem(f"{kalem.get('kalan', 0):,.2f}")
+            )
+            ilerleme = kalem.get('ilerleme', 0)
+            durum = "Tamamlandı" if ilerleme >= 100 else ("Devam Ediyor" if ilerleme > 0 else "Başlanmadı")
+            durum_item = QTableWidgetItem(durum)
+            if ilerleme >= 100:
+                durum_item.setForeground(QColor("#388E3C"))
+            elif ilerleme > 0:
+                durum_item.setForeground(QColor("#1976D2"))
+            self._hakedis_table.setItem(row, 6, durum_item)
+
+            if kalem.get('kritik'):
+                for col in range(7):
+                    item = self._hakedis_table.item(row, col)
+                    if item:
+                        item.setBackground(QColor("#FFF3E0"))
+
+        self._status_label.setText(
+            f"Hakediş hesaplandı — Toplam: {sonuc['toplam_hakedis']:,.2f} ₺ "
+            f"/ %{sonuc['tamamlanma_yuzdesi']:.1f} tamamlandı"
+        )
+
+    def _hakedis_excel_export(self) -> None:
+        """Hakediş tablosunu Excel'e aktar."""
+        if not _OPENPYXL_OK:
+            QMessageBox.warning(self, "Uyarı", "openpyxl yüklü değil.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Hakediş Excel Kaydet", "hakedis.xlsx", "Excel (*.xlsx)"
+        )
+        if not path:
+            return
+        try:
+            import openpyxl
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Hakediş"
+            basliklar = ["WBS", "İş Adı", "Tamamlanma%", "Bütçe (₺)",
+                         "Hak Edilen (₺)", "Kalan (₺)", "Durum"]
+            ws.append(basliklar)
+            for row in range(self._hakedis_table.rowCount()):
+                satirlar = []
+                for col in range(self._hakedis_table.columnCount()):
+                    item = self._hakedis_table.item(row, col)
+                    satirlar.append(item.text() if item else "")
+                ws.append(satirlar)
+            wb.save(path)
+            QMessageBox.information(self, "Başarılı", f"Hakediş Excel kaydedildi:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Hata", f"Excel kaydetme hatası:\n{exc}")
+
+    # ------------------------------------------------------------------
+    # Maliyet Takibi Metodları
+    # ------------------------------------------------------------------
+    def guncelle_maliyet_takibi(self) -> None:
+        """EVM hesabını yap ve Maliyet Takibi sekmesini güncelle."""
+        if not self._engine or not self._is_list:
+            QMessageBox.information(self, "Bilgi", "Önce iş listesi oluşturun ve CPM hesaplayın.")
+            return
+
+        self._sync_engine_tasks()
+
+        try:
+            sonuc = self._engine.calculate_maliyet_performans()
+        except Exception as exc:
+            logger.error("Maliyet performans hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", f"Maliyet analizi yapılamadı:\n{exc}")
+            return
+
+        def fmt(v): return f"{v:,.2f} ₺"
+        def fmt3(v): return f"{v:.3f}"
+
+        # KPI kartları
+        self._evm_bac.property("value_label").setText(fmt(sonuc['bac']))
+        self._evm_pv.property("value_label").setText(fmt(sonuc['pv']))
+        self._evm_ev.property("value_label").setText(fmt(sonuc['ev']))
+        self._evm_ac.property("value_label").setText(fmt(sonuc['ac']))
+        self._evm_cpi.property("value_label").setText(fmt3(sonuc['cpi']))
+        self._evm_spi.property("value_label").setText(fmt3(sonuc['spi']))
+        self._evm_eac.property("value_label").setText(fmt(sonuc['eac']))
+        self._evm_etc.property("value_label").setText(fmt(sonuc['etc']))
+
+        # CPI/SPI renklendir
+        cpi = sonuc['cpi']
+        cpi_lbl = self._evm_cpi.property("value_label")
+        if cpi >= 1.0:
+            cpi_lbl.setStyleSheet("color: #2E7D32; font-size: 18px; font-weight: bold;")
+        elif cpi >= 0.9:
+            cpi_lbl.setStyleSheet("color: #F57C00; font-size: 18px; font-weight: bold;")
+        else:
+            cpi_lbl.setStyleSheet("color: #C62828; font-size: 18px; font-weight: bold;")
+
+        spi = sonuc['spi']
+        spi_lbl = self._evm_spi.property("value_label")
+        if spi >= 1.0:
+            spi_lbl.setStyleSheet("color: #2E7D32; font-size: 18px; font-weight: bold;")
+        elif spi >= 0.9:
+            spi_lbl.setStyleSheet("color: #F57C00; font-size: 18px; font-weight: bold;")
+        else:
+            spi_lbl.setStyleSheet("color: #C62828; font-size: 18px; font-weight: bold;")
+
+        # Durum etiketi
+        durum = sonuc.get('durum', 'iyi')
+        if durum == 'kritik':
+            self._evm_durum_label.setStyleSheet(
+                "padding: 6px; border-radius: 4px; font-weight: bold; "
+                "background: #FFEBEE; color: #C62828;"
+            )
+            self._evm_durum_label.setText(
+                f"UYARI: CPI={cpi:.3f} / SPI={spi:.3f} — Bütçe veya zaman aşımı riski!"
+            )
+        elif durum == 'uyari':
+            self._evm_durum_label.setStyleSheet(
+                "padding: 6px; border-radius: 4px; font-weight: bold; "
+                "background: #FFF8E1; color: #E65100;"
+            )
+            self._evm_durum_label.setText(
+                f"DİKKAT: CPI={cpi:.3f} / SPI={spi:.3f} — Performans izlenmeye değer."
+            )
+        else:
+            self._evm_durum_label.setStyleSheet(
+                "padding: 6px; border-radius: 4px; font-weight: bold; "
+                "background: #E8F5E9; color: #2E7D32;"
+            )
+            self._evm_durum_label.setText(
+                f"NORMAL: CPI={cpi:.3f} / SPI={spi:.3f} — Proje bütçe ve zaman içinde."
+            )
+
+        # Görev detay tablosu
+        self._maliyet_table.setRowCount(0)
+        for gorev in sonuc.get('gorev_detaylari', []):
+            row = self._maliyet_table.rowCount()
+            self._maliyet_table.insertRow(row)
+            self._maliyet_table.setItem(row, 0, QTableWidgetItem(gorev.get('wbs_kodu', '')))
+            self._maliyet_table.setItem(row, 1, QTableWidgetItem(gorev.get('ad', '')))
+            self._maliyet_table.setItem(
+                row, 2, QTableWidgetItem(f"{gorev.get('butce', 0):,.2f}")
+            )
+            self._maliyet_table.setItem(
+                row, 3, QTableWidgetItem(f"{gorev.get('gercek_maliyet', 0):,.2f}")
+            )
+            self._maliyet_table.setItem(
+                row, 4, QTableWidgetItem(f"{gorev.get('ev', 0):,.2f}")
+            )
+            cv = gorev.get('cv', 0)
+            cv_item = QTableWidgetItem(f"{cv:+,.2f}")
+            cv_item.setForeground(QColor("#2E7D32") if cv >= 0 else QColor("#C62828"))
+            self._maliyet_table.setItem(row, 5, cv_item)
+
+            if gorev.get('butce_durumu') == 'asim':
+                for col in range(6):
+                    item = self._maliyet_table.item(row, col)
+                    if item:
+                        item.setBackground(QColor("#FFEBEE"))
+
+        self._status_label.setText(
+            f"Maliyet analizi tamamlandı — CPI: {cpi:.3f} | SPI: {spi:.3f} | EAC: {sonuc['eac']:,.2f} ₺"
+        )
+
+    def _maliyet_excel_export(self) -> None:
+        """Maliyet takip tablosunu Excel'e aktar."""
+        if not _OPENPYXL_OK:
+            QMessageBox.warning(self, "Uyarı", "openpyxl yüklü değil.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Maliyet Excel Kaydet", "maliyet_takip.xlsx", "Excel (*.xlsx)"
+        )
+        if not path:
+            return
+        try:
+            import openpyxl
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Maliyet Takibi"
+            basliklar = ["WBS", "İş Adı", "Bütçe (₺)", "Gerçek Maliyet (₺)", "EV (₺)", "CV (₺) Sapma"]
+            ws.append(basliklar)
+            for row in range(self._maliyet_table.rowCount()):
+                satirlar = []
+                for col in range(self._maliyet_table.columnCount()):
+                    item = self._maliyet_table.item(row, col)
+                    satirlar.append(item.text() if item else "")
+                ws.append(satirlar)
+            wb.save(path)
+            QMessageBox.information(self, "Başarılı", f"Maliyet Excel kaydedildi:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Hata", f"Excel kaydetme hatası:\n{exc}")
+
+    # ------------------------------------------------------------------
+    # Engine-Senkronizasyon (is_list → engine.tasks)
+    # ------------------------------------------------------------------
+    def _sync_engine_tasks(self) -> None:
+        """_is_list'teki verileri GanttEngine.tasks'a aktar (bütçe/maliyet dahil)."""
+        if not self._engine:
+            return
+        from app.core.gantt_engine import Task
+        for item in self._is_list:
+            task_id = item.get("id", 0)
+            if task_id in self._engine.tasks:
+                task = self._engine.tasks[task_id]
+                task.butce = float(item.get("butce", 0))
+                task.gercek_maliyet = float(item.get("gercek_maliyet", 0))
+                task.birim_fiyat = float(item.get("birim_fiyat", 0))
+                task.ilerleme = float(item.get("tamamlanma_yuzdesi", 0))
+
+    def _create_bugun_tab(self) -> None:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        if _BUGUN_PANEL_OK:
+            self._bugun_panel = BugunPaneli()
+            layout.addWidget(self._bugun_panel)
+        else:
+            layout.addWidget(QLabel(
+                "Bugün paneli modülü yüklenemedi (app.ui.bugun_paneli)."
+            ))
+            layout.addStretch()
+
+        self._tabs.addTab(tab, "📅 Bugün")
+
+    # ------------------------------------------------------------------
+    # Yardımcı widget oluşturucular
+    # ------------------------------------------------------------------
+    def _create_kpi_card(self, title: str, value: str, color: str) -> QFrame:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        frame.setStyleSheet(
+            f"QFrame {{ background: {color}15; border: 1px solid {color}; "
+            f"border-radius: 6px; padding: 6px; }}"
+        )
+        layout = QVBoxLayout(frame)
+        lbl_title = QLabel(title)
+        lbl_title.setStyleSheet(f"color: {color}; font-size: 10px;")
+        lbl_value = QLabel(value)
+        lbl_value.setStyleSheet(
+            f"color: {color}; font-size: 18px; font-weight: bold;"
+        )
+        layout.addWidget(lbl_title)
+        layout.addWidget(lbl_value)
+        frame.setProperty("value_label", lbl_value)
+        return frame
+
+    def _add_renk_aciklama(self, layout: QHBoxLayout, color: str, label: str) -> None:
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {color}; font-size: 16px;")
+        lbl = QLabel(label)
+        layout.addWidget(dot)
+        layout.addWidget(lbl)
+
+    # ------------------------------------------------------------------
+    # Proje yükleme
+    # ------------------------------------------------------------------
+    def _load_projeler(self) -> None:
+        self._proje_combo.blockSignals(True)
+        self._proje_combo.clear()
+        self._proje_combo.addItem("— Proje Seçin —", None)
+
+        if self._db:
+            try:
+                for p in self._db.get_all_projects():
+                    self._proje_combo.addItem(
+                        p.get("ad", f"Proje {p['id']}"), p.get("id")
+                    )
+            except Exception as exc:
+                logger.error("Proje yükleme hatası: %s", exc)
+
+        self._proje_combo.blockSignals(False)
+
+    def on_proje_changed(self, index: int) -> None:
+        project_id = self._proje_combo.itemData(index)
+        self._current_project_id = project_id
+        if project_id and self._engine:
+            try:
+                if hasattr(self._engine, "yukle_proje"):
+                    self._engine.yukle_proje(project_id, self._db)
+                self._is_list = self._engine.get_tasks() if hasattr(self._engine, "get_tasks") else []
+                self._yukle_is_listesi()
+                self._status_label.setText(
+                    f"Proje yüklendi: {self._proje_combo.currentText()}"
+                )
+            except Exception as exc:
+                logger.error("Proje yükleme: %s", exc)
+
+    def _yukle_is_listesi(self) -> None:
+        self._is_table.setRowCount(0)
+        for task in self._is_list:
+            row = self._is_table.rowCount()
+            self._is_table.insertRow(row)
+            self._is_table.setItem(row, 0, QTableWidgetItem(str(task.get("id", ""))))
+            self._is_table.setItem(row, 1, QTableWidgetItem(task.get("ad", "")))
+            self._is_table.setItem(row, 2, QTableWidgetItem(str(task.get("sure", ""))))
+            miktar_val = task.get("miktar", 0)
+            miktar_birim = task.get("miktar_birim", "m²")
+            miktar_str = f"{miktar_val:.2f} {miktar_birim}" if miktar_val else "—"
+            self._is_table.setItem(row, 3, QTableWidgetItem(miktar_str))
+            self._is_table.setItem(row, 4, QTableWidgetItem(task.get("ekip_turu", "")))
+            self._is_table.setItem(row, 5, QTableWidgetItem(task.get("kaynak", "")))
+            self._is_table.setItem(
+                row, 6, QTableWidgetItem("✓" if task.get("milestone") else "")
+            )
+            bagimliliklar = task.get("bagimliliklar", [])
+            self._is_table.setItem(
+                row, 7,
+                QTableWidgetItem(", ".join(str(b) for b in bagimliliklar))
+            )
+
+    # ------------------------------------------------------------------
+    # İş CRUD
+    # ------------------------------------------------------------------
+    def ekle_is(self) -> None:
+        self._push_undo()
+        dlg = TaskDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            data = dlg.get_task_data()
+            new_id = max((t.get("id", 0) for t in self._is_list), default=0) + 1
+            data["id"] = new_id
+            data["bagimliliklar"] = []
+            self._is_list.append(data)
+            self._yukle_is_listesi()
+            self._status_label.setText(f"İş eklendi: {data['ad']}")
+
+    def duzenle_is(self) -> None:
+        row = self._is_table.currentRow()
+        if row < 0:
+            return
+        self._push_undo()
+        task = self._is_list[row]
+        dlg = TaskDialog(task_data=task, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            updated = dlg.get_task_data()
+            updated["id"] = task["id"]
+            updated["bagimliliklar"] = task.get("bagimliliklar", [])
+            self._is_list[row] = updated
+            self._yukle_is_listesi()
+            self._status_label.setText(f"İş güncellendi: {updated['ad']}")
+
+    def sil_is(self) -> None:
+        row = self._is_table.currentRow()
+        if row < 0:
+            return
+        task = self._is_list[row]
+        reply = QMessageBox.question(
+            self, "Sil",
+            f"'{task['ad']}' silinsin mi?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._push_undo()
+            self._is_list.pop(row)
+            self._yukle_is_listesi()
+            self._status_label.setText(f"İş silindi: {task['ad']}")
+
+    def ekle_bagimliluk(self) -> None:
+        row = self._is_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Bilgi", "Önce bir iş seçin.")
+            return
+        task = self._is_list[row]
+        dlg = DependencyDialog(self._is_list, task["id"], parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._push_undo()
+            task["bagimliliklar"] = dlg.get_selected_ids()
+            if self._engine and hasattr(self._engine, "update_task"):
+                self._engine.update_task(task)
+            self._yukle_is_listesi()
+
+    # ------------------------------------------------------------------
+    # CPM Hesaplama
+    # ------------------------------------------------------------------
+    def hesapla_program(self) -> None:
+        if not self._engine or not self._is_list:
+            QMessageBox.information(self, "Bilgi", "Önce iş listesi oluşturun.")
+            return
+        try:
+            self._engine.tasks = self._is_list
+            result = self._engine.calculate_schedule()
+            self._is_list = result.get("tasks", self._is_list)
+            self._yukle_is_listesi()
+            self._yukle_tablo_goruntum(result)
+            self._yukle_kritik_yol(result)
+            self._analiz_gecikme()
+            self.refresh_visual_gantt()
+            self.refresh_s_curve()
+            self._refresh_whatif_gorevler()
+
+            if hasattr(self._engine, "kontrol_uyarilar"):
+                self._alerts = self._engine.kontrol_uyarilar()
+            self._alerts_panel.set_alerts(self._alerts)
+            self.guncelle_uyari_badge()
+
+            if _BUGUN_PANEL_OK and hasattr(self, "_bugun_panel"):
+                try:
+                    self._bugun_panel.yenile(result)
+                except Exception:
+                    pass
+
+            self._status_label.setText(
+                f"CPM hesaplandı — Proje bitişi: {result.get('proje_bitis', '—')}"
+            )
+        except Exception as exc:
+            logger.error("Hesaplama hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", f"Hesaplama hatası:\n{exc}")
+
+    def _yukle_tablo_goruntum(self, result: Dict) -> None:
+        self._tablo.setRowCount(0)
+        for task in result.get("tasks", []):
+            row = self._tablo.rowCount()
+            self._tablo.insertRow(row)
+            self._tablo.setItem(row, 0, QTableWidgetItem(task.get("ad", "")))
+            self._tablo.setItem(row, 1, QTableWidgetItem(str(task.get("sure", ""))))
+            self._tablo.setItem(row, 2, QTableWidgetItem(str(task.get("es", ""))))
+            self._tablo.setItem(row, 3, QTableWidgetItem(str(task.get("ef", ""))))
+            self._tablo.setItem(row, 4, QTableWidgetItem(str(task.get("ls", ""))))
+            self._tablo.setItem(row, 5, QTableWidgetItem(str(task.get("lf", ""))))
+            float_val = task.get("float", 0)
+            float_item = QTableWidgetItem(str(float_val))
+            if float_val == 0:
+                float_item.setForeground(QColor("#F44336"))
+                float_item.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+            self._tablo.setItem(row, 6, float_item)
+            kritik_item = QTableWidgetItem("✓" if task.get("kritik_yol") else "")
+            if task.get("kritik_yol"):
+                kritik_item.setForeground(QColor("#F44336"))
+            self._tablo.setItem(row, 7, kritik_item)
+            self._tablo.setItem(
+                row, 8,
+                QTableWidgetItem(f"{task.get('tamamlanma_yuzdesi', 0):.0f}%")
+            )
+
+    def _yukle_kritik_yol(self, result: Dict) -> None:
+        self._kritik_table.setRowCount(0)
+        kritik_tasks = [t for t in result.get("tasks", []) if t.get("kritik_yol")]
+
+        for task in kritik_tasks:
+            row = self._kritik_table.rowCount()
+            self._kritik_table.insertRow(row)
+            self._kritik_table.setItem(row, 0, QTableWidgetItem(task.get("ad", "")))
+            self._kritik_table.setItem(row, 1, QTableWidgetItem(str(task.get("baslangic", ""))))
+            self._kritik_table.setItem(row, 2, QTableWidgetItem(str(task.get("bitis", ""))))
+            self._kritik_table.setItem(row, 3, QTableWidgetItem(str(task.get("sure", ""))))
+            bagimliliklar = task.get("bagimliliklar", [])
+            self._kritik_table.setItem(
+                row, 4,
+                QTableWidgetItem(", ".join(str(b) for b in bagimliliklar))
+            )
+            for col in range(5):
+                item = self._kritik_table.item(row, col)
+                if item:
+                    item.setBackground(QColor("#FFEBEE"))
+
+        proje_sure = result.get("proje_suresi", "—")
+        self._kpi_proje_suresi.property("value_label").setText(
+            f"{proje_sure} gün" if proje_sure != "—" else "—"
+        )
+        self._kpi_kritik_sayisi.property("value_label").setText(str(len(kritik_tasks)))
+        total_float = sum(
+            t.get("float", 0)
+            for t in result.get("tasks", [])
+            if not t.get("kritik_yol")
+        )
+        self._kpi_toplam_float.property("value_label").setText(f"{total_float} gün")
+
+    def _analiz_gecikme(self) -> None:
+        self._gecikme_table.setRowCount(0)
+        total_risk = 0
+
+        for task in self._is_list:
+            plan_bitis = task.get("plan_bitis") or task.get("bitis")
+            gercek_bitis = task.get("gercek_bitis") or task.get("bitis")
+            if not plan_bitis or not gercek_bitis:
+                continue
+            try:
+                p = date.fromisoformat(str(plan_bitis))
+                g = date.fromisoformat(str(gercek_bitis))
+                gecikme = (g - p).days
+            except (ValueError, TypeError):
+                continue
+
+            if gecikme <= 0:
+                continue
+
+            row = self._gecikme_table.rowCount()
+            self._gecikme_table.insertRow(row)
+            self._gecikme_table.setItem(row, 0, QTableWidgetItem(task.get("ad", "")))
+            self._gecikme_table.setItem(row, 1, QTableWidgetItem(str(plan_bitis)))
+            self._gecikme_table.setItem(row, 2, QTableWidgetItem(str(gercek_bitis)))
+            self._gecikme_table.setItem(row, 3, QTableWidgetItem(str(gecikme)))
+
+            if task.get("kritik_yol"):
+                gecikme_turu = "Kritik"
+                risk = gecikme * 3
+            else:
+                gecikme_turu = "Normal"
+                risk = gecikme
+            total_risk += risk
+
+            self._gecikme_table.setItem(row, 4, QTableWidgetItem(gecikme_turu))
+            risk_item = QTableWidgetItem(str(risk))
+            if risk > 30:
+                risk_item.setForeground(QColor("#F44336"))
+            elif risk > 10:
+                risk_item.setForeground(QColor("#F57C00"))
+            self._gecikme_table.setItem(row, 5, risk_item)
+
+        if total_risk > 100:
+            self._risk_label.setStyleSheet("color: #F44336; font-weight: bold;")
+        elif total_risk > 30:
+            self._risk_label.setStyleSheet("color: #F57C00; font-weight: bold;")
+        else:
+            self._risk_label.setStyleSheet("color: #388E3C; font-weight: bold;")
+        self._risk_label.setText(f"Risk Skoru: {total_risk}")
+
+    # ------------------------------------------------------------------
+    # Görsel Gantt
+    # ------------------------------------------------------------------
+    def refresh_visual_gantt(self) -> None:
+        if not self._is_list:
+            return
+        start_dates, end_dates = [], []
+        for t in self._is_list:
+            try:
+                if t.get("baslangic"):
+                    start_dates.append(date.fromisoformat(str(t["baslangic"])))
+                if t.get("bitis"):
+                    end_dates.append(date.fromisoformat(str(t["bitis"])))
+            except (ValueError, TypeError):
+                pass
+        if start_dates and end_dates:
+            self._gantt_view.draw_gantt(self._is_list, min(start_dates), max(end_dates))
+
+    def _zoom_in(self) -> None:
+        self._gantt_view.zoom_in()
+
+    def _zoom_out(self) -> None:
+        self._gantt_view.zoom_out()
+
+    def _zoom_fit(self) -> None:
+        self._gantt_view.zoom_fit()
+
+    def on_task_dragged(self, task_id: int, delta_days: float) -> None:
+        if not self._drag_drop_enabled or not self._engine:
+            return
+        self._push_undo()
+        try:
+            if hasattr(self._engine, "move_task"):
+                self._engine.move_task(task_id, int(delta_days))
+            if hasattr(self._engine, "cascade_dependents"):
+                self._engine.cascade_dependents(task_id)
+            if hasattr(self._engine, "get_tasks"):
+                self._is_list = self._engine.get_tasks()
+            self._yukle_is_listesi()
+            self.refresh_visual_gantt()
+            self._status_label.setText(f"İş taşındı: {delta_days:+.0f} gün")
+        except Exception as exc:
+            logger.error("Drag-drop hatası: %s", exc)
+
+    # ------------------------------------------------------------------
+    # S-Curve
+    # ------------------------------------------------------------------
+    def refresh_s_curve(self) -> None:
+        if not self._engine or not self._is_list:
+            return
+        try:
+            if hasattr(self._engine, "hesapla_s_curve"):
+                data = self._engine.hesapla_s_curve()
+                self._s_curve.set_data(data)
+                evm = data.get("evm", {})
+                for key, lbl in self._evm_labels.items():
+                    val = evm.get(key, "—")
+                    lbl.setText(
+                        f"{val:.2f}" if isinstance(val, float) else str(val)
+                    )
+        except Exception as exc:
+            logger.error("S-Curve hatası: %s", exc)
+
+    # ------------------------------------------------------------------
+    # What-If
+    # ------------------------------------------------------------------
+    def _refresh_whatif_gorevler(self) -> None:
+        self._whatif_is_combo.clear()
+        for t in self._is_list:
+            self._whatif_is_combo.addItem(
+                f"[{t['id']}] {t.get('ad', '')}", t["id"]
+            )
+
+    def calistir_what_if(self) -> None:
+        if not self._engine or not self._is_list:
+            return
+        task_id = self._whatif_is_combo.currentData()
+        delta = self._whatif_delta_spin.value()
+        if task_id is None:
+            return
+        try:
+            if hasattr(self._engine, "whatif_analiz"):
+                original, scenario = self._engine.whatif_analiz(task_id, delta)
+                dlg = WhatIfResultDialog(original, scenario, parent=self)
+                dlg.exec()
+            else:
+                self._whatif_result_label.setText("What-If motoru mevcut değil.")
+        except Exception as exc:
+            logger.error("What-If hatası: %s", exc)
+            self._whatif_result_label.setText(f"Hata: {exc}")
+
+    # ------------------------------------------------------------------
+    # Baseline
+    # ------------------------------------------------------------------
+    def kaydet_baseline(self) -> None:
+        if not self._is_list:
+            QMessageBox.information(self, "Bilgi", "Kaydedilecek iş yok.")
+            return
+        self._baseline_data = {
+            "tarih": date.today().isoformat(),
+            "tasks": copy.deepcopy(self._is_list),
+        }
+        QMessageBox.information(
+            self, "Baseline",
+            f"Baseline kaydedildi: {self._baseline_data['tarih']}"
+        )
+        self._status_label.setText("Baseline kaydedildi.")
+
+    def analiz_baseline(self) -> None:
+        if not self._baseline_data:
+            QMessageBox.information(self, "Bilgi", "Önce baseline kaydedin.")
+            return
+        self._baseline_table.setRowCount(0)
+        baseline_map = {t["id"]: t for t in self._baseline_data.get("tasks", [])}
+        for task in self._is_list:
+            base = baseline_map.get(task.get("id"))
+            if not base:
+                continue
+            row = self._baseline_table.rowCount()
+            self._baseline_table.insertRow(row)
+            self._baseline_table.setItem(row, 0, QTableWidgetItem(task.get("ad", "")))
+            self._baseline_table.setItem(row, 1, QTableWidgetItem(str(base.get("bitis", ""))))
+            self._baseline_table.setItem(row, 2, QTableWidgetItem(str(task.get("bitis", ""))))
+            try:
+                base_end = date.fromisoformat(str(base.get("bitis", "")))
+                curr_end = date.fromisoformat(str(task.get("bitis", "")))
+                sapma = (curr_end - base_end).days
+                sapma_item = QTableWidgetItem(f"{sapma:+d} gün")
+                if sapma > 0:
+                    sapma_item.setForeground(QColor("#F44336"))
+                elif sapma < 0:
+                    sapma_item.setForeground(QColor("#4CAF50"))
+                self._baseline_table.setItem(row, 3, sapma_item)
+                durum = "Gecikiyor" if sapma > 0 else "Zamanında" if sapma == 0 else "Erken"
+                self._baseline_table.setItem(row, 4, QTableWidgetItem(durum))
+            except (ValueError, TypeError):
+                self._baseline_table.setItem(row, 3, QTableWidgetItem("—"))
+                self._baseline_table.setItem(row, 4, QTableWidgetItem("—"))
+
+    # ------------------------------------------------------------------
+    # Kaynaklar
+    # ------------------------------------------------------------------
+    def ekle_kaynak(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Kaynak Ekle")
+        layout = QFormLayout(dlg)
+        ad_input = QLineEdit()
+        kapasite_input = QSpinBox()
+        kapasite_input.setRange(1, 1000)
+        layout.addRow("Kaynak Adı:", ad_input)
+        layout.addRow("Kapasite:", kapasite_input)
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(dlg.accept)
+        btn_box.rejected.connect(dlg.reject)
+        layout.addRow(btn_box)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted and ad_input.text().strip():
+            row = self._kaynak_table.rowCount()
+            self._kaynak_table.insertRow(row)
+            self._kaynak_table.setItem(row, 0, QTableWidgetItem(ad_input.text().strip()))
+            self._kaynak_table.setItem(row, 1, QTableWidgetItem(str(kapasite_input.value())))
+            self._kaynak_table.setItem(row, 2, QTableWidgetItem("0"))
+            self._kaynak_table.setItem(row, 3, QTableWidgetItem("Boşta"))
+
+    def yukle_kaynaklar(self, kaynaklar: List[Dict]) -> None:
+        self._kaynak_table.setRowCount(0)
+        for k in kaynaklar:
+            row = self._kaynak_table.rowCount()
+            self._kaynak_table.insertRow(row)
+            self._kaynak_table.setItem(row, 0, QTableWidgetItem(k.get("ad", "")))
+            self._kaynak_table.setItem(row, 1, QTableWidgetItem(str(k.get("kapasite", ""))))
+            kullanim = k.get("kullanim", 0)
+            self._kaynak_table.setItem(row, 2, QTableWidgetItem(f"{kullanim:.0f}"))
+            durum = "Aşırı Yük" if kullanim > 100 else "Normal"
+            durum_item = QTableWidgetItem(durum)
+            if kullanim > 100:
+                durum_item.setForeground(QColor("#F44336"))
+            self._kaynak_table.setItem(row, 3, durum_item)
+
+    def kontrol_kaynak_cakisma(self) -> None:
+        if not self._engine or not hasattr(self._engine, "kontrol_kaynak_cakisma"):
+            QMessageBox.information(self, "Bilgi", "Kaynak çakışma motoru mevcut değil.")
+            return
+        try:
+            cakismalar = self._engine.kontrol_kaynak_cakisma()
+            if not cakismalar:
+                QMessageBox.information(self, "Kaynak", "Kaynak çakışması yok.")
+            else:
+                msg = "\n".join(
+                    f"• {c.get('kaynak')}: {c.get('mesaj', '')}" for c in cakismalar
+                )
+                QMessageBox.warning(self, "Kaynak Çakışması", msg)
+        except Exception as exc:
+            logger.error("Kaynak kontrol hatası: %s", exc)
+
+    def otomatik_kaynak_dengele(self) -> None:
+        if not self._engine or not hasattr(self._engine, "kaynak_dengele"):
+            QMessageBox.information(self, "Bilgi", "Kaynak dengeleme motoru mevcut değil.")
+            return
+        self._push_undo()
+        try:
+            self._engine.kaynak_dengele()
+            if hasattr(self._engine, "get_tasks"):
+                self._is_list = self._engine.get_tasks()
+            self._yukle_is_listesi()
+            self.refresh_visual_gantt()
+            QMessageBox.information(self, "Kaynak Dengele", "Kaynaklar otomatik dengelendi.")
+        except Exception as exc:
+            logger.error("Kaynak dengele hatası: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+    def goster_export_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction("📊 Excel'e Aktar", self.export_excel)
+        menu.addAction("📄 PDF'e Aktar", self.export_pdf)
+        menu.addAction("🗂 JSON'a Aktar", self.export_json)
+        menu.exec(self.mapToGlobal(self.rect().topRight()))
+
+    def export_excel(self) -> None:
+        if not _OPENPYXL_OK:
+            QMessageBox.warning(self, "Hata", "openpyxl paketi yüklü değil.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Excel Kaydet", "", "Excel (*.xlsx)")
+        if not path:
+            return
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Gantt"
+            ws.append(["İş Adı", "Süre", "Başlangıç", "Bitiş", "Float", "Kritik", "Tamamlanma"])
+            for task in self._is_list:
+                ws.append([
+                    task.get("ad", ""),
+                    task.get("sure", ""),
+                    str(task.get("baslangic", "")),
+                    str(task.get("bitis", "")),
+                    task.get("float", ""),
+                    "Evet" if task.get("kritik_yol") else "Hayır",
+                    f"{task.get('tamamlanma_yuzdesi', 0):.0f}%",
+                ])
+            wb.save(path)
+            self._status_label.setText(f"Excel kaydedildi: {path}")
+            QMessageBox.information(self, "Başarılı", f"Excel dosyası kaydedildi:\n{path}")
+        except Exception as exc:
+            logger.error("Excel export hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", str(exc))
+
+    def export_pdf(self) -> None:
+        if not _REPORTLAB_OK:
+            QMessageBox.warning(self, "Hata", "reportlab paketi yüklü değil.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "PDF Kaydet", "", "PDF (*.pdf)")
+        if not path:
+            return
+        try:
+            doc = SimpleDocTemplate(path, pagesize=landscape(A4))
+            styles = getSampleStyleSheet()
+            elements = [
+                Paragraph("Gantt İş Programı", styles["Title"]),
+                Spacer(1, 0.4 * cm),
+            ]
+            headers = ["İş Adı", "Süre", "Başlangıç", "Bitiş", "Float", "Kritik", "Tamamlanma"]
+            data = [headers]
+            for task in self._is_list:
+                data.append([
+                    task.get("ad", ""),
+                    str(task.get("sure", "")),
+                    str(task.get("baslangic", "")),
+                    str(task.get("bitis", "")),
+                    str(task.get("float", "")),
+                    "Evet" if task.get("kritik_yol") else "Hayır",
+                    f"{task.get('tamamlanma_yuzdesi', 0):.0f}%",
+                ])
+            table = Table(data, repeatRows=1)
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#1976D2")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+                 [rl_colors.white, rl_colors.HexColor("#E3F2FD")]),
+                ("GRID", (0, 0), (-1, -1), 0.5, rl_colors.grey),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ]))
+            elements.append(table)
+            doc.build(elements)
+            self._status_label.setText(f"PDF kaydedildi: {path}")
+            QMessageBox.information(self, "Başarılı", f"PDF kaydedildi:\n{path}")
+        except Exception as exc:
+            logger.error("PDF export hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", str(exc))
+
+    def export_json(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "JSON Kaydet", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"versiyon": "2.0", "tarih": date.today().isoformat(), "tasks": self._is_list},
+                    f, ensure_ascii=False, indent=2, default=str,
+                )
+            self._status_label.setText(f"JSON kaydedildi: {path}")
+            QMessageBox.information(self, "Başarılı", f"JSON kaydedildi:\n{path}")
+        except Exception as exc:
+            logger.error("JSON export hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", str(exc))
+
+    # ------------------------------------------------------------------
+    # Kaydet / Yükle
+    # ------------------------------------------------------------------
+    def kaydet_program(self) -> None:
+        if not self._engine or not self._is_list:
+            QMessageBox.information(self, "Bilgi", "Kaydedilecek iş programı yok.")
+            return
+        try:
+            if hasattr(self._engine, "kaydet_sqlite"):
+                self._engine.kaydet_sqlite(self._current_project_id, self._db)
+                self._status_label.setText("İş programı veritabanına kaydedildi.")
+            else:
+                self.export_json()
+        except Exception as exc:
+            logger.error("Kaydet hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", str(exc))
+
+    def yukle_program(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Program Yükle", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._is_list = data.get("tasks", [])
+            if self._engine:
+                self._engine.tasks = self._is_list
+            self._yukle_is_listesi()
+            self._status_label.setText(f"Program yüklendi: {path}")
+        except Exception as exc:
+            logger.error("Program yükleme hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", str(exc))
+
+    # ------------------------------------------------------------------
+    # Şablon
+    # ------------------------------------------------------------------
+    def goster_sablon_dialog(self) -> None:
+        if _SABLON_SIHIRBAZ_OK:
+            self._goster_yeni_sablon_sihirbazi()
+        else:
+            self._goster_eski_sablon_dialog()
+
+    def _goster_yeni_sablon_sihirbazi(self) -> None:
+        try:
+            dlg = SablonSihirbazi(parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                # get_secim() → {'sablon': ProjeSablonu, 'baslangic': datetime, ...}
+                secim = dlg.get_secim()
+                secilen = secim.get("sablon") if isinstance(secim, dict) else secim
+                if secilen and _SABLON_YON_OK:
+                    yon = SablonYoneticisi()
+                    if hasattr(yon, "engine_yukle"):
+                        yon.engine_yukle(self._engine, secilen)
+                        if hasattr(self._engine, "get_tasks"):
+                            self._is_list = self._engine.get_tasks()
+                        self._yukle_is_listesi()
+                        ad = getattr(secilen, "tip", "") or str(secilen)
+                        self._status_label.setText(f"Şablon yüklendi: {ad}")
+        except Exception as exc:
+            logger.error("Şablon sihirbazı hatası: %s", exc)
+            self._goster_eski_sablon_dialog()
+
+    def _goster_eski_sablon_dialog(self) -> None:
+        try:
+            from app.data.gantt_templates import get_template_list
+            templates = get_template_list()  # List[Dict] döndürür
+        except Exception:
+            templates = []
+
+        if not templates:
+            QMessageBox.information(self, "Şablon", "Yüklenecek şablon bulunamadı.")
+            return
+
+        dlg = TemplateDialog(templates, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            selected = dlg.get_selected()
+            if selected:
+                self._push_undo()
+                new_tasks = selected.get("isler", [])
+                for i, t in enumerate(new_tasks):
+                    t["id"] = i + 1
+                    t.setdefault("bagimliliklar", [])
+                self._is_list = new_tasks
+                if self._engine:
+                    self._engine.tasks = self._is_list
+                self._yukle_is_listesi()
+                self._status_label.setText(f"Şablon yüklendi: {selected.get('ad', '')}")
+
+    # ------------------------------------------------------------------
+    # Tatil & Uyarılar
+    # ------------------------------------------------------------------
+    def goster_tatil_dialog(self) -> None:
+        dlg = TatilDialog(self._engine, parent=self)
+        dlg.exec()
+
+    def goster_uyarilar(self) -> None:
+        if not self._alerts:
+            QMessageBox.information(self, "Uyarılar", "Aktif uyarı yok.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Proje Uyarıları")
+        dlg.setMinimumSize(500, 380)
+        layout = QVBoxLayout(dlg)
+        panel = AlertsPanel()
+        panel.set_alerts(self._alerts)
+        layout.addWidget(panel)
+        btn = QPushButton("Kapat")
+        btn.clicked.connect(dlg.accept)
+        layout.addWidget(btn)
+        dlg.exec()
+
+    def guncelle_uyari_badge(self) -> None:
+        count = len(self._alerts)
+        self._uyari_btn.setText(f"⚠ Uyarılar [{count}]")
+        if count > 0:
+            self._uyari_btn.setStyleSheet(
+                "QPushButton { background: #F44336; color: white; "
+                "border-radius: 4px; padding: 5px 10px; font-weight: bold; }"
+            )
+        else:
+            self._uyari_btn.setStyleSheet(
+                "QPushButton { color: white; background: #1976D2; border: none;"
+                " border-radius: 4px; padding: 5px 10px; }"
+            )
+
+    # ------------------------------------------------------------------
+    # Drag & Drop / Undo
+    # ------------------------------------------------------------------
+    def toggle_drag_drop(self, checked: bool) -> None:
+        self._drag_drop_enabled = checked
+        if checked:
+            self._drag_btn.setText("🔀 Sürükle-Bırak: AÇIK")
+            self._drag_btn.setStyleSheet(
+                "QPushButton { background: #388E3C; color: white; "
+                "border-radius: 4px; padding: 5px; }"
+            )
+        else:
+            self._drag_btn.setText("🔀 Sürükle-Bırak: KAPALI")
+            self._drag_btn.setStyleSheet("")
+
+    def _push_undo(self) -> None:
+        self._undo_stack.append(copy.deepcopy(self._is_list))
+        if len(self._undo_stack) > self._max_undo:
+            self._undo_stack.pop(0)
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            self._status_label.setText("Geri alınacak işlem yok.")
+            return
+        self._is_list = self._undo_stack.pop()
+        if self._engine:
+            self._engine.tasks = self._is_list
+        self._yukle_is_listesi()
+        self.refresh_visual_gantt()
+        self._status_label.setText("Geri alındı.")
+
+    def keyPressEvent(self, event) -> None:
+        if (
+            event.key() == Qt.Key.Key_Z
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            self._undo()
+        else:
+            super().keyPressEvent(event)

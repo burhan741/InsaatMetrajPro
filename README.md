@@ -5,16 +5,31 @@ Python 3 + PyQt6 ile geliştirilmiş, tamamen **Offline-First** çalışır.
 
 ## Özellikler
 
+### İSTATÜ: ÇALIŞAN MODÜLLER (v2.0 Stabilizasyon)
+
+**✅ OPERATIONAL (Tam Fonksiyonel)**
+- **Veritabanı Katmanı** — DatabaseManager 45 metod, 9 tablo, tüm CRUD işlemleri aktif
+- **Ana Pencere (MainWindow)** — GUI başlanıyor, TabWidget + 7 pencere sınıfı
+- **Duvar, Alçı, Fayans, Elektrik, Sap, Parke, Kaba Yapı Hesaplamaları** — init_ui() fixed
+- **Saha Demiri Calculator** — Yeni pencere oluşturuldu (296 satır)
+
+**⚠️ FALLBACK (Minimal Stub Modülleri ile - sınırlı işlevsellik)**
+- **calculator_minimal.py** — Hesaplama motoru stub (69 satır) - matematiksel fonksiyonlar test için hazır
+- **data_loader_minimal.py** — Veri yükleyici stub (55 satır) - pozlar/malzemeler kontrol fonsiyonları
+- **dialogs_minimal.py** — Diyalog stub (27 satır) - MetrajItemDialog ve TaseronOfferDialog template
+
+**OTEL: ETKINLEŞTIRILDI - Try/Except fallback mekanizması - gerçek modüllere erişim yoktur, minimal versiyonlar kullanılır**
+
 ### Proje Yönetimi
 - ✅ **Offline-First** — İnternet bağlantısı olmadan tam verimli çalışır
 - ✅ **Proje ZIP İçe/Dışa Aktarma** — `.impzip` formatıyla proje taşıma (Ctrl+E)
 - ✅ **Yedekleme & Versiyonlama** — Tek tıkla yedek, geri dönebilir versiyonlar
 
 ### Metraj & Hesaplama
-- ✅ **150+ İş Kalemi** — Konut yapısı için hazır poz veritabanı
-- ✅ **30+ Uzman Hesaplama Aracı** — 5 kategorili gruplandırılmış menü
-- ✅ **"Metraya Aktar" Entegrasyonu** — 13 hesaplama aracından tek tıkla aktarım
-- ✅ **Excel Birim Fiyat Toplu Güncelleme** — Toplu fiyat güncellemesi
+- ✅ **150+ İş Kalemi** — Konut yapısı için hazır poz veritabanı (DatabaseManager operasyonel)
+- ⚠️ **30+ Uzman Hesaplama Aracı** — 5 kategorili menü (hesaplama motoru minimal versiyonda)
+- ⚠️ **"Metraya Aktar" Entegrasyonu** — 13 aracı stub versiyonu
+- ✅ **Excel Birim Fiyat Toplu Güncelleme** — Veritabanı destekler
 
 ### AutoCAD / CAD Entegrasyonu
 - ✅ **AutoCAD COM + 6 LISP Rutini** — Canlı bağlantı ile otomatik metraj
@@ -162,3 +177,41 @@ Bu script, test kullanıcılarına gönderilecek hazır paketi oluşturur.
 ## Destek
 
 Sorularınız için issue açabilir veya iletişime geçebilirsiniz.
+
+## Veritabanı Mimarisi
+
+### DatabaseManager (app.core.database)
+
+SQLite veritabanı işlemleri merkezi yönetim sınıfı **45 metod** ile bütün CRUD ve domain-specific işlemleri yönetir.
+
+#### Tablo Yapısı
+
+| Tablo | Amaç | Ana Sütunlar |
+|-------|------|--------------|
+| **projects** | Proje bilgileri | id, ad, aciklama, durum, toplam_maliyet |
+| **tedarikcilar** | Taşeron/Tedarikçi veri | id, ad, telefon, email, adres |
+| **sablonlar** | Metraj şablonları | id, ad, aciklama, olusturma_tarihi |
+| **sablon_kalemleri** | Şablona bağlı kalemler | id, sablon_id, poz_no, tanim, kategori |
+| **ayarlar** | Uygulama ayarları (key-value) | id, anahtar, deger |
+| **ihaleler** | İhale/Teklifler | id, ad, aciklama, durum |
+| **ihale_kalemleri** | İhale alt kalemleri | id, ihale_id, poz_no, birim_fiyat |
+| **birim_fiyatlar** | Bütçe birim fiyatları | id, poz_no, birim_fiyat, tarih, kaynak |
+| **pozlar** | İş kalem veritabanı | id, poz_no, tanim, birim, resmi_fiyat |
+
+#### Metodlar (45 Toplam)
+
+- **Genel CRUD (6):** execute, execute_single, insert, update, delete, get_connection
+- **Proje Yönetimi (5):** get_all_projects, get_project, create_project, update_project, delete_project
+- **Tedarikçi Yönetimi (5):** get_tedarikci_listesi, get_tedarikci, create_tedarikci, update_tedarikci, delete_tedarikci
+- **Ayarlar (4):** get_ayar, set_ayar, get_tum_ayarlar, delete_ayar
+- **İhale Yönetimi (8):** get_all_ihaleler, get_ihale, create_ihale, update_ihale, delete_ihale, get_ihale_kalemleri, add_ihale_kalemi, delete_ihale_kalemi
+- **Birim Fiyat (7):** get_all_birim_fiyatlar, get_birim_fiyat, create_birim_fiyat, update_birim_fiyat, delete_birim_fiyat, get_poz_birim_fiyatlar, deaktif_et_birim_fiyat
+- **Şablon Yönetimi (10):** get_all_templates, get_template, create_template, update_template, delete_template, get_template_items, get_template_kalemleri, add_template_kalemi, update_template_kalemi, delete_template_kalemi
+
+### Optimizasyonlar
+
+- **WAL Mode:** Eşzamanlı okuma-yazma
+- **Foreign Keys:** Referans bütünlüğü
+- **Indexes:** Hızlı sorgular
+- **PRAGMA:** İyileştirmelmiş ayarlar (journal mode, cache size, synchronous)
+

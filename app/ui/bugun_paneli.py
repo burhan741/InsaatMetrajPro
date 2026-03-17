@@ -171,7 +171,7 @@ class BugunPaneli(QWidget):
         baslik_layout = QHBoxLayout(baslik_frame)
         baslik_layout.setContentsMargins(12, 8, 12, 8)
 
-        bugun_str = datetime.now().strftime("📅  %d %B %Y, %A")
+        bugun_str = "📅  " + datetime.now().strftime("%d %B %Y, %A")
         self._baslik_label = QLabel(bugun_str)
         self._baslik_label.setStyleSheet("color: white; font-size: 13pt; font-weight: bold;")
         baslik_layout.addWidget(self._baslik_label)
@@ -547,7 +547,7 @@ class BugunPaneli(QWidget):
                         item.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
 
     def _tarih_guncelle(self) -> None:
-        bugun_str = datetime.now().strftime("📅  %d %B %Y, %A")
+        bugun_str = "📅  " + datetime.now().strftime("%d %B %Y, %A")
         self._baslik_label.setText(bugun_str)
 
     def _yenile(self) -> None:
