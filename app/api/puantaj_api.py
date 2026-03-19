@@ -532,6 +532,425 @@ def add_avans():
 
     return jsonify({'success': True, 'message': 'Avans kaydedildi'})
 
+# ==================== METRAJ & GANTT API ====================
+# Ana veritabani: insaat_metraj.db (puantaj api'deki metraj.db'den farkli)
+
+def get_main_db_path():
+    """Ana proje veritabani (insaat_metraj.db) yolunu dondur."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base_dir, "data", "insaat_metraj.db")
+
+
+def init_gantt_metraj_tables():
+    """Gantt gorevleri tablosunu olustur (yoksa)."""
+    path = get_main_db_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gantt_gorevleri (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            proje_id      INTEGER NOT NULL DEFAULT 0,
+            poz_no        TEXT,
+            is_kalemi     TEXT NOT NULL,
+            metraj        REAL  DEFAULT 0,
+            birim         TEXT  DEFAULT 'adet',
+            calisan       TEXT,
+            sure_gun      INTEGER DEFAULT 1,
+            oncul_ids     TEXT  DEFAULT '[]',
+            baslangic_gun INTEGER DEFAULT 0,
+            ekip          TEXT,
+            kaynak        TEXT,
+            milestone     INTEGER DEFAULT 0,
+            tamamlanma    REAL  DEFAULT 0,
+            butce         REAL  DEFAULT 0,
+            olusturma_tarihi TEXT,
+            FOREIGN KEY (proje_id) REFERENCES projeler(id)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+# ── /metraj ──────────────────────────────────────────────────────────────────
+
+@app.route('/metraj/kalem-ekle', methods=['POST'])
+@require_auth
+def metraj_kalem_ekle():
+    """
+    Tek metraj kalemi ekle.
+
+    Body (JSON):
+        poz_no       : str   — poz numarasi (opsiyonel)
+        is_kalemi    : str   — kalem tanimi (zorunlu)
+        miktar       : float — miktar
+        birim        : str   — m2, m3, kg, adet, goturu ...
+        birim_fiyat  : float — TL
+        kategori     : str   — hafriyat, temel, kolon, doseme ... (opsiyonel)
+        proje_id     : int   — hedef proje (varsayilan 0 = aktif proje)
+
+    Returns:
+        { success, id, toplam }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    is_kalemi = (data.get("is_kalemi") or "").strip()
+    if not is_kalemi:
+        return jsonify({"error": "is_kalemi alani zorunludur"}), 400
+
+    miktar     = float(data.get("miktar", 0) or 0)
+    birim_fiyat = float(data.get("birim_fiyat", 0) or 0)
+    toplam     = round(miktar * birim_fiyat, 2)
+    now        = datetime.now().isoformat()
+
+    try:
+        conn = sqlite3.connect(get_main_db_path())
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO metraj_kalemleri
+                (proje_id, poz_no, tanim, miktar, birim, birim_fiyat, toplam, kategori, olusturma_tarihi)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            int(data.get("proje_id", 0)),
+            data.get("poz_no", ""),
+            is_kalemi,
+            miktar,
+            data.get("birim", "adet"),
+            birim_fiyat,
+            toplam,
+            data.get("kategori", ""),
+            now,
+        ))
+        conn.commit()
+        new_id = cursor.lastrowid
+        conn.close()
+        return jsonify({"success": True, "id": new_id, "toplam": toplam}), 201
+    except Exception as exc:
+        logger.error("metraj_kalem_ekle hata: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route('/metraj/toplu-ekle', methods=['POST'])
+@require_auth
+def metraj_toplu_ekle():
+    """
+    Birden fazla metraj kalemi tek seferde ekle (AI asistan / Excel import).
+
+    Body (JSON):
+        proje_id : int                — hedef proje
+        kalemler : list[dict]         — her dict, /metraj/kalem-ekle ile ayni alanlari icerir
+
+    Returns:
+        { success, eklenen, hatalar: [...] }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    proje_id = int(data.get("proje_id", 0))
+    kalemler = data.get("kalemler", [])
+    if not kalemler:
+        return jsonify({"error": "kalemler listesi bos"}), 400
+
+    eklenen = 0
+    hatalar = []
+    now = datetime.now().isoformat()
+
+    try:
+        conn = sqlite3.connect(get_main_db_path())
+        cursor = conn.cursor()
+        for k in kalemler:
+            is_kalemi = (k.get("is_kalemi") or "").strip()
+            if not is_kalemi:
+                hatalar.append({"kalem": k, "hata": "is_kalemi eksik"})
+                continue
+            miktar      = float(k.get("miktar", 0) or 0)
+            birim_fiyat = float(k.get("birim_fiyat", 0) or 0)
+            try:
+                cursor.execute("""
+                    INSERT INTO metraj_kalemleri
+                        (proje_id, poz_no, tanim, miktar, birim, birim_fiyat, toplam, kategori, olusturma_tarihi)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    int(k.get("proje_id", proje_id)),
+                    k.get("poz_no", ""),
+                    is_kalemi,
+                    miktar,
+                    k.get("birim", "adet"),
+                    birim_fiyat,
+                    round(miktar * birim_fiyat, 2),
+                    k.get("kategori", ""),
+                    now,
+                ))
+                eklenen += 1
+            except Exception as exc:
+                hatalar.append({"kalem": is_kalemi, "hata": str(exc)})
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"success": True, "eklenen": eklenen, "hatalar": hatalar}), 201
+
+
+@app.route('/metraj/kalemler', methods=['GET'])
+@require_auth
+def metraj_kalemler_listele():
+    """
+    Proje metraj kalemlerini listele.
+
+    Query params:
+        proje_id : int  (zorunlu)
+        kategori : str  (opsiyonel filtre)
+    """
+    proje_id = request.args.get("proje_id")
+    if not proje_id:
+        return jsonify({"error": "proje_id gerekli"}), 400
+
+    kategori = request.args.get("kategori")
+    try:
+        conn = sqlite3.connect(get_main_db_path())
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        if kategori:
+            cursor.execute(
+                "SELECT * FROM metraj_kalemleri WHERE proje_id=? AND kategori=? ORDER BY id",
+                (int(proje_id), kategori)
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM metraj_kalemleri WHERE proje_id=? ORDER BY id",
+                (int(proje_id),)
+            )
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        return jsonify({"proje_id": int(proje_id), "toplam": len(rows), "kalemler": rows})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── /gantt ───────────────────────────────────────────────────────────────────
+
+@app.route('/gantt/gorev-ekle', methods=['POST'])
+@require_auth
+def gantt_gorev_ekle():
+    """
+    Tek Gantt gorevi ekle.
+
+    Body (JSON):
+        poz_no       : str   — metraj poz numarasiyla eslestirme (opsiyonel)
+        is_kalemi    : str   — gorev adi (zorunlu)
+        metraj       : float — miktar (sure hesabinda kullanilir)
+        birim        : str   — m2, m3, kg ...
+        calisan      : str   — ekip / kaynak tanimi
+        sure         : int   — gun (0 ise CŞB verimliliginden otomatik hesaplanir)
+        oncul        : list[int] — oncul gorev ID listesi (FS bagimliliklari)
+        baslangic_gun: int   — proje baslangicina gore ofset gun
+        proje_id     : int   — hedef proje
+        butce        : float — TL (opsiyonel)
+        milestone    : bool  — kilometre tasi mi?
+
+    Returns:
+        { success, id, sure_gun }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    is_kalemi = (data.get("is_kalemi") or "").strip()
+    if not is_kalemi:
+        return jsonify({"error": "is_kalemi alani zorunludur"}), 400
+
+    oncul = data.get("oncul", [])
+    if isinstance(oncul, str):
+        try:
+            oncul = json.loads(oncul)
+        except Exception:
+            oncul = []
+
+    sure = int(data.get("sure", 0) or 0)
+    metraj = float(data.get("metraj", 0) or 0)
+
+    # Surey 0 ise CŞB verimliliginden otomatik tahmin
+    if sure <= 0 and metraj > 0:
+        birim = (data.get("birim") or "").lower()
+        t = is_kalemi.lower()
+        import math as _math
+        VERIMLILIK_MAP = {
+            "kalip":    {"m2": 2.86}, "kolon_kalip": {"m2": 1.82},
+            "doseme_kalip": {"m2": 4.0}, "demir":    {"kg": 333.0},
+            "beton":    {"m3": 15.0},  "siva":       {"m2": 25.0},
+            "boya":     {"m2": 45.0},  "seramik":    {"m2": 8.0},
+            "tugla":    {"m2": 6.0},   "hafriyat":   {"m3": 120.0},
+        }
+        v = 10.0  # varsayilan
+        for anahtar, tablo in VERIMLILIK_MAP.items():
+            if anahtar in t:
+                v = tablo.get(birim, list(tablo.values())[0])
+                break
+        sure = max(1, _math.ceil(metraj / (v * 3)))  # 3 usta
+
+    now = datetime.now().isoformat()
+    try:
+        conn = sqlite3.connect(get_main_db_path())
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO gantt_gorevleri
+                (proje_id, poz_no, is_kalemi, metraj, birim, calisan,
+                 sure_gun, oncul_ids, baslangic_gun, butce, milestone, olusturma_tarihi)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            int(data.get("proje_id", 0)),
+            data.get("poz_no", ""),
+            is_kalemi,
+            metraj,
+            data.get("birim", "adet"),
+            data.get("calisan", ""),
+            sure,
+            json.dumps(oncul, ensure_ascii=False),
+            int(data.get("baslangic_gun", 0) or 0),
+            float(data.get("butce", 0) or 0),
+            1 if data.get("milestone") else 0,
+            now,
+        ))
+        conn.commit()
+        new_id = cursor.lastrowid
+        conn.close()
+        return jsonify({"success": True, "id": new_id, "sure_gun": sure}), 201
+    except Exception as exc:
+        logger.error("gantt_gorev_ekle hata: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route('/gantt/toplu-ekle', methods=['POST'])
+@require_auth
+def gantt_toplu_ekle():
+    """
+    Birden fazla Gantt gorevi tek seferde ekle (AI asistan / Excel import).
+
+    Body (JSON):
+        proje_id : int
+        gorevler : list[dict]  — her dict, /gantt/gorev-ekle ile ayni alanlari icerir
+
+    Returns:
+        { success, eklenen, hatalar }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    proje_id = int(data.get("proje_id", 0))
+    gorevler = data.get("gorevler", [])
+    if not gorevler:
+        return jsonify({"error": "gorevler listesi bos"}), 400
+
+    import math as _math
+    eklenen = 0
+    hatalar = []
+    now = datetime.now().isoformat()
+
+    VERIMLILIK_MAP = {
+        "kalip": 2.86, "demir": 333.0, "beton": 15.0,
+        "siva": 25.0, "boya": 45.0, "seramik": 8.0,
+        "tugla": 6.0, "hafriyat": 120.0,
+    }
+
+    try:
+        conn = sqlite3.connect(get_main_db_path())
+        cursor = conn.cursor()
+        for g in gorevler:
+            is_kalemi = (g.get("is_kalemi") or "").strip()
+            if not is_kalemi:
+                hatalar.append({"gorev": g, "hata": "is_kalemi eksik"})
+                continue
+
+            oncul = g.get("oncul", [])
+            if isinstance(oncul, str):
+                try:
+                    oncul = json.loads(oncul)
+                except Exception:
+                    oncul = []
+
+            sure = int(g.get("sure", 0) or 0)
+            metraj = float(g.get("metraj", 0) or 0)
+            if sure <= 0 and metraj > 0:
+                t = is_kalemi.lower()
+                v = next((v for k, v in VERIMLILIK_MAP.items() if k in t), 10.0)
+                sure = max(1, _math.ceil(metraj / (v * 3)))
+
+            try:
+                cursor.execute("""
+                    INSERT INTO gantt_gorevleri
+                        (proje_id, poz_no, is_kalemi, metraj, birim, calisan,
+                         sure_gun, oncul_ids, baslangic_gun, butce, milestone, olusturma_tarihi)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    int(g.get("proje_id", proje_id)),
+                    g.get("poz_no", ""),
+                    is_kalemi,
+                    metraj,
+                    g.get("birim", "adet"),
+                    g.get("calisan", ""),
+                    sure,
+                    json.dumps(oncul, ensure_ascii=False),
+                    int(g.get("baslangic_gun", 0) or 0),
+                    float(g.get("butce", 0) or 0),
+                    1 if g.get("milestone") else 0,
+                    now,
+                ))
+                eklenen += 1
+            except Exception as exc:
+                hatalar.append({"gorev": is_kalemi, "hata": str(exc)})
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"success": True, "eklenen": eklenen, "hatalar": hatalar}), 201
+
+
+@app.route('/gantt/gorevler', methods=['GET'])
+@require_auth
+def gantt_gorevler_listele():
+    """
+    Proje Gantt gorevlerini listele.
+
+    Query params:
+        proje_id : int  (zorunlu)
+    """
+    proje_id = request.args.get("proje_id")
+    if not proje_id:
+        return jsonify({"error": "proje_id gerekli"}), 400
+    try:
+        conn = sqlite3.connect(get_main_db_path())
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM gantt_gorevleri WHERE proje_id=? ORDER BY id",
+            (int(proje_id),)
+        )
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            try:
+                d["oncul_ids"] = json.loads(d.get("oncul_ids") or "[]")
+            except Exception:
+                d["oncul_ids"] = []
+            rows.append(d)
+        conn.close()
+        return jsonify({"proje_id": int(proje_id), "toplam": len(rows), "gorevler": rows})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route('/gantt/gorev/<int:gorev_id>', methods=['DELETE'])
+@require_auth
+def gantt_gorev_sil(gorev_id):
+    """Gantt gorevi sil."""
+    try:
+        conn = sqlite3.connect(get_main_db_path())
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM gantt_gorevleri WHERE id=?", (gorev_id,))
+        conn.commit()
+        silinen = cursor.rowcount
+        conn.close()
+        if silinen:
+            return jsonify({"success": True, "message": f"Gorev {gorev_id} silindi"})
+        return jsonify({"error": "Gorev bulunamadi"}), 404
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 # ==================== SUNUCU BAŞLATMA ====================
 
 def generate_token():
@@ -543,17 +962,33 @@ def generate_token():
 def run_server(host='0.0.0.0', port=5000, debug=False):
     """Sunucuyu başlat"""
     init_puantaj_tables()
+    init_gantt_metraj_tables()
     token = generate_token()
 
-    print("\n" + "="*50)
-    print(" PUANTAJ API SUNUCUSU")
-    print("="*50)
-    print(f"\n Yerel: http://localhost:{port}")
-    print(f" Ağ: http://{get_local_ip()}:{port}")
-    print(f"\n Kullanıcı: {API_USERNAME}")
-    print(f" Şifre: {API_PASSWORD}")
-    print(f"\n API Token: {token[:20]}...")
-    print("\n" + "="*50 + "\n")
+    ip = get_local_ip()
+    base = f"http://{ip}:{port}"
+    print("\n" + "="*60)
+    print(" INSAAT METRAJ PRO — API SUNUCUSU")
+    print("="*60)
+    print(f"\n Yerel : http://localhost:{port}")
+    print(f" Ag    : {base}")
+    print(f"\n Kullanici : {API_USERNAME}")
+    print(f" Sifre     : {API_PASSWORD}")
+    print(f"\n API Token : {token[:20]}...")
+    print("\n --- METRAJ ENDPOINT'LERI ---")
+    print(f"  GET  {base}/metraj/kalemler?proje_id=<id>")
+    print(f"  POST {base}/metraj/kalem-ekle")
+    print(f"  POST {base}/metraj/toplu-ekle")
+    print("\n --- GANTT ENDPOINT'LERI ---")
+    print(f"  GET  {base}/gantt/gorevler?proje_id=<id>")
+    print(f"  POST {base}/gantt/gorev-ekle")
+    print(f"  POST {base}/gantt/toplu-ekle")
+    print(f"  DEL  {base}/gantt/gorev/<id>")
+    print("\n --- PUANTAJ ENDPOINT'LERI ---")
+    print(f"  GET/POST {base}/api/isci")
+    print(f"  GET/POST {base}/api/puantaj")
+    print(f"  GET/POST {base}/api/avans")
+    print("\n" + "="*60 + "\n")
 
     app.run(host=host, port=port, debug=debug)
 

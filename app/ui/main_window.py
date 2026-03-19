@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QListWidget, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread, pyqtSlot
-from PyQt6.QtGui import QIcon, QFont, QColor
+from PyQt6.QtGui import QIcon, QFont, QColor, QAction
 
 from app.core.database import DatabaseManager
 
@@ -151,9 +151,10 @@ class MainWindow(QMainWindow):
             'malzeme': False,
             'birim_fiyat': False,
             'ihale': False,
-            'asistan': False,
             'ekap': False,
         }
+        # Floating AI Asistan penceresi referansı
+        self._asistan_pencere = None
         
         # Arayüzü oluştur
         if self.splash:
@@ -379,7 +380,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(QWidget(), "Tedarikçi Fiyat Karşılaştırma")
         self.tabs.addTab(QWidget(), "Çevre ve Sürdürülebilirlik")
         self.tabs.addTab(QWidget(), "Gantt Chart ve İş Programı")
-        self.tabs.addTab(QWidget(), "AI İnşaat Danışmanı")
         self.tabs.addTab(QWidget(), "EKAP İhale Sorgulama")
 
         parent.addWidget(self.tabs)
@@ -1888,6 +1888,13 @@ class MainWindow(QMainWindow):
         auto_fire_action = tools_menu.addAction("Otomatik Fire Oranı Hesapla")
         auto_fire_action.triggered.connect(self.calculate_auto_fire_rates)
         
+        # AI Danışmanı menüsü
+        ai_menu = menubar.addMenu("🤖 AI Danışmanı")
+        ai_ac_action = QAction("AI Pencereyi Aç", self)
+        ai_ac_action.setShortcut("Ctrl+Shift+A")
+        ai_ac_action.triggered.connect(self._asistan_ac)
+        ai_menu.addAction(ai_ac_action)
+
         # Yardım menüsü
         help_menu = menubar.addMenu("Yardim")
         guide_action = help_menu.addAction("Kullanim Kilavuzu")
@@ -1895,7 +1902,26 @@ class MainWindow(QMainWindow):
         help_menu.addSeparator()
         about_action = help_menu.addAction("Hakkinda")
         about_action.triggered.connect(self.show_about)
-        
+
+    def _asistan_ac(self):
+        """Floating AI Asistan penceresini aç veya öne getir."""
+        if self._asistan_pencere is None:
+            from app.ui.asistan_pencere import AsistanPencere
+            self._asistan_pencere = AsistanPencere(self.db, parent=self)
+            if self.current_project_id:
+                try:
+                    proje = self.db.get_project(self.current_project_id)
+                    proje_adi = proje.get("ad", "") if proje else ""
+                    self._asistan_pencere.proje_guncelle(self.current_project_id, proje_adi)
+                except Exception:
+                    pass
+            gantt_ref = getattr(self, '_gantt_widget', None)
+            if gantt_ref is not None:
+                gantt_engine = getattr(gantt_ref, '_engine', None)
+                if gantt_engine is not None:
+                    self._asistan_pencere.set_gantt_engine(gantt_engine)
+        self._asistan_pencere.goster_veya_one_getir()
+
     # Proje İşlemleri
     def load_data_async(self) -> None:
         """Veritabanı verilerini async yükle"""
@@ -1943,12 +1969,10 @@ class MainWindow(QMainWindow):
                 self.update_proje_ozet()
             self.load_project_notes()
             self.statusBar().showMessage(f"Proje seçildi: {item.text(0)}")
-            # AI Asistan panelini proje değişiminden haberdar et
-            if self._tabs_created.get('asistan'):
+            # AI Asistan penceresini proje değişiminden haberdar et
+            if self._asistan_pencere is not None:
                 try:
-                    asistan = self.tabs.widget(12)
-                    if hasattr(asistan, 'proje_guncelle'):
-                        asistan.proje_guncelle(project_id, item.text(0))
+                    self._asistan_pencere.proje_guncelle(project_id, item.text(0))
                 except Exception:
                     pass
         else:
@@ -3481,16 +3505,8 @@ class MainWindow(QMainWindow):
     
     @pyqtSlot()
     def show_poz_question(self) -> None:
-        """Poz yükleme sorusu göster"""
-        reply = QMessageBox.question(
-            self, "Veri Yükleme",
-            "Pozlar henüz yüklenmemiş. Şimdi yüklemek ister misiniz?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            # Pozları yükle (yine async olabilir ama şimdilik sync)
-            self.load_pozlar(silent=False)
+        """Pozlar yüklü değilse sessizce otomatik yükle (kullanıcıya sorma)."""
+        self.load_pozlar(silent=True)
     
     def check_and_load_pozlar(self) -> None:
         """Uygulama açıldığında pozları kontrol et ve gerekirse yükle (sync versiyon - eski)"""
@@ -3782,49 +3798,32 @@ class MainWindow(QMainWindow):
                     self.tabs.setCurrentIndex(9)
                     self.tabs.blockSignals(False)
                     self._tabs_created['gantt'] = True
+                    self._gantt_widget = gantt_widget  # referans sakla
                     if placeholder:
                         placeholder.deleteLater()
+                    # Floating asistan açıksa Gantt engine'i bağla
+                    if self._asistan_pencere is not None:
+                        try:
+                            gantt_engine = getattr(gantt_widget, '_engine', None)
+                            if gantt_engine is not None:
+                                self._asistan_pencere.set_gantt_engine(gantt_engine)
+                        except Exception:
+                            pass
                 except Exception as e:
                     self.tabs.blockSignals(False)
                     print(f"Gantt Chart sekmesi oluşturma hatası: {e}")
                     import traceback
                     traceback.print_exc()
                     raise
-            elif index == 10 and not self._tabs_created.get('asistan', False):
+            elif index == 10 and not self._tabs_created.get('ekap', False):
                 try:
                     placeholder = self.tabs.widget(10)
-                    from app.ui.asistan_panel import AsistanPanel
-                    asistan_widget = AsistanPanel(self.db)
-                    self.tabs.blockSignals(True)
-                    self.tabs.removeTab(10)
-                    self.tabs.insertTab(10, asistan_widget, "🤖 AI Danışman")
-                    self.tabs.setCurrentIndex(10)
-                    self.tabs.blockSignals(False)
-                    self._tabs_created['asistan'] = True
-                    if placeholder:
-                        placeholder.deleteLater()
-                    # Aktif proje varsa bildir
-                    if self.current_project_id:
-                        try:
-                            proje = self.db.get_project(self.current_project_id)
-                            proje_adi = proje.get("ad", "") if proje else ""
-                            asistan_widget.proje_guncelle(self.current_project_id, proje_adi)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    self.tabs.blockSignals(False)
-                    print(f"AI Danışman sekmesi oluşturma hatası: {e}")
-                    import traceback
-                    traceback.print_exc()
-            elif index == 11 and not self._tabs_created.get('ekap', False):
-                try:
-                    placeholder = self.tabs.widget(11)
                     from app.ui.ekap_window import EKAPWindow
                     ekap_widget = EKAPWindow(self.db)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(11)
-                    self.tabs.insertTab(11, ekap_widget, "🏛 EKAP İhale")
-                    self.tabs.setCurrentIndex(11)
+                    self.tabs.removeTab(10)
+                    self.tabs.insertTab(10, ekap_widget, "🏛 EKAP İhale")
+                    self.tabs.setCurrentIndex(10)
                     self.tabs.blockSignals(False)
                     self._tabs_created['ekap'] = True
                     if placeholder:

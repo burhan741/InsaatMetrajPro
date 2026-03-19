@@ -3,7 +3,7 @@ Proje Şablonları Modülü
 İnşaat projesi türlerine göre hazır iş programı şablonları
 
 Özellikler:
-- 15 hazır proje şablonu (KONUT, TİCARİ, ENDÜSTRİYEL, ALTYAPI, YENİLEME)
+- 12 hazır proje şablonu (KONUT, TİCARİ, ENDÜSTRİYEL, ALTYAPI, YENİLEME)
 - Her şablon için detaylı iş kalemleri, bağımlılıklar, kaynaklar
 - GanttEngine ile doğrudan entegrasyon
 """
@@ -335,8 +335,147 @@ def _mantolama_sablon() -> ProjeSablonu:
     )
 
 
+def _betonarme_kaba_yapi_sablon() -> ProjeSablonu:
+    """
+    Betonarme yapı kaba inşaat şablonu — CŞB birim fiyat analizlerine göre.
+    Her yapısal eleman (temel / kolon / döşeme) için Kalıp → Demir → Beton → Kür sırası.
+    Yaklaşık süre: 90-120 gün (3-4 usta, tek kat).
+    """
+    gorevler = [
+        # ── 1. HAZIRLIK ─────────────────────────────────────────────────
+        SablonGorev(
+            "Şantiye Kurulumu ve Hazırlık", 3, [],
+            "Şef / Yönetim", "1.1",
+            "Konteyner, elektrik, su bağlantısı, şantiye tabelası",
+        ),
+        SablonGorev(
+            "Hafriyat ve İksa", 10, [0],
+            "Hafriyat Ekibi (İş Makinesi)", "1.2",
+            "Temel kazısı; iksa/şev gerekli ise uygula — zemin raporu referans alınmalı",
+            renk="#795548",
+        ),
+        # ── 2. TEMEL ────────────────────────────────────────────────────
+        SablonGorev(
+            "Temel Grobeton (C16)", 2, [1],
+            "Beton Ekibi", "2.1",
+            "5 cm grobeton — temel kalıbını taşır, zemin sertleştirme",
+            renk="#607d8b",
+        ),
+        SablonGorev(
+            "Temel Kalıbı", 4, [2],
+            "Kalıpçı Ekibi", "2.2",
+            "CŞB verimlilik: 2.86 m²/gün/usta — sürgülü sistem tercih edilmeli",
+        ),
+        SablonGorev(
+            "Temel Demiri", 6, [3],
+            "Demirci (Bağlama/Bükme)", "2.3",
+            "CŞB: 333 kg/gün/usta — nervürlü, min Ø12 — pas payı 4 cm zemin",
+            renk="#e74c3c",
+        ),
+        SablonGorev(
+            "Temel Betonu (C25/C30)", 2, [4],
+            "Beton Ekibi", "2.4",
+            "Beton Sınıfı: C25/C30 min. — vibrasyon zorunlu — gece dökümünden kaçın",
+            renk="#e74c3c",
+        ),
+        SablonGorev(
+            "Temel Kürü ve Bekleme", 21, [5],
+            "", "2.5",
+            "28 günlük dayanımın %75'i ~21 günde; yükleme için 28 gün önerilir",
+            renk="#9e9e9e",
+        ),
+        SablonGorev(
+            "Temel Kalıbı Sökümü", 2, [6],
+            "Kalıpçı Ekibi", "2.6",
+            "CŞB: 8.0 m²/gün/usta sökme verimliliği",
+        ),
+        # ── 3. KOLON ────────────────────────────────────────────────────
+        SablonGorev(
+            "Kolon Demiri (Filiz + Bağlama)", 5, [7],
+            "Demirci (Bağlama/Bükme)", "3.1",
+            "Temel filizleri ekleme + kolon demirleri; bindirme boyu min 40∅",
+            renk="#e74c3c",
+        ),
+        SablonGorev(
+            "Kolon Kalıbı", 4, [8],
+            "Kalıpçı Ekibi", "3.2",
+            "CŞB: 1.82 m²/gün/usta (kolon) — çift taraflı şaplı kalıp",
+        ),
+        SablonGorev(
+            "Kolon Betonu (C25/C30)", 1, [9],
+            "Beton Ekibi", "3.3",
+            "Kolonlar önce dökülür — döşeme ile aynı günde dökme — TS500 uyumu",
+            renk="#e74c3c",
+        ),
+        SablonGorev(
+            "Kolon Kürü", 7, [10],
+            "", "3.4",
+            "Min. 7 gün ıslak kür — kolon kalıpları 3 gün sonra sökülür",
+            renk="#9e9e9e",
+        ),
+        SablonGorev(
+            "Kolon Kalıbı Sökümü", 2, [11],
+            "Kalıpçı Ekibi", "3.5",
+        ),
+        # ── 4. DÖŞEME ───────────────────────────────────────────────────
+        SablonGorev(
+            "Döşeme Kalıbı (Aşıklar + Levha)", 6, [12],
+            "Kalıpçı Ekibi", "4.1",
+            "CŞB: 4.0 m²/gün/usta — alüminyum kalıp mevcut ise verimlilik 2x",
+        ),
+        SablonGorev(
+            "Döşeme Demiri (Alt + Üst Donatı)", 8, [13],
+            "Demirci (Bağlama/Bükme)", "4.2",
+            "CŞB: 250 kg/gün/usta nervürlü soğuk demir — mesnet donatıları unutulmamalı",
+            renk="#e74c3c",
+        ),
+        SablonGorev(
+            "Döşeme Betonu (C25/C30)", 2, [14],
+            "Beton Ekibi", "4.3",
+            "Pompalı beton önerilir — perdah beton yüzeyinde — bölge kotuna dikkat",
+            renk="#e74c3c",
+        ),
+        SablonGorev(
+            "Döşeme Kürü ve Kalıp Bekleme", 28, [15],
+            "", "4.4",
+            "Döşeme kalıbı 28 gün kalmalı — erken sökümden kaynaklı beton çatlaması riski",
+            renk="#9e9e9e",
+        ),
+        SablonGorev(
+            "Döşeme Kalıbı Sökümü", 3, [16],
+            "Kalıpçı Ekibi", "4.5",
+            "CŞB: 8.0 m²/gün/usta sökme",
+        ),
+        # ── 5. TAMAMLAMA ────────────────────────────────────────────────
+        SablonGorev(
+            "Dolgu ve Tesviye", 5, [17],
+            "Hafriyat Ekibi", "5.1",
+            "Temel çevresi geri dolgu — sıkıştırma kademeleri max 30 cm",
+            renk="#795548",
+        ),
+        SablonGorev(
+            "Kaba Yapı Kontrolü ve Teslim", 1, [18],
+            "Şef / Kontrol Mühendisi", "6.1",
+            "Röperli kontrol, beton dayanım raporu, TSE belgesi — Milestone",
+            milestone=True,
+        ),
+    ]
+    return ProjeSablonu(
+        kategori="KONUT",
+        tip="Betonarme Kaba Yapı",
+        aciklama=(
+            "Tek katlı betonarme yapı kaba inşaat şablonu — CŞB birim fiyat verimlilik "
+            "değerlerine göre. Temel → Kolon → Döşeme sırası, her eleman için "
+            "Kalıp / Demir / Beton / Kür ayrı görev (yakl. 90-120 gün)."
+        ),
+        gorevler=gorevler,
+        ikon="🏗️",
+    )
+
+
 # Tüm şablonlar listesi
 _TUM_SABLONLAR: List[ProjeSablonu] = [
+    _betonarme_kaba_yapi_sablon(),
     _villa_sablon(),
     _mustakil_ev_sablon(),
     _apartman_5kat_sablon(),

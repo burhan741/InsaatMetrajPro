@@ -658,8 +658,11 @@ class TatilDialog(QDialog):
         btn_ekle.clicked.connect(self._ekle_tatil)
         btn_sil = QPushButton("Sil")
         btn_sil.clicked.connect(self._sil_tatil)
+        btn_hava = QPushButton("Hava Kosulu Gunleri Ekle")
+        btn_hava.clicked.connect(self._ekle_hava_tatil)
         btn_row.addWidget(btn_ekle)
         btn_row.addWidget(btn_sil)
+        btn_row.addWidget(btn_hava)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
@@ -725,6 +728,51 @@ class TatilDialog(QDialog):
                 })
             mgr.ozel_tatiller = holidays
         self.accept()
+
+    def _ekle_hava_tatil(self) -> None:
+        """Kötü hava koşulu günlerini tatil olarak ekle."""
+        from PyQt6.QtWidgets import QInputDialog
+        try:
+            from app.core.hava_durumu import HavaDurumuServisi
+            servis = HavaDurumuServisi()
+        except Exception:
+            # Hava durumu servisi yoksa manuel giriş yap
+            tarih_str, ok = QInputDialog.getText(
+                self, "Hava Kosulu Gunu",
+                "Tarih girin (GG.AA.YYYY):",
+            )
+            if ok and tarih_str:
+                self._append_row(tarih_str, "Kötü Hava Koşulu", "Hava")
+            return
+
+        # Tarih aralığı seç
+        yil = datetime.now().year
+        ay_str, ok = QInputDialog.getItem(
+            self, "Ay Sec", "Kontrol edilecek ay:",
+            [f"{i:02d}.{yil}" for i in range(1, 13)],
+            datetime.now().month - 1, False
+        )
+        if not ok:
+            return
+        ay, yil_str = int(ay_str[:2]), int(ay_str[3:])
+        import calendar
+        bitis_gun = calendar.monthrange(yil_str, ay)[1]
+        bas = datetime(yil_str, ay, 1)
+        bit = datetime(yil_str, ay, bitis_gun)
+        try:
+            tahmin = servis.tahmin_al(
+                enlem=39.9, boylam=32.8,
+                baslangic=bas, bitis=bit
+            )
+            eklenen = 0
+            for gun_data in (tahmin or []):
+                if gun_data.get("calisma_durumu") in ("YASAKLI", "RISKLI"):
+                    tarih = gun_data.get("tarih", "")
+                    self._append_row(str(tarih), f"Hava Kosulu: {gun_data.get('aciklama','')}", "Hava")
+                    eklenen += 1
+            QMessageBox.information(self, "Tamamlandi", f"{eklenen} hava kosulu gunu eklendi.")
+        except Exception as e:
+            QMessageBox.warning(self, "Uyari", f"Hava durumu alinamadi: {e}\nManuel ekleme yapabilirsiniz.")
 
 
 # ===========================================================================
@@ -1229,43 +1277,153 @@ class TaskDialog(QDialog):
 # DependencyDialog
 # ===========================================================================
 class DependencyDialog(QDialog):
-    """Bağımlılık yönetimi diyaloğu."""
+    """Bağımlılık yönetimi — FS/SS/FF/SF tip + Lag/Lead süresi."""
 
-    def __init__(self, tasks: List[Dict], current_id: int, parent=None):
+    def __init__(self, tasks: List[Dict], current_id: int,
+                 existing_deps: Optional[List[Dict]] = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Bağımlılıkları Düzenle")
-        self.setMinimumSize(480, 360)
+        self.setMinimumSize(580, 400)
         self._tasks = [t for t in tasks if t.get("id") != current_id]
         self._current_id = current_id
+        self._existing = {d["id"]: d for d in (existing_deps or [])}
+        self._rows: List[Dict] = []  # {"check": QCheckBox, "tip": QComboBox, "lag": QSpinBox}
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
-            "Bu iş hangi işlerin bitmesini bekler? (FS — Finish-to-Start)"
+            "Önceki işleri seçin. Bağımlılık tipi ve gecikme (Lag) belirleyin."
         ))
 
-        self._list = QListWidget()
-        self._list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        for t in self._tasks:
-            item = QListWidgetItem(f"[{t.get('id')}] {t.get('ad', '')}")
-            item.setData(Qt.ItemDataRole.UserRole, t.get("id"))
-            self._list.addItem(item)
-        layout.addWidget(self._list)
+        self._table = QTableWidget(len(self._tasks), 4)
+        self._table.setHorizontalHeaderLabels(["Seç", "Görev Adı", "Tip", "Lag (Gün)"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.verticalHeader().setVisible(False)
+
+        for row, t in enumerate(self._tasks):
+            tid = t.get("id")
+            ex = self._existing.get(tid, {})
+
+            chk = QCheckBox()
+            chk.setChecked(bool(ex))
+            chk_widget = QWidget()
+            chk_layout = QHBoxLayout(chk_widget)
+            chk_layout.addWidget(chk)
+            chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chk_layout.setContentsMargins(0, 0, 0, 0)
+            self._table.setCellWidget(row, 0, chk_widget)
+
+            self._table.setItem(row, 1, QTableWidgetItem(
+                f"[{tid}] {t.get('ad', '')}"
+            ))
+
+            tip_combo = QComboBox()
+            tip_combo.addItems(["FS", "SS", "FF", "SF"])
+            tip_combo.setCurrentText(ex.get("tip", "FS"))
+            self._table.setCellWidget(row, 2, tip_combo)
+
+            lag_spin = QSpinBox()
+            lag_spin.setRange(-30, 30)
+            lag_spin.setSuffix(" gün")
+            lag_spin.setValue(ex.get("lag", 0))
+            self._table.setCellWidget(row, 3, lag_spin)
+
+            self._rows.append({
+                "id": tid, "check": chk, "tip": tip_combo, "lag": lag_spin
+            })
+
+        layout.addWidget(self._table)
+
+        legend = QLabel(
+            "FS=Finish-to-Start (varsayılan) | SS=Start-to-Start | "
+            "FF=Finish-to-Finish | SF=Start-to-Finish\n"
+            "Lag>0: gecikme (kür süresi vb.) | Lag<0: örtüşme"
+        )
+        legend.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        layout.addWidget(legend)
 
         btn_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
 
+    def get_selected_deps(self) -> List[Dict]:
+        result = []
+        for r in self._rows:
+            chk = r["check"]
+            if chk.isChecked():
+                result.append({
+                    "id": r["id"],
+                    "tip": r["tip"].currentText(),
+                    "lag": r["lag"].value(),
+                })
+        return result
+
     def get_selected_ids(self) -> List[int]:
-        return [
-            item.data(Qt.ItemDataRole.UserRole)
-            for item in self._list.selectedItems()
-        ]
+        """Geriye uyumluluk — sadece ID listesi döndür."""
+        return [d["id"] for d in self.get_selected_deps()]
+
+
+# ===========================================================================
+# IlerlemeGuncellemeDialog
+# ===========================================================================
+class IlerlemeGuncellemeDialog(QDialog):
+    """Tüm görevler için toplu ilerleme % güncelleme diyalogu."""
+
+    def __init__(self, is_list: List[Dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("İlerleme % Güncelle")
+        self.setMinimumSize(560, 400)
+        self._is_list = is_list
+        self._spin_map: Dict[int, QSpinBox] = {}
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        filtre_row = QHBoxLayout()
+        filtre_row.addWidget(QLabel("Filtre:"))
+        self._filtre_combo = QComboBox()
+        self._filtre_combo.addItems(["Tümü", "Başlanmamış", "Devam Eden", "Tamamlananlar Hariç"])
+        filtre_row.addWidget(self._filtre_combo)
+        filtre_row.addStretch()
+        layout.addLayout(filtre_row)
+
+        self._table = QTableWidget(0, 3)
+        self._table.setHorizontalHeaderLabels(["İş Adı", "Mevcut %", "Yeni %"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self._table)
+
+        for task in self._is_list:
+            mevcut = int(task.get("tamamlanma_yuzdesi", 0) or 0)
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            self._table.setItem(row, 0, QTableWidgetItem(task.get("ad", "")))
+            self._table.setItem(row, 1, QTableWidgetItem(f"{mevcut}%"))
+            spin = QSpinBox()
+            spin.setRange(0, 100)
+            spin.setSuffix("%")
+            spin.setValue(mevcut)
+            self._table.setCellWidget(row, 2, spin)
+            self._spin_map[task.get("id", row)] = spin
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def get_updates(self) -> Dict[int, int]:
+        return {tid: spin.value() for tid, spin in self._spin_map.items()}
 
 
 # ===========================================================================
@@ -1353,8 +1511,10 @@ class GanttWindow(QWidget):
 
         for label, slot in [
             ("▶ Hesapla (CPM)", self.hesapla_program),
+            ("📋 Metrajdan Üret", self._metrajdan_gorev_uret),
             ("💾 Kaydet", self.kaydet_program),
             ("📂 Yükle", self.yukle_program),
+            ("📥 İçeri Aktar", self.goster_iceri_aktar_menu),
             ("📤 Dışa Aktar", self.goster_export_menu),
             ("↩ Geri Al", self._undo),
         ]:
@@ -1381,6 +1541,14 @@ class GanttWindow(QWidget):
         self._proje_combo = QComboBox()
         self._proje_combo.currentIndexChanged.connect(self.on_proje_changed)
         layout.addWidget(self._proje_combo)
+
+        lbl_bas = QLabel("Proje Başlangıcı:")
+        lbl_bas.setStyleSheet("font-size: 11px;")
+        layout.addWidget(lbl_bas)
+        self._proje_baslangic_input = QDateEdit(QDate.currentDate())
+        self._proje_baslangic_input.setCalendarPopup(True)
+        self._proje_baslangic_input.setDisplayFormat("dd.MM.yyyy")
+        layout.addWidget(self._proje_baslangic_input)
 
         for label, slot in [
             ("🧩 Şablon Sihirbazı", self.goster_sablon_dialog),
@@ -1424,6 +1592,7 @@ class GanttWindow(QWidget):
             ("✏ Düzenle", self.duzenle_is),
             ("🗑 Sil", self.sil_is),
             ("🔗 Bağımlılık", self.ekle_bagimliluk),
+            ("📊 İlerleme Güncelle", self._toplu_ilerleme_guncelle),
         ]:
             btn = QPushButton(label)
             btn.clicked.connect(slot)
@@ -1645,24 +1814,65 @@ class GanttWindow(QWidget):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        layout.addWidget(QLabel("Gecikme Analizi — Taahüt vs Gerçekleşen"))
+        layout.addWidget(QLabel("Gecikme Analizi — Taahhüt vs Gerçekleşen / 4735 sayılı K. Md.20 Ceza Hesabı"))
 
-        self._gecikme_table = QTableWidget(0, 6)
+        # ── Sözleşme Bedeli Girişi ─────────────────────────────────────
+        sozlesme_row = QHBoxLayout()
+        sozlesme_row.addWidget(QLabel("Sözleşme Bedeli (₺):"))
+        self._sozlesme_bedeli_spin = QDoubleSpinBox()
+        self._sozlesme_bedeli_spin.setRange(0, 999_999_999_999)
+        self._sozlesme_bedeli_spin.setDecimals(2)
+        self._sozlesme_bedeli_spin.setSingleStep(10_000)
+        self._sozlesme_bedeli_spin.setGroupSeparatorShown(True)
+        self._sozlesme_bedeli_spin.setFixedWidth(200)
+        self._sozlesme_bedeli_spin.setToolTip(
+            "İhale sözleşme bedeli — gecikme cezası hesabında kullanılır.\n"
+            "Boş bırakılırsa Gantt bütçe toplamı kullanılır."
+        )
+        sozlesme_row.addWidget(self._sozlesme_bedeli_spin)
+        btn_gecikme_hesapla = QPushButton("🔄 Yenile")
+        btn_gecikme_hesapla.clicked.connect(self._analiz_gecikme)
+        sozlesme_row.addWidget(btn_gecikme_hesapla)
+        sozlesme_row.addStretch()
+        layout.addLayout(sozlesme_row)
+
+        # ── Gecikme Tablosu ────────────────────────────────────────────
+        self._gecikme_table = QTableWidget(0, 8)
         self._gecikme_table.setHorizontalHeaderLabels([
             "İş Adı", "Plan Bitiş", "Gerçek Bitiş",
             "Gecikme (Gün)", "Gecikme Türü", "Risk Skoru",
+            "Ceza (₺)", "4735 K.20 Durumu",
         ])
-        self._gecikme_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
+        hdr = self._gecikme_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self._gecikme_table)
 
-        risk_row = QHBoxLayout()
+        # ── KPI Özet Satırı ───────────────────────────────────────────
+        kpi_row = QHBoxLayout()
         self._risk_label = QLabel("Risk Skoru: —")
         self._risk_label.setStyleSheet("font-size: 13px; font-weight: bold;")
-        risk_row.addWidget(self._risk_label)
-        risk_row.addStretch()
-        layout.addLayout(risk_row)
+        kpi_row.addWidget(self._risk_label)
+
+        self._ceza_toplam_label = QLabel("Toplam Ceza: —")
+        self._ceza_toplam_label.setStyleSheet("font-size: 13px; font-weight: bold;")
+        kpi_row.addWidget(self._ceza_toplam_label)
+
+        self._ceza_oran_label = QLabel("Ceza Oranı: —")
+        self._ceza_oran_label.setStyleSheet("font-size: 13px; font-weight: bold;")
+        kpi_row.addWidget(self._ceza_oran_label)
+
+        kpi_row.addStretch()
+        layout.addLayout(kpi_row)
+
+        # ── 4735 K.20 Uyarı Paneli ────────────────────────────────────
+        self._k20_uyari_label = QLabel("")
+        self._k20_uyari_label.setWordWrap(True)
+        self._k20_uyari_label.setStyleSheet(
+            "padding: 8px; border-radius: 4px; font-size: 12px;"
+        )
+        self._k20_uyari_label.setVisible(False)
+        layout.addWidget(self._k20_uyari_label)
 
         self._tabs.addTab(tab, "⏰ Gecikme")
 
@@ -1770,6 +1980,25 @@ class GanttWindow(QWidget):
         layout.addLayout(btn_row)
 
         self._tabs.addTab(tab, "📊 Maliyet Takibi")
+
+    # ------------------------------------------------------------------
+    # İlerleme Güncelleme
+    # ------------------------------------------------------------------
+    def _toplu_ilerleme_guncelle(self) -> None:
+        if not self._is_list:
+            QMessageBox.information(self, "Bilgi", "İş listesi boş.")
+            return
+        dlg = IlerlemeGuncellemeDialog(self._is_list, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._push_undo()
+            updates = dlg.get_updates()
+            for task in self._is_list:
+                tid = task.get("id")
+                if tid in updates:
+                    task["tamamlanma_yuzdesi"] = updates[tid]
+            self._yukle_is_listesi()
+            self.guncelle_hakedis()
+            self._status_label.setText("İlerleme yüzdeleri güncellendi.")
 
     # ------------------------------------------------------------------
     # Hakediş Metodları
@@ -2115,10 +2344,20 @@ class GanttWindow(QWidget):
             self._is_table.setItem(
                 row, 6, QTableWidgetItem("✓" if task.get("milestone") else "")
             )
-            bagimliliklar = task.get("bagimliliklar", [])
+            deps_detay = task.get("bagimliliklar_detay", [])
+            if deps_detay:
+                dep_str = ", ".join(
+                    f"{d['id']}({d['tip']}"
+                    + (f"+{d['lag']}g" if d.get('lag', 0) > 0 else
+                       f"{d['lag']}g" if d.get('lag', 0) < 0 else "")
+                    + ")"
+                    for d in deps_detay
+                )
+            else:
+                dep_str = ", ".join(str(b) for b in task.get("bagimliliklar", []))
             self._is_table.setItem(
                 row, 7,
-                QTableWidgetItem(", ".join(str(b) for b in bagimliliklar))
+                QTableWidgetItem(dep_str)
             )
 
     # ------------------------------------------------------------------
@@ -2173,24 +2412,99 @@ class GanttWindow(QWidget):
             QMessageBox.information(self, "Bilgi", "Önce bir iş seçin.")
             return
         task = self._is_list[row]
-        dlg = DependencyDialog(self._is_list, task["id"], parent=self)
+        existing = task.get("bagimliliklar_detay", [])
+        dlg = DependencyDialog(
+            self._is_list, task["id"],
+            existing_deps=existing, parent=self
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._push_undo()
-            task["bagimliliklar"] = dlg.get_selected_ids()
-            if self._engine and hasattr(self._engine, "update_task"):
-                self._engine.update_task(task)
+            deps = dlg.get_selected_deps()
+            task["bagimliliklar_detay"] = deps
+            task["bagimliliklar"] = [d["id"] for d in deps]
             self._yukle_is_listesi()
+            self._status_label.setText(
+                f"Bağımlılıklar güncellendi: {task['ad']} — "
+                f"{len(deps)} önceki iş"
+            )
 
     # ------------------------------------------------------------------
     # CPM Hesaplama
     # ------------------------------------------------------------------
     def hesapla_program(self) -> None:
-        if not self._engine or not self._is_list:
+        if not self._is_list:
             QMessageBox.information(self, "Bilgi", "Önce iş listesi oluşturun.")
             return
         try:
-            self._engine.tasks = self._is_list
-            result = self._engine.calculate_schedule()
+            try:
+                proje_bas = datetime.strptime(
+                    self._proje_baslangic_input.date().toString("yyyy-MM-dd"), "%Y-%m-%d"
+                )
+            except Exception:
+                proje_bas = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            if self._engine:
+                # is_list dict'lerini engine Task nesnelerine dönüştür
+                self._engine.tasks.clear()
+                for item in self._is_list:
+                    try:
+                        from app.core.gantt_engine import Task
+                        t = Task(
+                            task_id=item.get("id", 0),
+                            ad=item.get("ad", ""),
+                            sure_gun=item.get("sure", 5),
+                            ilerleme=item.get("tamamlanma_yuzdesi", 0.0),
+                            kaynak=item.get("kaynak", ""),
+                            milestone=item.get("milestone", False),
+                        )
+                        t.butce = float(item.get("butce", 0) or 0)
+                        self._engine.add_task(t)
+                    except Exception:
+                        pass
+                # Bağımlılıkları aktar
+                for item in self._is_list:
+                    succ_id = item.get("id", 0)
+                    for dep in item.get("bagimliliklar_detay", []):
+                        try:
+                            self._engine.add_dependency(
+                                dep.get("id", 0), succ_id,
+                                dep.get("tip", "FS"), dep.get("lag", 0)
+                            )
+                        except Exception:
+                            pass
+                    # Eski format (sadece ID listesi) uyumu
+                    for pred_id in item.get("bagimliliklar", []):
+                        if isinstance(pred_id, int) and not item.get("bagimliliklar_detay"):
+                            try:
+                                self._engine.add_dependency(pred_id, succ_id, "FS", 0)
+                            except Exception:
+                                pass
+                eng_result = self._engine.calculate_schedule(proje_bas)
+                # Sonuçları is_list'e yaz
+                engine_task_map = {t.task_id: t for t in self._engine.tasks.values()}
+                for item in self._is_list:
+                    et = engine_task_map.get(item.get("id"))
+                    if et:
+                        item["es"] = et.early_start.strftime("%d.%m.%Y") if et.early_start else ""
+                        item["ef"] = et.early_finish.strftime("%d.%m.%Y") if et.early_finish else ""
+                        item["ls"] = et.late_start.strftime("%d.%m.%Y") if et.late_start else ""
+                        item["lf"] = et.late_finish.strftime("%d.%m.%Y") if et.late_finish else ""
+                        item["float"] = et.float_gun
+                        item["kritik_yol"] = et.kritik
+                        item["tamamlanma_yuzdesi"] = item.get("tamamlanma_yuzdesi", 0)
+                # _yukle_tablo_goruntum / _yukle_kritik_yol için uyumlu dict
+                pb = eng_result.get("proje_bitis")
+                if pb and hasattr(pb, "strftime"):
+                    proje_bitis_str = pb.strftime("%d.%m.%Y")
+                else:
+                    proje_bitis_str = str(pb) if pb else "—"
+                result = {
+                    "tasks": self._is_list,
+                    "proje_bitis": proje_bitis_str,
+                    "kritik_yol": eng_result.get("kritik_yol", []),
+                }
+            else:
+                result = {"tasks": self._is_list, "proje_bitis": "—"}
             self._is_list = result.get("tasks", self._is_list)
             self._yukle_is_listesi()
             self._yukle_tablo_goruntum(result)
@@ -2199,6 +2513,7 @@ class GanttWindow(QWidget):
             self.refresh_visual_gantt()
             self.refresh_s_curve()
             self._refresh_whatif_gorevler()
+            self._kaynak_guncelle_tablo()
 
             if hasattr(self._engine, "kontrol_uyarilar"):
                 self._alerts = self._engine.kontrol_uyarilar()
@@ -2246,40 +2561,66 @@ class GanttWindow(QWidget):
 
     def _yukle_kritik_yol(self, result: Dict) -> None:
         self._kritik_table.setRowCount(0)
-        kritik_tasks = [t for t in result.get("tasks", []) if t.get("kritik_yol")]
+        tasks = result.get("tasks", [])
+        kritik_sayisi = 0
+        toplam_float = 0
 
-        for task in kritik_tasks:
+        for task in tasks:
+            kritik = task.get("kritik_yol", False) or task.get("kritik", False)
             row = self._kritik_table.rowCount()
             self._kritik_table.insertRow(row)
             self._kritik_table.setItem(row, 0, QTableWidgetItem(task.get("ad", "")))
-            self._kritik_table.setItem(row, 1, QTableWidgetItem(str(task.get("baslangic", ""))))
-            self._kritik_table.setItem(row, 2, QTableWidgetItem(str(task.get("bitis", ""))))
+            self._kritik_table.setItem(row, 1, QTableWidgetItem(str(task.get("es", ""))))
+            self._kritik_table.setItem(row, 2, QTableWidgetItem(str(task.get("ef", ""))))
             self._kritik_table.setItem(row, 3, QTableWidgetItem(str(task.get("sure", ""))))
-            bagimliliklar = task.get("bagimliliklar", [])
-            self._kritik_table.setItem(
-                row, 4,
-                QTableWidgetItem(", ".join(str(b) for b in bagimliliklar))
-            )
-            for col in range(5):
-                item = self._kritik_table.item(row, col)
-                if item:
-                    item.setBackground(QColor("#FFEBEE"))
+            deps = task.get("bagimliliklar_detay", [])
+            dep_str = ", ".join(
+                f"{d['id']}({d.get('tip','FS')})" for d in deps
+            ) if deps else ", ".join(str(b) for b in task.get("bagimliliklar", []))
+            self._kritik_table.setItem(row, 4, QTableWidgetItem(dep_str))
 
-        proje_sure = result.get("proje_suresi", "—")
-        self._kpi_proje_suresi.property("value_label").setText(
-            f"{proje_sure} gün" if proje_sure != "—" else "—"
-        )
-        self._kpi_kritik_sayisi.property("value_label").setText(str(len(kritik_tasks)))
-        total_float = sum(
-            t.get("float", 0)
-            for t in result.get("tasks", [])
-            if not t.get("kritik_yol")
-        )
-        self._kpi_toplam_float.property("value_label").setText(f"{total_float} gün")
+            if kritik:
+                kritik_sayisi += 1
+                for col in range(5):
+                    item = self._kritik_table.item(row, col)
+                    if item:
+                        item.setBackground(QColor("#FFEBEE"))
+                        item.setForeground(QColor("#B71C1C"))
+            else:
+                float_val = int(task.get("float", 0) or 0)
+                toplam_float += float_val
+
+        # KPI kartlarını güncelle
+        proje_suresi = result.get("proje_suresi_gun", result.get("proje_suresi", len(tasks) * 5))
+        try:
+            lbl = self._kpi_proje_suresi.findChildren(QLabel)[-1]
+            lbl.setText(f"{proje_suresi} gün" if isinstance(proje_suresi, int) else str(proje_suresi))
+            lbl2 = self._kpi_kritik_sayisi.findChildren(QLabel)[-1]
+            lbl2.setText(str(kritik_sayisi))
+            lbl3 = self._kpi_toplam_float.findChildren(QLabel)[-1]
+            lbl3.setText(f"{toplam_float} gün")
+        except Exception:
+            pass
 
     def _analiz_gecikme(self) -> None:
+        """
+        Gecikme analizi + 4735 sayılı K. Md.20 ceza hesabı.
+        Gecikme cezası: günlük ‰5 (binde beş) — 4735/K.20 sabiti.
+        Fesih eşiği: toplam ceza sözleşme bedelinin %30'unu aştığında.
+        """
         self._gecikme_table.setRowCount(0)
         total_risk = 0
+        toplam_gecikme_gun = 0  # Kritik yol toplam gecikme günü
+
+        # Sözleşme bedeli: kullanıcı girişi veya Gantt bütçe toplamı
+        sozlesme_bedeli = self._sozlesme_bedeli_spin.value()
+        if sozlesme_bedeli <= 0:
+            sozlesme_bedeli = sum(
+                float(t.get("butce", 0) or 0) for t in self._is_list
+            )
+
+        CEZA_ORANI = 0.005  # ‰5 = 0.005 (4735 Md.20)
+        FESIH_ESIGI = 0.30  # %30 fesih eşiği
 
         for task in self._is_list:
             plan_bitis = task.get("plan_bitis") or task.get("bitis")
@@ -2306,6 +2647,7 @@ class GanttWindow(QWidget):
             if task.get("kritik_yol"):
                 gecikme_turu = "Kritik"
                 risk = gecikme * 3
+                toplam_gecikme_gun += gecikme  # Sadece kritik yol gecikmeleri ceza hesabında
             else:
                 gecikme_turu = "Normal"
                 risk = gecikme
@@ -2319,6 +2661,37 @@ class GanttWindow(QWidget):
                 risk_item.setForeground(QColor("#F57C00"))
             self._gecikme_table.setItem(row, 5, risk_item)
 
+            # Ceza hesabı (sadece kritik yol)
+            if task.get("kritik_yol") and sozlesme_bedeli > 0:
+                ceza = gecikme * CEZA_ORANI * sozlesme_bedeli
+                ceza_item = QTableWidgetItem(f"{ceza:,.0f} ₺")
+                ceza_item.setForeground(QColor("#F44336"))
+                self._gecikme_table.setItem(row, 6, ceza_item)
+                # 4735 K.20 durum sütunu
+                ceza_orani = gecikme * CEZA_ORANI
+                if ceza_orani >= FESIH_ESIGI:
+                    durum = "FESIH ESIGI ASILDI"
+                    durum_item = QTableWidgetItem(durum)
+                    durum_item.setForeground(QColor("#B71C1C"))
+                    durum_item.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+                elif ceza_orani >= 0.20:
+                    durum = f"%{ceza_orani*100:.1f} - Kritik Risk"
+                    durum_item = QTableWidgetItem(durum)
+                    durum_item.setForeground(QColor("#E65100"))
+                elif ceza_orani >= 0.10:
+                    durum = f"%{ceza_orani*100:.1f} - Uyari"
+                    durum_item = QTableWidgetItem(durum)
+                    durum_item.setForeground(QColor("#F57C00"))
+                else:
+                    durum = f"%{ceza_orani*100:.1f} - Normal"
+                    durum_item = QTableWidgetItem(durum)
+                    durum_item.setForeground(QColor("#388E3C"))
+                self._gecikme_table.setItem(row, 7, durum_item)
+            else:
+                self._gecikme_table.setItem(row, 6, QTableWidgetItem("—"))
+                self._gecikme_table.setItem(row, 7, QTableWidgetItem("—"))
+
+        # ── Risk skoru ─────────────────────────────────────────────────
         if total_risk > 100:
             self._risk_label.setStyleSheet("color: #F44336; font-weight: bold;")
         elif total_risk > 30:
@@ -2326,6 +2699,66 @@ class GanttWindow(QWidget):
         else:
             self._risk_label.setStyleSheet("color: #388E3C; font-weight: bold;")
         self._risk_label.setText(f"Risk Skoru: {total_risk}")
+
+        # ── Toplam ceza hesabı ─────────────────────────────────────────
+        if sozlesme_bedeli > 0 and toplam_gecikme_gun > 0:
+            toplam_ceza = toplam_gecikme_gun * CEZA_ORANI * sozlesme_bedeli
+            toplam_ceza_orani = toplam_gecikme_gun * CEZA_ORANI
+            self._ceza_toplam_label.setText(f"Toplam Ceza: {toplam_ceza:,.0f} ₺")
+            self._ceza_oran_label.setText(
+                f"Ceza Orani: %{toplam_ceza_orani * 100:.1f}"
+            )
+            # 4735 K.20 uyarı paneli
+            if toplam_ceza_orani >= FESIH_ESIGI:
+                self._k20_uyari_label.setText(
+                    "KRITIK UYARI — 4735 sayili Kanun Md.20:\n"
+                    f"Toplam gecikme cezasi sozlesme bedelinin %30'unu ASTI "
+                    f"(%{toplam_ceza_orani * 100:.1f}). "
+                    f"Idare sozlesmeyi feshedebilir ve yuklenici kara listeye alinabilir!\n"
+                    f"Toplam ceza: {toplam_ceza:,.0f} TL | "
+                    f"Sozlesme bedeli: {sozlesme_bedeli:,.0f} TL | "
+                    f"Gecikme: {toplam_gecikme_gun} gun"
+                )
+                self._k20_uyari_label.setStyleSheet(
+                    "padding: 10px; border-radius: 6px; font-size: 12px; "
+                    "background: #FFEBEE; color: #B71C1C; border: 2px solid #F44336;"
+                )
+                self._k20_uyari_label.setVisible(True)
+                if toplam_ceza_orani >= FESIH_ESIGI:
+                    self._alerts.append({
+                        "seviye": "kritik",
+                        "mesaj": (
+                            f"4735 Md.20 FESIH ESIGI: Gecikme cezasi %"
+                            f"{toplam_ceza_orani*100:.1f} — Sozlesme feshi riski!"
+                        ),
+                    })
+            elif toplam_ceza_orani >= 0.20:
+                self._k20_uyari_label.setText(
+                    f"UYARI — 4735 Md.20: Gecikme cezasi %{toplam_ceza_orani*100:.1f} "
+                    f"(Fesih esigi %30). "
+                    f"Toplam ceza: {toplam_ceza:,.0f} TL. Hizlanma onlemleri alinmali!"
+                )
+                self._k20_uyari_label.setStyleSheet(
+                    "padding: 10px; border-radius: 6px; font-size: 12px; "
+                    "background: #FFF3E0; color: #E65100; border: 2px solid #FF9800;"
+                )
+                self._k20_uyari_label.setVisible(True)
+            elif toplam_ceza_orani >= 0.10:
+                self._k20_uyari_label.setText(
+                    f"DIKKAT — 4735 Md.20: Gecikme cezasi %{toplam_ceza_orani*100:.1f}. "
+                    f"Toplam ceza: {toplam_ceza:,.0f} TL."
+                )
+                self._k20_uyari_label.setStyleSheet(
+                    "padding: 8px; border-radius: 4px; font-size: 12px; "
+                    "background: #FFFDE7; color: #F9A825; border: 1px solid #FBC02D;"
+                )
+                self._k20_uyari_label.setVisible(True)
+            else:
+                self._k20_uyari_label.setVisible(False)
+        else:
+            self._ceza_toplam_label.setText("Toplam Ceza: —")
+            self._ceza_oran_label.setText("Ceza Orani: —")
+            self._k20_uyari_label.setVisible(False)
 
     # ------------------------------------------------------------------
     # Görsel Gantt
@@ -2429,6 +2862,11 @@ class GanttWindow(QWidget):
             "tarih": date.today().isoformat(),
             "tasks": copy.deepcopy(self._is_list),
         }
+        if self._engine and hasattr(self._engine, 'save_baseline'):
+            try:
+                self._engine.save_baseline()
+            except Exception:
+                pass
         QMessageBox.information(
             self, "Baseline",
             f"Baseline kaydedildi: {self._baseline_data['tarih']}"
@@ -2436,35 +2874,67 @@ class GanttWindow(QWidget):
         self._status_label.setText("Baseline kaydedildi.")
 
     def analiz_baseline(self) -> None:
-        if not self._baseline_data:
-            QMessageBox.information(self, "Bilgi", "Önce baseline kaydedin.")
+        if not self._baseline_data and (not self._engine or not hasattr(self._engine, 'get_baseline_comparison')):
+            QMessageBox.information(self, "Bilgi", "Önce 'Baseline Kaydet' ile referans plan oluşturun.")
             return
+
         self._baseline_table.setRowCount(0)
-        baseline_map = {t["id"]: t for t in self._baseline_data.get("tasks", [])}
+
+        # Engine baseline kullan
+        if self._engine and hasattr(self._engine, 'get_baseline_comparison'):
+            try:
+                karsilastirma = self._engine.get_baseline_comparison()
+                for item in karsilastirma:
+                    row = self._baseline_table.rowCount()
+                    self._baseline_table.insertRow(row)
+                    self._baseline_table.setItem(row, 0, QTableWidgetItem(item.get("ad", "")))
+                    plan = item.get("baseline_bitis", "")
+                    gercek = item.get("bitis", "")
+                    sapma = item.get("bitis_sapma", 0)
+                    durum = "Zamanında" if sapma <= 0 else f"{sapma} gün gecikme"
+                    self._baseline_table.setItem(row, 1, QTableWidgetItem(str(plan) if plan else "—"))
+                    self._baseline_table.setItem(row, 2, QTableWidgetItem(str(gercek) if gercek else "—"))
+                    sapma_item = QTableWidgetItem(str(sapma))
+                    sapma_item.setForeground(QColor("#27ae60") if sapma <= 0 else QColor("#e74c3c"))
+                    self._baseline_table.setItem(row, 3, sapma_item)
+                    self._baseline_table.setItem(row, 4, QTableWidgetItem(durum))
+                return
+            except Exception:
+                pass
+
+        # Fallback: is_list vs baseline_data
+        if not self._baseline_data:
+            QMessageBox.information(self, "Bilgi", "Önce 'Baseline Kaydet' ile referans plan oluşturun.")
+            return
+
+        baseline_map = {t.get("id"): t for t in self._baseline_data.get("tasks", [])}
         for task in self._is_list:
-            base = baseline_map.get(task.get("id"))
-            if not base:
+            bl = baseline_map.get(task.get("id"), {})
+            if not bl:
                 continue
             row = self._baseline_table.rowCount()
             self._baseline_table.insertRow(row)
             self._baseline_table.setItem(row, 0, QTableWidgetItem(task.get("ad", "")))
-            self._baseline_table.setItem(row, 1, QTableWidgetItem(str(base.get("bitis", ""))))
-            self._baseline_table.setItem(row, 2, QTableWidgetItem(str(task.get("bitis", ""))))
+            plan_bitis = bl.get("ef", bl.get("bitis_tarihi", bl.get("bitis", "—")))
+            gercek_bitis = task.get("ef", task.get("bitis_tarihi", task.get("bitis", "—")))
             try:
-                base_end = date.fromisoformat(str(base.get("bitis", "")))
-                curr_end = date.fromisoformat(str(task.get("bitis", "")))
-                sapma = (curr_end - base_end).days
-                sapma_item = QTableWidgetItem(f"{sapma:+d} gün")
-                if sapma > 0:
-                    sapma_item.setForeground(QColor("#F44336"))
-                elif sapma < 0:
-                    sapma_item.setForeground(QColor("#4CAF50"))
-                self._baseline_table.setItem(row, 3, sapma_item)
-                durum = "Gecikiyor" if sapma > 0 else "Zamanında" if sapma == 0 else "Erken"
-                self._baseline_table.setItem(row, 4, QTableWidgetItem(durum))
-            except (ValueError, TypeError):
-                self._baseline_table.setItem(row, 3, QTableWidgetItem("—"))
-                self._baseline_table.setItem(row, 4, QTableWidgetItem("—"))
+                p = datetime.strptime(str(plan_bitis), "%d.%m.%Y")
+                g = datetime.strptime(str(gercek_bitis), "%d.%m.%Y")
+                sapma = (g - p).days
+            except Exception:
+                try:
+                    p = date.fromisoformat(str(plan_bitis))
+                    g = date.fromisoformat(str(gercek_bitis))
+                    sapma = (g - p).days
+                except Exception:
+                    sapma = 0
+            durum = "Zamanında" if sapma <= 0 else f"{sapma} gün gecikme"
+            self._baseline_table.setItem(row, 1, QTableWidgetItem(str(plan_bitis)))
+            self._baseline_table.setItem(row, 2, QTableWidgetItem(str(gercek_bitis)))
+            sapma_item = QTableWidgetItem(str(sapma))
+            sapma_item.setForeground(QColor("#27ae60") if sapma <= 0 else QColor("#e74c3c"))
+            self._baseline_table.setItem(row, 3, sapma_item)
+            self._baseline_table.setItem(row, 4, QTableWidgetItem(durum))
 
     # ------------------------------------------------------------------
     # Kaynaklar
@@ -2487,12 +2957,14 @@ class GanttWindow(QWidget):
         layout.addRow(btn_box)
 
         if dlg.exec() == QDialog.DialogCode.Accepted and ad_input.text().strip():
-            row = self._kaynak_table.rowCount()
-            self._kaynak_table.insertRow(row)
-            self._kaynak_table.setItem(row, 0, QTableWidgetItem(ad_input.text().strip()))
-            self._kaynak_table.setItem(row, 1, QTableWidgetItem(str(kapasite_input.value())))
-            self._kaynak_table.setItem(row, 2, QTableWidgetItem("0"))
-            self._kaynak_table.setItem(row, 3, QTableWidgetItem("Boşta"))
+            ad = ad_input.text().strip()
+            kapasite = kapasite_input.value()
+            if self._engine and hasattr(self._engine, 'add_kaynak'):
+                try:
+                    self._engine.add_kaynak(ad, kapasite)
+                except Exception:
+                    pass
+            self._kaynak_guncelle_tablo()
 
     def yukle_kaynaklar(self, kaynaklar: List[Dict]) -> None:
         self._kaynak_table.setRowCount(0)
@@ -2509,12 +2981,39 @@ class GanttWindow(QWidget):
                 durum_item.setForeground(QColor("#F44336"))
             self._kaynak_table.setItem(row, 3, durum_item)
 
+    def _kaynak_guncelle_tablo(self) -> None:
+        self._kaynak_table.setRowCount(0)
+        if not self._engine:
+            return
+        try:
+            kaynaklar = getattr(self._engine, 'kaynaklar', {})
+            yukleme = {}
+            if hasattr(self._engine, 'get_kaynak_yukleme'):
+                yukleme = self._engine.get_kaynak_yukleme() or {}
+            for kaynak_ad, kaynak in (kaynaklar.items() if isinstance(kaynaklar, dict) else []):
+                row = self._kaynak_table.rowCount()
+                self._kaynak_table.insertRow(row)
+                kapasite = getattr(kaynak, 'kapasite', 1) if hasattr(kaynak, 'kapasite') else kaynak.get('kapasite', 1) if isinstance(kaynak, dict) else 1
+                kullanim = yukleme.get(kaynak_ad, {}).get('kullanim_yuzdesi', 0)
+                durum = "Aşım" if kullanim > 100 else "Yoğun" if kullanim > 80 else "Normal"
+                self._kaynak_table.setItem(row, 0, QTableWidgetItem(str(kaynak_ad)))
+                self._kaynak_table.setItem(row, 1, QTableWidgetItem(str(kapasite)))
+                self._kaynak_table.setItem(row, 2, QTableWidgetItem(f"{kullanim:.0f}%"))
+                self._kaynak_table.setItem(row, 3, QTableWidgetItem(durum))
+        except Exception as e:
+            logger.warning(f"Kaynak tablo güncellenemedi: {e}")
+
     def kontrol_kaynak_cakisma(self) -> None:
-        if not self._engine or not hasattr(self._engine, "kontrol_kaynak_cakisma"):
+        if not self._engine:
+            QMessageBox.information(self, "Bilgi", "Kaynak çakışma motoru mevcut değil.")
+            return
+        metod = getattr(self._engine, 'check_kaynak_cakisma',
+                getattr(self._engine, 'kontrol_kaynak_cakisma', None))
+        if not metod:
             QMessageBox.information(self, "Bilgi", "Kaynak çakışma motoru mevcut değil.")
             return
         try:
-            cakismalar = self._engine.kontrol_kaynak_cakisma()
+            cakismalar = metod()
             if not cakismalar:
                 QMessageBox.information(self, "Kaynak", "Kaynak çakışması yok.")
             else:
@@ -2638,6 +3137,334 @@ class GanttWindow(QWidget):
         except Exception as exc:
             logger.error("JSON export hatası: %s", exc)
             QMessageBox.critical(self, "Hata", str(exc))
+
+    # ------------------------------------------------------------------
+    # İçeri Aktar
+    # ------------------------------------------------------------------
+    def goster_iceri_aktar_menu(self) -> None:
+        """İçeri aktarma format menüsünü gösterir."""
+        menu = QMenu(self)
+        menu.addAction("📊 Excel'den İçeri Aktar (.xlsx)", self._aktar_excel)
+        menu.addAction("📄 CSV'den İçeri Aktar (.csv)", self._aktar_csv)
+        menu.addAction("🗂 JSON'dan İçeri Aktar (.json)", self._aktar_json_dosya)
+        menu.addSeparator()
+        menu.addAction("📋 Boş Excel Şablonu İndir", self._sablon_excel_indir)
+        menu.exec(self.mapToGlobal(self.rect().topRight()))
+
+    def _sablon_excel_indir(self) -> None:
+        """Kullanıcıya doldurabileceği boş bir Excel şablonu kaydeder."""
+        if not _OPENPYXL_OK:
+            QMessageBox.warning(self, "Uyarı", "openpyxl paketi yüklü değil. Şablon oluşturulamadı.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Gantt Şablonu Kaydet", "gantt_sablon.xlsx", "Excel (*.xlsx)"
+        )
+        if not path:
+            return
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Gantt Şablon"
+            basliklar = [
+                "İş Adı", "Süre (Gün)", "Başlangıç", "Bitiş",
+                "Miktar", "Birim", "Kaynak/Ekip",
+                "Öncüller (ID)", "Milestone (evet/hayır)",
+                "Tamamlanma (%)", "Bütçe (TL)", "Açıklama",
+            ]
+            ws.append(basliklar)
+            # Başlık stili
+            from openpyxl.styles import Font, PatternFill, Alignment
+            baslik_font = Font(bold=True, color="FFFFFF")
+            baslik_doldur = PatternFill("solid", fgColor="1976D2")
+            for cell in ws[1]:
+                cell.font = baslik_font
+                cell.fill = baslik_doldur
+                cell.alignment = Alignment(horizontal="center")
+            # Örnek satır
+            ws.append([
+                "Temel Kazısı", 5, "2026-04-01", "2026-04-05",
+                850.0, "m³", "Hafriyatçı",
+                "", "hayır", 0, 0, "Zemin: kil+kum",
+            ])
+            # Sütun genişlikleri
+            for col, genislik in enumerate(
+                [35, 12, 14, 14, 10, 8, 18, 14, 20, 14, 14, 30], start=1
+            ):
+                ws.column_dimensions[
+                    openpyxl.utils.get_column_letter(col)
+                ].width = genislik
+            wb.save(path)
+            self._status_label.setText(f"Şablon kaydedildi: {path}")
+            QMessageBox.information(self, "Başarılı", f"Şablon kaydedildi:\n{path}\n\nDoldurup 'Excel'den İçeri Aktar' ile yükleyin.")
+        except Exception as exc:
+            logger.error("Şablon oluşturma hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", str(exc))
+
+    # ── Ortak yardımcı ─────────────────────────────────────────────────
+    @staticmethod
+    def _sutun_indeksi(basliklar: list, adaylar: list) -> int:
+        """Başlık listesinden aday isimlerden birini bulur; -1 döner bulamazsa."""
+        basliklar_lower = [str(b).lower().strip() for b in basliklar]
+        for aday in adaylar:
+            try:
+                return basliklar_lower.index(aday.lower())
+            except ValueError:
+                pass
+        return -1
+
+    def _satiri_goreve_donustur(self, satir: dict, gorev_id: int) -> Optional[Dict]:
+        """Sözlük satırından Gantt görev dict'i oluşturur. None döner geçersizse."""
+        ad = str(satir.get("ad", "")).strip()
+        if not ad:
+            return None
+        try:
+            sure = int(float(str(satir.get("sure", 1)) or 1))
+        except (ValueError, TypeError):
+            sure = 1
+        sure = max(1, sure)
+
+        baslangic_str = str(satir.get("baslangic", "")).strip()
+        bitis_str = str(satir.get("bitis", "")).strip()
+
+        # Tarih normalizasyonu
+        def _tarih_cevir(s: str) -> str:
+            for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%m/%d/%Y"):
+                try:
+                    return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+            return ""
+
+        baslangic = _tarih_cevir(baslangic_str) or date.today().isoformat()
+        bitis = _tarih_cevir(bitis_str) or ""
+
+        try:
+            miktar = float(str(satir.get("miktar", 0)) or 0)
+        except (ValueError, TypeError):
+            miktar = 0.0
+
+        oncul_str = str(satir.get("oncul", "")).strip()
+        bagimliliklar = []
+        if oncul_str:
+            for p in oncul_str.replace(";", ",").split(","):
+                p = p.strip()
+                if p.isdigit():
+                    bagimliliklar.append(int(p))
+
+        milestone_raw = str(satir.get("milestone", "")).strip().lower()
+        milestone = milestone_raw in ("evet", "1", "true", "yes", "✓")
+
+        try:
+            tamamlanma = int(float(str(satir.get("tamamlanma", 0)) or 0))
+            tamamlanma = max(0, min(100, tamamlanma))
+        except (ValueError, TypeError):
+            tamamlanma = 0
+
+        try:
+            butce = float(str(satir.get("butce", 0)) or 0)
+        except (ValueError, TypeError):
+            butce = 0.0
+
+        return {
+            "id": gorev_id,
+            "ad": ad,
+            "sure": sure,
+            "baslangic": baslangic,
+            "bitis": bitis,
+            "miktar": miktar,
+            "miktar_birim": str(satir.get("birim", "m²")).strip() or "m²",
+            "ekip_turu": str(satir.get("ekip", "")).strip(),
+            "kaynak": str(satir.get("kaynak", "")).strip(),
+            "bagimliliklar": bagimliliklar,
+            "bagimliliklar_detay": [],
+            "milestone": milestone,
+            "tamamlanma_yuzdesi": tamamlanma,
+            "butce": butce,
+            "gercek_maliyet": 0.0,
+            "birim_fiyat": 0.0,
+            "aciklama": str(satir.get("aciklama", "")).strip(),
+            "kritik_yol": False,
+            "float": 0,
+            "wbs_kodu": "",
+        }
+
+    def _gosterge_ve_yukle(self, yeni_gorevler: List[Dict], dosya_adi: str) -> None:
+        """Import edilen görevleri mevcut listeye ekle/yenile sorusunu sorar ve yükler."""
+        if not yeni_gorevler:
+            QMessageBox.warning(self, "Uyarı", "İçeri aktarılacak geçerli görev bulunamadı.")
+            return
+
+        mod = QMessageBox.question(
+            self,
+            "İçeri Aktarma Modu",
+            f"{len(yeni_gorevler)} görev bulundu.\n\n"
+            "Mevcut iş programına EKLEMEK mi,\nyoksa SIFIRDAN YÜKLEMEK mi istersiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if mod == QMessageBox.StandardButton.Cancel:
+            return
+
+        if mod == QMessageBox.StandardButton.No:
+            # Sıfırla
+            self._undo_stack.append(copy.deepcopy(self._is_list))
+            self._is_list = yeni_gorevler
+        else:
+            # Ekle — ID'leri mevcut maksimuma göre ötele
+            self._undo_stack.append(copy.deepcopy(self._is_list))
+            mevcut_max = max((t.get("id", 0) for t in self._is_list), default=0)
+            for g in yeni_gorevler:
+                eski_id = g.get("id", 0)
+                g["id"] = mevcut_max + eski_id
+                # Bağımlılıkları da ötele
+                g["bagimliliklar"] = [mevcut_max + b for b in g.get("bagimliliklar", [])]
+            self._is_list.extend(yeni_gorevler)
+
+        if self._engine:
+            self._engine.tasks = self._is_list
+        self._yukle_is_listesi()
+        self._status_label.setText(
+            f"{len(yeni_gorevler)} görev içeri aktarıldı: {os.path.basename(dosya_adi)}"
+        )
+        QMessageBox.information(
+            self, "Başarılı",
+            f"{len(yeni_gorevler)} görev içeri aktarıldı.\n"
+            f"Kaynak: {os.path.basename(dosya_adi)}\n\n"
+            "Görevleri inceleyip 'Hesapla (CPM)' butonuna basın."
+        )
+
+    # ── Excel içeri aktarma ─────────────────────────────────────────────
+    def _aktar_excel(self, dosya_yolu: str = "") -> None:
+        """Excel (.xlsx) dosyasından Gantt görevlerini içeri aktarır."""
+        if not _OPENPYXL_OK:
+            QMessageBox.warning(self, "Uyarı", "openpyxl paketi yüklü değil.\npip install openpyxl")
+            return
+        if not dosya_yolu:
+            dosya_yolu, _ = QFileDialog.getOpenFileName(
+                self, "Excel Dosyası Seç", "", "Excel (*.xlsx *.xls)"
+            )
+        if not dosya_yolu:
+            return
+        try:
+            wb = openpyxl.load_workbook(dosya_yolu, data_only=True)
+            ws = wb.active
+
+            # Başlık satırını bul
+            basliklar = [str(c.value) if c.value is not None else "" for c in ws[1]]
+
+            # Kolon eşleme
+            KOLON_MAP = {
+                "ad":         ["iş adı", "ad", "görev", "task name", "name", "iş"],
+                "sure":       ["süre (gün)", "süre", "gün", "duration", "day"],
+                "baslangic":  ["başlangıç", "başlangıç tarihi", "start", "bas"],
+                "bitis":      ["bitiş", "bitiş tarihi", "finish", "end", "bit"],
+                "miktar":     ["miktar", "quantity", "qty"],
+                "birim":      ["birim", "unit"],
+                "kaynak":     ["kaynak/ekip", "kaynak", "ekip", "resource"],
+                "oncul":      ["öncüller (id)", "öncüller", "bağımlılıklar", "oncul", "predecessors"],
+                "milestone":  ["milestone (evet/hayır)", "milestone"],
+                "tamamlanma": ["tamamlanma (%)", "tamamlanma", "ilerleme", "progress"],
+                "butce":      ["bütçe (tl)", "bütçe", "budget"],
+                "aciklama":   ["açıklama", "notlar", "description", "notes"],
+            }
+
+            indeksler = {k: self._sutun_indeksi(basliklar, v) for k, v in KOLON_MAP.items()}
+
+            gorevler = []
+            for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=1):
+                if all(v is None for v in row):
+                    continue
+                satir = {}
+                for alan, idx in indeksler.items():
+                    satir[alan] = row[idx] if idx >= 0 and idx < len(row) else ""
+                gorev = self._satiri_goreve_donustur(satir, row_idx)
+                if gorev:
+                    gorevler.append(gorev)
+
+            self._gosterge_ve_yukle(gorevler, dosya_yolu)
+
+        except Exception as exc:
+            logger.error("Excel içeri aktarma hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", f"Excel okuma hatası:\n{exc}")
+
+    # ── CSV içeri aktarma ──────────────────────────────────────────────
+    def _aktar_csv(self, dosya_yolu: str = "") -> None:
+        """CSV dosyasından Gantt görevlerini içeri aktarır."""
+        import csv as _csv
+        if not dosya_yolu:
+            dosya_yolu, _ = QFileDialog.getOpenFileName(
+                self, "CSV Dosyası Seç", "", "CSV (*.csv *.txt)"
+            )
+        if not dosya_yolu:
+            return
+        try:
+            gorevler = []
+            with open(dosya_yolu, "r", encoding="utf-8-sig", newline="") as f:
+                reader = _csv.DictReader(f)
+                basliklar = reader.fieldnames or []
+
+                KOLON_MAP = {
+                    "ad":         ["iş adı", "ad", "görev", "task name", "name"],
+                    "sure":       ["süre (gün)", "süre", "gün", "duration"],
+                    "baslangic":  ["başlangıç", "başlangıç tarihi", "start"],
+                    "bitis":      ["bitiş", "bitiş tarihi", "finish", "end"],
+                    "miktar":     ["miktar", "quantity"],
+                    "birim":      ["birim", "unit"],
+                    "kaynak":     ["kaynak/ekip", "kaynak", "ekip", "resource"],
+                    "oncul":      ["öncüller (id)", "öncüller", "bağımlılıklar"],
+                    "milestone":  ["milestone (evet/hayır)", "milestone"],
+                    "tamamlanma": ["tamamlanma (%)", "tamamlanma", "ilerleme"],
+                    "butce":      ["bütçe (tl)", "bütçe", "budget"],
+                    "aciklama":   ["açıklama", "notlar", "description"],
+                }
+                # CSV'de başlık adını doğrudan kullan (DictReader key = başlık)
+                for row_idx, row in enumerate(reader, start=1):
+                    satir = {}
+                    row_lower = {k.lower().strip(): v for k, v in row.items()}
+                    for alan, adaylar in KOLON_MAP.items():
+                        satir[alan] = ""
+                        for aday in adaylar:
+                            if aday in row_lower:
+                                satir[alan] = row_lower[aday]
+                                break
+                    gorev = self._satiri_goreve_donustur(satir, row_idx)
+                    if gorev:
+                        gorevler.append(gorev)
+
+            self._gosterge_ve_yukle(gorevler, dosya_yolu)
+
+        except Exception as exc:
+            logger.error("CSV içeri aktarma hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", f"CSV okuma hatası:\n{exc}")
+
+    # ── JSON içeri aktarma ─────────────────────────────────────────────
+    def _aktar_json_dosya(self, dosya_yolu: str = "") -> None:
+        """JSON dosyasından Gantt görevlerini içeri aktarır (versiyon 2.0 formatı)."""
+        if not dosya_yolu:
+            dosya_yolu, _ = QFileDialog.getOpenFileName(
+                self, "JSON Dosyası Seç", "", "JSON (*.json)"
+            )
+        if not dosya_yolu:
+            return
+        try:
+            with open(dosya_yolu, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Hem {"tasks": [...]} hem de direkt [...] formatını destekle
+            if isinstance(data, list):
+                gorev_listesi = data
+            elif isinstance(data, dict):
+                gorev_listesi = data.get("tasks", data.get("gorevler", []))
+            else:
+                gorev_listesi = []
+
+            # Temel doğrulama — en az "ad" alanı olmalı
+            gorevler = [g for g in gorev_listesi if isinstance(g, dict) and g.get("ad")]
+            self._gosterge_ve_yukle(gorevler, dosya_yolu)
+
+        except Exception as exc:
+            logger.error("JSON içeri aktarma hatası: %s", exc)
+            QMessageBox.critical(self, "Hata", f"JSON okuma hatası:\n{exc}")
 
     # ------------------------------------------------------------------
     # Kaydet / Yükle
@@ -2803,3 +3630,95 @@ class GanttWindow(QWidget):
             self._undo()
         else:
             super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
+    # Metrajdan Görev Üretimi
+    # ------------------------------------------------------------------
+    def _metrajdan_gorev_uret(self) -> None:
+        """Aktif projenin metraj kalemlerinden otomatik Gantt görevi üret."""
+        if not self._db or not self._current_project_id:
+            QMessageBox.warning(
+                self, "Uyarı",
+                "Önce bir proje seçin ve veritabanı bağlantısını kontrol edin."
+            )
+            return
+
+        try:
+            kalemler = self._db.get_project_metraj(self._current_project_id)
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Metraj verileri alınamadı:\n{e}")
+            return
+
+        if not kalemler:
+            QMessageBox.information(
+                self, "Bilgi",
+                "Bu projede metraj kalemi bulunamadı.\n"
+                "Önce Metraj Cetveli sekmesinden kalemler ekleyin."
+            )
+            return
+
+        # Kategori → Ekip türü mapping
+        KATEGORI_EKIP = {
+            "beton": "Betoncu", "kalıp": "Kalıpçı (Karma)", "demir": "Demirci (Bağlama/Bükme)",
+            "sıva": "Sıvacı (İç)", "boya": "Boyacı (İç)", "seramik": "Fayansçı / Seramikçi",
+            "fayans": "Fayansçı / Seramikçi", "parke": "Parke / Laminat Ustası",
+            "mantolama": "Yalıtımcı (Mantolama)", "duvar": "Duvarçı (Tuğla)",
+        }
+        # CŞB verimlilik (m²/gün veya kg/gün, 1 usta)
+        VERIMLILIK = {
+            "Betoncu": 8.0, "Kalıpçı (Karma)": 4.0, "Demirci (Bağlama/Bükme)": 333.0,
+            "Sıvacı (İç)": 25.0, "Boyacı (İç)": 45.0, "Fayansçı / Seramikçi": 8.0,
+            "Parke / Laminat Ustası": 25.0, "Yalıtımcı (Mantolama)": 12.0,
+            "Duvarçı (Tuğla)": 6.0,
+        }
+        VARSAYILAN_USTA = 3
+
+        self._push_undo()
+        eklenen = 0
+        mevcut_max_id = max((t.get("id", 0) for t in self._is_list), default=0)
+
+        for kalem in kalemler:
+            tanim = kalem.get("tanim", "") or kalem.get("poz_no", "")
+            miktar = float(kalem.get("miktar", 0) or 0)
+            kategori = (kalem.get("kategori", "") or "").lower()
+            birim_fiyat = float(kalem.get("birim_fiyat", 0) or 0)
+            butce = float(kalem.get("toplam", 0) or miktar * birim_fiyat)
+
+            # Ekip türü belirle
+            ekip = "Genel İşçi"
+            for anahtar, ekip_tur in KATEGORI_EKIP.items():
+                if anahtar in kategori or anahtar in tanim.lower():
+                    ekip = ekip_tur
+                    break
+
+            # Süre hesapla
+            verimlilik = VERIMLILIK.get(ekip, 10.0)
+            if miktar > 0 and verimlilik > 0:
+                sure = max(1, math.ceil(miktar / (verimlilik * VARSAYILAN_USTA)))
+            else:
+                sure = 5  # varsayılan
+
+            mevcut_max_id += 1
+            yeni_is = {
+                "id": mevcut_max_id,
+                "ad": tanim[:60] if tanim else f"Kalem {mevcut_max_id}",
+                "sure": min(sure, 365),
+                "miktar": miktar,
+                "ekip": ekip,
+                "kaynak": ekip,
+                "milestone": False,
+                "bagimliliklar": [],
+                "bagimliliklar_detay": [],
+                "tamamlanma_yuzdesi": 0,
+                "butce": butce,
+            }
+            self._is_list.append(yeni_is)
+            eklenen += 1
+
+        self._yukle_is_listesi()
+        QMessageBox.information(
+            self, "Tamamlandı",
+            f"✅ {eklenen} görev oluşturuldu.\n\n"
+            f"Bağımlılıkları eklemek için görevi seçip 'Bağımlılık Ekle' kullanın.\n"
+            f"Ardından 'Hesapla' butonu ile CPM hesaplayın."
+        )
