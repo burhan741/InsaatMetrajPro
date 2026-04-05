@@ -464,14 +464,16 @@ class GanttEngine:
         if not topo_order:
             return {'error': 'Dongüsel bagimlilık tespit edildi!'}
 
+        # Önce forward pass → proje bitiş tarihini bul
         self._forward_pass(topo_order)
-        self._backward_pass(topo_order)
-        self._calculate_float()
-
         self.proje_bitis = max(
             (task.early_finish for task in self.tasks.values() if task.early_finish),
             default=proje_baslangic,
         )
+        # Backward pass: terminal task'lar proje bitiş tarihini LF olarak alır
+        # (eski kod: LF = EF → tüm terminaller kritik görünürdü — YANLIŞ)
+        self._backward_pass(topo_order, self.proje_bitis)
+        self._calculate_float()
         self.kritik_yol = self._find_critical_path()
 
         toplam_is = len(self.tasks)
@@ -543,12 +545,12 @@ class GanttEngine:
                 task.early_start = max_early_finish
             task.early_finish = self._add_working_days(task.early_start, task.sure_gun)
 
-    def _backward_pass(self, topo_order: List[int]) -> None:
+    def _backward_pass(self, topo_order: List[int], proje_bitis: datetime) -> None:
         """Backward Pass - Late Start/Finish hesaplama."""
         for task_id in reversed(topo_order):
             task = self.tasks[task_id]
             if not task.successors:
-                task.late_finish = task.early_finish
+                task.late_finish = proje_bitis
             else:
                 min_late_start = datetime.max
                 for succ_id, dep_type, lag_days in task.successors:
@@ -1471,14 +1473,17 @@ class GanttEngine:
             gunluk_planlanan = 0.0
             gunluk_gerceklesen = 0.0
 
-            for task in self.tasks.values():
-                if not task.early_start or not task.early_finish:
-                    continue
-                gorev_agirligi = task.sure_gun / toplam_is_gunu * 100
-                if task.early_start <= tarih <= task.early_finish and task.sure_gun > 0:
-                    gunluk_planlanan += gorev_agirligi / task.sure_gun
-                if tarih <= bugun and task.early_start <= tarih <= task.early_finish and task.sure_gun > 0:
-                    gunluk_gerceklesen += gorev_agirligi / task.sure_gun * (task.ilerleme / 100)
+            # Tatil/hafta sonu günlerde iş yok — sadece iş günlerinde ilerleme hesapla
+            tatil, _ = self.tatil_yoneticisi.tatil_mi(tarih)
+            if not tatil:
+                for task in self.tasks.values():
+                    if not task.early_start or not task.early_finish:
+                        continue
+                    gorev_agirligi = task.sure_gun / toplam_is_gunu * 100
+                    if task.early_start <= tarih <= task.early_finish and task.sure_gun > 0:
+                        gunluk_planlanan += gorev_agirligi / task.sure_gun
+                    if tarih <= bugun and task.early_start <= tarih <= task.early_finish and task.sure_gun > 0:
+                        gunluk_gerceklesen += gorev_agirligi / task.sure_gun * (task.ilerleme / 100)
 
             kumulatif_planlanan += gunluk_planlanan
             kumulatif_gerceklesen += gunluk_gerceklesen

@@ -156,6 +156,7 @@ class BIEngine:
                         FROM metraj_kalemleri mk
                         WHERE mk.proje_id = ? AND mk.kategori IS NOT NULL
                         GROUP BY mk.kategori
+                        HAVING toplam > 0
                         ORDER BY toplam DESC
                     """, (proje_id,))
                 else:
@@ -166,6 +167,7 @@ class BIEngine:
                         JOIN projects p ON mk.proje_id = p.id
                         WHERE p.durum = 'aktif' AND mk.kategori IS NOT NULL
                         GROUP BY mk.kategori
+                        HAVING toplam > 0
                         ORDER BY toplam DESC
                     """)
 
@@ -182,6 +184,68 @@ class BIEngine:
         except Exception as e:
             logger.error(f"Kategori dağılımı hatası: {e}")
             return []
+
+    def get_eksik_kalemler(self, proje_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Eksik veya hatalı metraj kalemlerini tespit eder.
+
+        Kontroller:
+        - birim_fiyat = 0 olan kalemler
+        - poz_no girilmemiş kalemler (kamu projelerinde)
+        - toplam = 0 olan kalemler (miktar×fiyat = 0)
+
+        Returns:
+            {'sifir_fiyatli': [...], 'poz_no_eksik': [...], 'toplam_sifir': int}
+        """
+        sonuc = {'sifir_fiyatli': [], 'poz_no_eksik': [], 'toplam_sifir': 0}
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                base_where = "mk.proje_id = ?" if proje_id else "p.durum = 'aktif'"
+                base_join = "" if proje_id else "JOIN projects p ON mk.proje_id = p.id"
+                params = (proje_id,) if proje_id else ()
+
+                # Sıfır fiyatlı kalemler
+                cursor.execute(f"""
+                    SELECT mk.id, mk.tanim, mk.miktar, mk.birim, mk.birim_fiyat,
+                           mk.poz_no, mk.kategori
+                    FROM metraj_kalemleri mk {base_join}
+                    WHERE {base_where} AND (mk.birim_fiyat IS NULL OR mk.birim_fiyat = 0)
+                    ORDER BY mk.kategori, mk.tanim
+                """, params)
+                sonuc['sifir_fiyatli'] = [
+                    {
+                        'id': r['id'], 'tanim': r['tanim'] or '',
+                        'miktar': r['miktar'] or 0, 'birim': r['birim'] or '',
+                        'poz_no': r['poz_no'] or '', 'kategori': r['kategori'] or 'Kategorisiz'
+                    } for r in cursor.fetchall()
+                ]
+
+                # Poz no girilmemiş kalemler
+                cursor.execute(f"""
+                    SELECT mk.id, mk.tanim, mk.miktar, mk.birim, mk.kategori
+                    FROM metraj_kalemleri mk {base_join}
+                    WHERE {base_where} AND (mk.poz_no IS NULL OR mk.poz_no = '')
+                    ORDER BY mk.kategori, mk.tanim
+                """, params)
+                sonuc['poz_no_eksik'] = [
+                    {
+                        'id': r['id'], 'tanim': r['tanim'] or '',
+                        'miktar': r['miktar'] or 0, 'birim': r['birim'] or '',
+                        'kategori': r['kategori'] or 'Kategorisiz'
+                    } for r in cursor.fetchall()
+                ]
+
+                # Toplam sıfır kalem sayısı
+                cursor.execute(f"""
+                    SELECT COUNT(*) FROM metraj_kalemleri mk {base_join}
+                    WHERE {base_where} AND (mk.miktar * mk.birim_fiyat) = 0
+                """, params)
+                sonuc['toplam_sifir'] = cursor.fetchone()[0] or 0
+
+        except Exception as e:
+            logger.error(f"Eksik kalem kontrolü hatası: {e}")
+        return sonuc
 
     def get_top_kalemler(self, proje_id: Optional[int] = None, limit: int = 10) -> List[Dict[str, Any]]:
         """

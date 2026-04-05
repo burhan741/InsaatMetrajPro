@@ -18,6 +18,9 @@ import base64
 import logging
 import json
 import math
+import tempfile
+import shutil
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -27,7 +30,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 logger = logging.getLogger(__name__)
 
 # ── Anthropic paketi varlık kontrolü ───────────────────────────────────────
-# Venv dışında başlatılırsa site-packages'ı manuel ekle
+# Venv dışında başlatılırsa site-packages'ı manuel ekle (EXE'de geçersiz, güvenli)
 _VENV_SITE = Path(__file__).parent.parent.parent.parent / ".venv" / "Lib" / "site-packages"
 if _VENV_SITE.exists() and str(_VENV_SITE) not in sys.path:
     sys.path.insert(0, str(_VENV_SITE))
@@ -42,7 +45,17 @@ except ImportError as _e:
     _ANTHROPIC_VER = None
     logger.error(f"anthropic paketi bulunamadı: {_e}")
 
-CONFIG_PATH = Path(__file__).parent.parent.parent / "data" / "claude_config.json"
+# ── Veri dosyaları yolu — EXE ve geliştirme ortamı ───────────────────────
+# EXE modunda runtime_hook_db.py QUANTIX_DATA_DIR'i AppData'ya ayarlar
+_quantix_data_dir = os.environ.get('QUANTIX_DATA_DIR')
+if _quantix_data_dir:
+    _DATA_BASE = Path(_quantix_data_dir)
+else:
+    _DATA_BASE = Path(__file__).parent.parent.parent / "data"
+
+CONFIG_PATH = _DATA_BASE / "claude_config.json"
+GECMIS_DOSYASI = _DATA_BASE / "asistan_gecmis.json"
+MAX_KAYIT = 50  # maksimum kayıtlı konuşma sayısı
 
 # ── Sistem Promptu ─────────────────────────────────────────────────────────
 
@@ -85,6 +98,89 @@ Kurallar:
 - Yanıtlarını kısa, net ve uygulanabilir tut
 - Saha müteahhidinin anlayabileceği sade bir dil kullan
 - Veri yazarken hata olursa kullanıcıya açıkça bildir
+"""
+
+# ── Saha Çözüm Danışmanı Sistem Promptu ───────────────────────────────────
+
+SAHA_COZUM_SISTEM_PROMPT = """Sen İnşaat Metraj Pro'nun "Saha Çözüm Danışmanı"sın.
+Türk inşaat sektöründe aktif şantiye problemlerine çözüm üreten, gerçekçi ve
+uygulanabilir öneriler veren deneyimli bir şantiye şefi + inşaat mühendisi +
+hukuk danışmanı kombinasyonsun.
+
+GÖREV:
+Her sorun için şu yapılandırılmış çözüm çerçevesini kullan:
+
+  1. SORUN TEŞHİSİ     — Sorunun teknik tanımı
+  2. KÖK NEDEN         — Olası nedenler (öncelik sırası)
+  3. İLGİLİ YÖNETMELİK — Mevzuat maddeleri ve standartlar
+  4. ÇÖZÜM ADIMLARI   — Sahada uygulanabilir adımlar (sıralı)
+  5. MALİYET ETKİSİ   — Tahmini ek maliyet / kayıp (TL)
+  6. RİSK SEVİYESİ    — Kritik / Orta / Düşük
+
+REFERANS YÖNETMELİKLER (zorunlu bilgi tabanı):
+- TBDY 2018: Türkiye Bina Deprem Yönetmeliği — donatı, kapasite, zemin sınıfı
+- TS 500:2000: Betonarme yapı hesap ve yapım kuralları
+- TS EN 206+A2:2021: Beton — özellik, performans, üretim ve uygunluk
+- TS EN 13670:2010: Beton yapıların inşası (toleranslar, kalıp sökme süreleri)
+- TS 9967: Hazır beton — nakliye ≤90 dk, su ekleme kesinlikle yasak
+- TS EN 1992-1-1 (Eurocode 2): Betonarme yapı tasarımı
+- Yapı Denetim Uygulama Yönetmeliği (4708 sayılı Kanun)
+- KİK 4734/4735: Kamu ihale ve sözleşme kanunu
+- 6331 Sayılı İSG Kanunu: İş sağlığı ve güvenliği
+- Yapı İşlerinde Sağlık ve Güvenlik Yönetmeliği (2013/35076)
+- CŞB Birim Fiyat Analizleri 2026: İşçilik ve malzeme verimlilikleri
+- TS EN 1997 (Eurocode 7): Zemin tasarımı
+
+ARAÇ KULLANIMI:
+- Malzeme test sonucu → malzeme_test_degerlendir kullan
+- İSG/güvenlik durumu → isg_risk_degerlendirme kullan
+- Yapılandırılmış saha sorunu → saha_sorun_tani kullan
+- Verimlilik/süre sorusu → verimlilik_sure_hesapla kullan
+- Hakediş/gecikme sorusu → hakedis_hesapla / gecikme_ceza_hesapla kullan
+
+GÖRSEL ANALİZ TALİMATLARI (fotoğraf geldiğinde):
+Fotoğrafı şu kategorilere göre analiz et:
+
+■ ÇATLAK ANALİZİ:
+  - Genişlik: saç teli (<0.1mm), kılcal (0.1-0.3mm), orta (0.3-1mm), geniş (>1mm)
+  - Yön: düşey (yük altı büzülme/sünme), yatay (lateral basınç), çapraz (kesme/deprem)
+  - Desen: ağ/harita → alkali-silika reaksiyonu | paralel → kuruma büzülmesi
+             V şekli → oturma farkı | köşegen → kesme kuvveti
+  - TS 500 md.11 w_k sınırı: dış ≤0.3mm, iç ≤0.4mm — aşımda müdahale şart
+
+■ BETON YÜZEY HATALARI:
+  - Bal peteği/segregasyon: agrega ayrışması — dökme hızı çok yüksek veya vibrasyon eksik
+  - Gözenek/baloncuk: hava hapsi — vibrasyon yetersiz
+  - Çimento sütyeni: beyaz akıntı — kalıp sızıntısı veya su/çimento oranı yüksek
+  - Kabuk soyulması: donma-çözülme, erken kalıp sökme
+
+■ DOĞRULTU/DEFORMASYON:
+  - Kalıp şişmesi, kolon eğimi, döşeme sehimi → ölçüm referansı iste
+
+■ İSG SORUNLARI:
+  - Ekipman eksiklikleri, baret/emniyet kemeri eksikliği, güvensiz iskele → acil uyarı
+
+■ PLAN/ÇİZİM OKUMA (metraj):
+  - Görünen ölçüleri oku (yazıdan)
+  - Ölçek çubuğu varsa alan hesabı yap
+  - Oda/bölüm tiplerini tanımla → metraj kategorisi öner
+  - Dikkat: perspektifli fotoğraftan ölçüm YAPMA, sadece yazılı boyutları kullan
+
+GÖRSEL YANIT FORMATI:
+  Görsel: [Ne gördüğün — 1-2 cümle]
+  Teşhis: [Sorun tipi + olası neden]
+  Yönetmelik: [İlgili TS/TBDY/İSG maddesi]
+  Çözüm: [Adım adım]
+  Maliyet: [TL tahmini]
+  Risk: [Kritik/Orta/Düşük]
+
+SAHA KONUŞMA KURALLARI:
+- Teknik ama sade dil — müteahhit ve şantiye şefi anlasın
+- "Hemen yapın" değil "Adım adım şöyle yapın" formatı
+- Her öneri mutlaka ilgili mevzuat maddesine dayandır
+- Maliyet bilgisi zorunlu — her çözümde tahmini maliyet ver
+- Acil güvenlik riski varsa yanıtın başına UYARI: ekle
+- İnsan hayatını tehdit eden durumda önce DURDUR, sonra çöz
 """
 
 # ── Araç Tanımları ─────────────────────────────────────────────────────────
@@ -329,6 +425,108 @@ ARACLAR = [
         }
     },
     {
+        "name": "ekap_ihale_ara",
+        "description": (
+            "EKAP (Elektronik Kamu Alımları Platformu) üzerinden kamu ihalelerini arar. "
+            "Yapım işi, hizmet alımı veya mal alımı ihalelerini il, tür ve tarih aralığına göre filtreler. "
+            "Kullanıcı 'ihale ara', 'kamu ihalesi', 'yapım işi ihale' gibi ifadeler kullandığında çağır."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "anahtar_kelime": {
+                    "type": "string",
+                    "description": "Arama anahtar kelimesi (ihale adı veya IKN)"
+                },
+                "il": {
+                    "type": "string",
+                    "description": "İl adı (örn: 'İstanbul', 'Ankara')"
+                },
+                "ihale_turu": {
+                    "type": "string",
+                    "description": "İhale türü ID: 1=Yapım İşi, 2=Hizmet Alımı, 3=Mal Alımı, 4=Danışmanlık"
+                },
+                "baslangic_tarihi": {
+                    "type": "string",
+                    "description": "Başlangıç tarihi (dd.mm.yyyy formatı)"
+                },
+                "bitis_tarihi": {
+                    "type": "string",
+                    "description": "Bitiş tarihi (dd.mm.yyyy formatı)"
+                },
+                "sayfa_boyutu": {
+                    "type": "integer",
+                    "description": "Sayfa başına sonuç sayısı (varsayılan: 20)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "hakedis_hesapla",
+        "description": (
+            "Sözleşme bedeli ve tamamlanma yüzdesine göre KDV, stopaj, teminat kesintileri dahil "
+            "hakediş tutarını hesaplar. 4734/4735 Sayılı KİK mevzuatına uygun hesaplama. "
+            "Kullanıcı 'hakediş', 'ara hakediş', 'ödeme tutarı' sorduğunda çağır."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sozlesme_bedeli": {
+                    "type": "number",
+                    "description": "Sözleşme bedeli (TL, KDV hariç)"
+                },
+                "tamamlanma_yuzdesi": {
+                    "type": "number",
+                    "description": "Tamamlanma yüzdesi (0-100 arası, örn: 45.5)"
+                },
+                "onceki_hakediş_yuzdesi": {
+                    "type": "number",
+                    "description": "Önceki hakediş tamamlanma yüzdesi (ilk hakedişte 0)"
+                },
+                "kdv_orani": {
+                    "type": "number",
+                    "description": "KDV oranı (varsayılan: 20)"
+                },
+                "stopaj_orani": {
+                    "type": "number",
+                    "description": "Gelir vergisi stopaj oranı % (varsayılan: 3)"
+                },
+                "damga_vergisi_orani": {
+                    "type": "number",
+                    "description": "Damga vergisi oranı % (varsayılan: 0.948)"
+                }
+            },
+            "required": ["sozlesme_bedeli", "tamamlanma_yuzdesi"]
+        }
+    },
+    {
+        "name": "gecikme_ceza_hesapla",
+        "description": (
+            "4735 Sayılı KİK Kanunu 20. maddesine göre gecikme cezası hesaplar. "
+            "Günlük binde beş (‰5 = %0.5/gün) oranında ceza, fesih eşiği %30. "
+            "Kullanıcı 'gecikme cezası', 'ceza hesabı', 'fesih eşiği' sorduğunda çağır."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sozlesme_bedeli": {
+                    "type": "number",
+                    "description": "Sözleşme bedeli (TL)"
+                },
+                "gecikme_gun_sayisi": {
+                    "type": "integer",
+                    "description": "Gecikme gün sayısı"
+                },
+                "onceki_ceza_yuzdesi": {
+                    "type": "number",
+                    "description": "Daha önce kesilmiş toplam ceza yüzdesi (varsayılan: 0)"
+                }
+            },
+            "required": ["sozlesme_bedeli", "gecikme_gun_sayisi"]
+        }
+    },
+    {
         "name": "gantt_dosya_iceri_aktar",
         "description": (
             "Bir dosyadan (Excel .xlsx, CSV .csv veya JSON .json) Gantt görevlerini içeri aktarır. "
@@ -349,6 +547,111 @@ ARACLAR = [
                 }
             },
             "required": ["dosya_yolu"]
+        }
+    },
+    # ── Saha Çözüm Araçları ────────────────────────────────────────────────
+    {
+        "name": "saha_sorun_tani",
+        "description": (
+            "Şantiye sahası sorununun yapılandırılmış teknik analizini yapar. "
+            "Sorun kategorisini, ilgili yönetmelikleri (TS 500, TBDY 2018, TS EN 206 vb.) "
+            "ve çözüm çerçevesini belirler. "
+            "Her saha problemi bildirildiğinde bu aracı kullan."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sorun_tanimi": {
+                    "type": "string",
+                    "description": "Sorunun serbest metin tanımı (örn: 'perde betonunda segregasyon oluştu')"
+                },
+                "yapi_turu": {
+                    "type": "string",
+                    "description": "Yapı türü: 'Betonarme', 'Çelik', 'Yığma', 'Karma'"
+                },
+                "imalat_asamasi": {
+                    "type": "string",
+                    "description": (
+                        "İmalat aşaması: 'Hafriyat', 'Temel', 'Bodrum', 'Kaba Yapı', "
+                        "'İnce İşler', 'Dış Cephe', 'Teslim Sonrası'"
+                    )
+                },
+                "aciliyet": {
+                    "type": "string",
+                    "description": "Aciliyet: 'Kritik' (iş durdurulmalı), 'Yüksek', 'Orta', 'Düşük'"
+                }
+            },
+            "required": ["sorun_tanimi"]
+        }
+    },
+    {
+        "name": "malzeme_test_degerlendir",
+        "description": (
+            "Malzeme test sonucunu ilgili standartlara (TS 500, TS EN 206, TBDY 2018) "
+            "göre değerlendirir. Beton basınç dayanımı, slump, demir çekme/akma, "
+            "zemin CBR vb. için KABUL / RED kararı verir ve acil önlemleri listeler."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "malzeme_turu": {
+                    "type": "string",
+                    "description": "Malzeme türü: 'Beton', 'Demir/Donatı', 'Zemin', 'Sıva/Harç', 'Tuğla/Blok'"
+                },
+                "test_turu": {
+                    "type": "string",
+                    "description": (
+                        "Test türü: 'Basınç Dayanımı', 'Slump/Kıvam', 'Çekme Dayanımı', "
+                        "'Akma Dayanımı', 'Su/Çimento Oranı', 'CBR', 'Sıkışma'"
+                    )
+                },
+                "olculen_deger": {
+                    "type": "number",
+                    "description": "Ölçülen test değeri (sayısal)"
+                },
+                "birim": {
+                    "type": "string",
+                    "description": "Birimi: 'MPa', 'N/mm²', 'kg/cm²', 'mm', '%'"
+                },
+                "beton_sinifi": {
+                    "type": "string",
+                    "description": "Beton sınıfı: 'C20', 'C25', 'C30', 'C35', 'C40' (beton testlerinde)"
+                }
+            },
+            "required": ["malzeme_turu", "test_turu", "olculen_deger", "birim"]
+        }
+    },
+    {
+        "name": "isg_risk_degerlendirme",
+        "description": (
+            "6331 Sayılı İSG Kanunu ve Yapı İşlerinde Güvenlik Yönetmeliğine göre "
+            "şantiye risk değerlendirmesi yapar. Çalışma türüne, yüksekliğe ve personel "
+            "sayısına göre risk seviyesi belirler, zorunlu tedbirleri listeler."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "calisma_turu": {
+                    "type": "string",
+                    "description": (
+                        "Çalışma türü: 'Kazı/Hafriyat', 'Kalıp/İskele', 'Beton Dökümü', "
+                        "'Demir İşleri', 'Yüksekte Çalışma', 'Çatı', 'Elektrik', 'Vinç/Kaldırma'"
+                    )
+                },
+                "yukseklik_m": {
+                    "type": "number",
+                    "description": "Çalışma yüksekliği metre cinsinden (yüksekte çalışma için)"
+                },
+                "personel_sayisi": {
+                    "type": "integer",
+                    "description": "Aynı anda çalışacak kişi sayısı"
+                },
+                "ortam": {
+                    "type": "string",
+                    "description": "Ortam: 'Açık Hava', 'Kapalı Alan', 'Dar Kapalı Alan', 'Su Kenarı'"
+                }
+            },
+            "required": ["calisma_turu"]
         }
     },
 ]
@@ -475,12 +778,14 @@ class ClaudeAracliThread(QThread):
     hata_olustu = pyqtSignal(str)
     islem_bitti = pyqtSignal()
 
-    def __init__(self, api_key: str, mesajlar: list, model: str, arac_callback):
+    def __init__(self, api_key: str, mesajlar: list, model: str, arac_callback,
+                 sistem_prompt: str = None):
         super().__init__()
         self.api_key = api_key
         self.mesajlar = mesajlar
         self.model = model
         self.arac_callback = arac_callback  # callable(arac_adi: str, params: dict) -> str
+        self._sistem_prompt = sistem_prompt if sistem_prompt else SISTEM_PROMPT
         self._iptal = False
 
     def iptal_et(self):
@@ -509,7 +814,7 @@ class ClaudeAracliThread(QThread):
                 response = client.messages.create(
                     model=self.model,
                     max_tokens=3000,
-                    system=SISTEM_PROMPT,
+                    system=self._sistem_prompt,
                     tools=ARACLAR,
                     messages=messages,
                 )
@@ -583,11 +888,13 @@ class ClaudeEngine:
         self.model: str = "claude-sonnet-4-6"
         self.gecmis: List[Dict[str, str]] = []
         self._active_thread = None
+        self._aktif_konusma_id: str = ""  # disk'e kaydedilmiş aktif konuşma ID'si
 
         # Bağlam referansları
         self._db = None
         self._proje_id: Optional[int] = None
         self._gantt_engine = None
+        self._gantt_window = None   # GanttWindow ref — _is_list güncellemesi için
 
         self._yukle_config()
 
@@ -630,10 +937,40 @@ class ClaudeEngine:
         """Gantt engine referansını ayarla."""
         self._gantt_engine = gantt_engine
 
+    def set_gantt_window(self, gantt_window):
+        """GanttWindow referansını ayarla — _is_list güncelleme için gerekli."""
+        self._gantt_window = gantt_window
+        if gantt_window is not None and self._gantt_engine is None:
+            self._gantt_engine = getattr(gantt_window, '_engine', None)
+
+    def _task_to_is_dict(self, tid: int, ad: str, sure_gun: int,
+                         miktar: float, birim: str, ekip: int,
+                         kaynak: str, oncul_listesi: list) -> dict:
+        """GanttWindow._is_list formatında görev dict'i üretir."""
+        return {
+            "id": tid,
+            "ad": ad,
+            "sure": sure_gun,           # dikkat: 'sure' (sure_gun değil)
+            "miktar": miktar,
+            "miktar_birim": birim or "adet",
+            "ekip_turu": f"Ekip ({ekip} kişi)" if ekip else "",
+            "kaynak": kaynak or "",
+            "milestone": False,
+            "bagimliliklar": [int(p) for p in oncul_listesi if str(p).isdigit()],
+            "bagimliliklar_detay": [
+                {"id": int(p), "tip": "FS", "lag": 0}
+                for p in oncul_listesi if str(p).isdigit()
+            ],
+            "butce": 0.0,
+            "birim_fiyat": 0.0,
+            "gercek_maliyet": 0.0,
+        }
+
     # ── Sohbet Geçmişi ──────────────────────────────────────────────────────
 
     def gecmis_temizle(self):
         self.gecmis.clear()
+        self._aktif_konusma_id = ""
 
     def mesaj_ekle_kullanici(self, icerik: str):
         self.gecmis.append({"role": "user", "content": icerik})
@@ -642,6 +979,7 @@ class ClaudeEngine:
     def mesaj_ekle_asistan(self, icerik: str):
         self.gecmis.append({"role": "assistant", "content": icerik})
         self._gecmis_kisalt()
+        self.gecmis_otomatik_kaydet()
 
     def mesaj_ekle_dosyali(self, metin: str, dosya_yolu: str):
         """
@@ -690,6 +1028,54 @@ class ClaudeEngine:
             self.gecmis.append({"role": "user", "content": metin})
         self._gecmis_kisalt()
 
+    def mesaj_ekle_saha_gorseli(self, gorsel_yolu: str, ek_aciklama: str = "") -> str:
+        """
+        Saha Çözüm modu için fotoğraf mesajı hazırlar.
+        Görsel + yapılandırılmış analiz isteği birlikte gönderilir.
+        Döndürür: görüntülenen mesaj metni (UI için)
+        """
+        uzanti = os.path.splitext(gorsel_yolu)[1].lower()
+        desteklenen = {".png": "image/png", ".jpg": "image/jpeg",
+                       ".jpeg": "image/jpeg", ".webp": "image/webp"}
+        if uzanti not in desteklenen:
+            raise ValueError(
+                f"Desteklenmeyen görsel formatı: {uzanti} "
+                "(desteklenen: PNG, JPG, WEBP)"
+            )
+
+        try:
+            with open(gorsel_yolu, "rb") as f:
+                gorsel_b64 = base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            raise IOError(f"Görsel okunamadı: {e}")
+
+        media_type = desteklenen[uzanti]
+        dosya_adi = os.path.basename(gorsel_yolu)
+
+        analiz_istegi = (
+            f"Lütfen bu fotoğrafı inşaat sahası problemi perspektifinden analiz et."
+        )
+        if ek_aciklama.strip():
+            analiz_istegi = f"{ek_aciklama.strip()}"
+
+        content = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": gorsel_b64,
+                },
+            },
+            {
+                "type": "text",
+                "text": analiz_istegi,
+            },
+        ]
+        self.gecmis.append({"role": "user", "content": content})
+        self._gecmis_kisalt()
+        return f"[📷 {dosya_adi}] {analiz_istegi}"
+
     def _excel_to_markdown(self, dosya_yolu: str) -> str:
         """Excel dosyasını okunabilir markdown tabloya çevirir."""
         try:
@@ -728,6 +1114,186 @@ class ClaudeEngine:
         if len(self.gecmis) > 20:
             self.gecmis = self.gecmis[-20:]
 
+    # ── Disk Geçmişi ────────────────────────────────────────────────────────
+
+    def _gecmis_dosyasini_oku(self) -> List[Dict]:
+        """Disk'teki geçmiş JSON'ını okur. Hata varsa boş liste döner."""
+        try:
+            if not GECMIS_DOSYASI.exists():
+                return []
+            with open(GECMIS_DOSYASI, "r", encoding="utf-8") as f:
+                veri = json.load(f)
+            if not isinstance(veri, list):
+                return []
+            return veri
+        except Exception as e:
+            logger.warning(f"Geçmiş dosyası okunamadı: {e}")
+            return []
+
+    def _gecmis_dosyasina_yaz(self, kayitlar: List[Dict]) -> bool:
+        """Geçmişi atomic şekilde diske yazar (temp → rename).
+        Döndürür: başarılı mı"""
+        try:
+            GECMIS_DOSYASI.parent.mkdir(parents=True, exist_ok=True)
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=GECMIS_DOSYASI.parent,
+                prefix=".asistan_gecmis_tmp_",
+                suffix=".json",
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(kayitlar, f, ensure_ascii=False, indent=2)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+            shutil.move(tmp_path, str(GECMIS_DOSYASI))
+            return True
+        except Exception as e:
+            logger.error(f"Geçmiş dosyası yazılamadı: {e}")
+            return False
+
+    def _baslik_uret(self) -> str:
+        """Başlık boşsa ilk user mesajından kısa başlık üretir."""
+        for m in self.gecmis:
+            if m.get("role") == "user":
+                icerik = m.get("content", "")
+                if isinstance(icerik, list):
+                    # vision/excel içerik bloğu → text parçasını bul
+                    for blok in icerik:
+                        if isinstance(blok, dict) and blok.get("type") == "text":
+                            icerik = blok.get("text", "")
+                            break
+                    else:
+                        icerik = "Görsel veya Dosya İçerikli Sohbet"
+                return str(icerik)[:60].strip()
+        return "Yeni Sohbet"
+
+    def gecmis_kaydet(self, baslik: str = "") -> str:
+        """Mevcut sohbeti diske kaydeder.
+        baslik boşsa ilk user mesajından üretilir.
+        Döndürür: kaydedilen konuşma ID'si"""
+        try:
+            if not self.gecmis:
+                logger.debug("Kaydedilecek mesaj yok.")
+                return ""
+            # ID oluştur veya mevcut ID'yi güncelle
+            if self._aktif_konusma_id:
+                konusma_id = self._aktif_konusma_id
+            else:
+                konusma_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            if not baslik:
+                baslik = self._baslik_uret()
+
+            tarih_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+            kayitlar = self._gecmis_dosyasini_oku()
+
+            # Mevcut kayıt varsa güncelle, yoksa yeni ekle
+            guncellendi = False
+            for i, k in enumerate(kayitlar):
+                if k.get("id") == konusma_id:
+                    kayitlar[i] = {
+                        "id": konusma_id,
+                        "baslik": baslik,
+                        "tarih": tarih_str,
+                        "mod": getattr(self, "_mod", 0),
+                        "mesajlar": list(self.gecmis),
+                    }
+                    guncellendi = True
+                    break
+
+            if not guncellendi:
+                kayitlar.insert(0, {
+                    "id": konusma_id,
+                    "baslik": baslik,
+                    "tarih": tarih_str,
+                    "mod": getattr(self, "_mod", 0),
+                    "mesajlar": list(self.gecmis),
+                })
+
+            # MAX_KAYIT sınırını uygula (en eskiler silinir)
+            if len(kayitlar) > MAX_KAYIT:
+                kayitlar = kayitlar[:MAX_KAYIT]
+
+            if self._gecmis_dosyasina_yaz(kayitlar):
+                self._aktif_konusma_id = konusma_id
+                logger.debug(f"Konuşma kaydedildi: {konusma_id}")
+                return konusma_id
+            return ""
+        except Exception as e:
+            logger.error(f"gecmis_kaydet hatası: {e}")
+            return ""
+
+    def gecmis_listesi(self) -> List[Dict]:
+        """Kayıtlı konuşmaları listeler (mesajlar hariç, sadece meta).
+        Döndürür: [{"id", "baslik", "tarih", "mesaj_sayisi", "mod"}, ...]"""
+        try:
+            kayitlar = self._gecmis_dosyasini_oku()
+            meta = []
+            for k in kayitlar:
+                meta.append({
+                    "id": k.get("id", ""),
+                    "baslik": k.get("baslik", "Başlıksız"),
+                    "tarih": k.get("tarih", ""),
+                    "mesaj_sayisi": len(k.get("mesajlar", [])),
+                    "mod": k.get("mod", 0),
+                })
+            return meta
+        except Exception as e:
+            logger.error(f"gecmis_listesi hatası: {e}")
+            return []
+
+    def gecmis_yukle(self, konusma_id: str) -> bool:
+        """ID'ye göre konuşmayı yükler ve self.gecmis'e atar.
+        Döndürür: başarılı mı"""
+        try:
+            kayitlar = self._gecmis_dosyasini_oku()
+            for k in kayitlar:
+                if k.get("id") == konusma_id:
+                    mesajlar = k.get("mesajlar", [])
+                    if not isinstance(mesajlar, list):
+                        logger.warning(f"Geçersiz mesaj formatı: {konusma_id}")
+                        return False
+                    self.gecmis = mesajlar
+                    self._aktif_konusma_id = konusma_id
+                    logger.debug(f"Konuşma yüklendi: {konusma_id} ({len(mesajlar)} mesaj)")
+                    return True
+            logger.warning(f"Konuşma bulunamadı: {konusma_id}")
+            return False
+        except Exception as e:
+            logger.error(f"gecmis_yukle hatası: {e}")
+            return False
+
+    def gecmis_sil(self, konusma_id: str) -> bool:
+        """ID'ye göre konuşmayı siler.
+        Döndürür: başarılı mı"""
+        try:
+            kayitlar = self._gecmis_dosyasini_oku()
+            yeni_kayitlar = [k for k in kayitlar if k.get("id") != konusma_id]
+            if len(yeni_kayitlar) == len(kayitlar):
+                logger.warning(f"Silinecek konuşma bulunamadı: {konusma_id}")
+                return False
+            if self._gecmis_dosyasina_yaz(yeni_kayitlar):
+                if self._aktif_konusma_id == konusma_id:
+                    self._aktif_konusma_id = ""
+                logger.debug(f"Konuşma silindi: {konusma_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"gecmis_sil hatası: {e}")
+            return False
+
+    def gecmis_otomatik_kaydet(self) -> None:
+        """Mevcut sohbet 2+ mesaj içeriyorsa otomatik kaydeder/günceller.
+        _aktif_konusma_id varsa günceller, yoksa yeni oluşturur."""
+        try:
+            if len(self.gecmis) < 2:
+                return
+            self.gecmis_kaydet()
+        except Exception as e:
+            logger.warning(f"Otomatik kayıt başarısız: {e}")
+
     # ── Thread Oluşturma ────────────────────────────────────────────────────
 
     def sorgu_thread_olustur(self) -> Optional[ClaudeAsistanThread]:
@@ -747,6 +1313,20 @@ class ClaudeEngine:
             mesajlar=list(self.gecmis),
             model=self.model,
             arac_callback=self._arac_calistir,
+        )
+        self._active_thread = thread
+        return thread
+
+    def sorgu_saha_cozum_thread_olustur(self) -> Optional[ClaudeAracliThread]:
+        """Saha Çözüm Danışmanı thread — uzmanlaşmış sistem promptuyla."""
+        if not self.api_key_gecerli():
+            return None
+        thread = ClaudeAracliThread(
+            api_key=self.api_key,
+            mesajlar=list(self.gecmis),
+            model=self.model,
+            arac_callback=self._arac_calistir,
+            sistem_prompt=SAHA_COZUM_SISTEM_PROMPT,
         )
         self._active_thread = thread
         return thread
@@ -790,7 +1370,8 @@ class ClaudeEngine:
         # İlk 15 metraj kalemi
         kalemler = proje_data.get("kalemler", [])
         if kalemler:
-            satirlar.append("\nÖnemli Kalemler (ilk 15):")
+            gosterilen = min(15, len(kalemler))
+            satirlar.append(f"\nÖnemli Kalemler ({gosterilen}/{len(kalemler)}):")
             for k in kalemler[:15]:
                 satirlar.append(
                     f"  - {k.get('tanim', '?')}: "
@@ -823,6 +1404,18 @@ class ClaudeEngine:
                 return self._arac_gantt_toplu_ekle(parametreler)
             elif arac_adi == "gantt_dosya_iceri_aktar":
                 return self._arac_gantt_dosya_iceri_aktar(parametreler)
+            elif arac_adi == "ekap_ihale_ara":
+                return self._arac_ekap_ihale_ara(parametreler)
+            elif arac_adi == "hakedis_hesapla":
+                return self._arac_hakedis_hesapla(parametreler)
+            elif arac_adi == "gecikme_ceza_hesapla":
+                return self._arac_gecikme_ceza_hesapla(parametreler)
+            elif arac_adi == "saha_sorun_tani":
+                return self._arac_saha_sorun_tani(parametreler)
+            elif arac_adi == "malzeme_test_degerlendir":
+                return self._arac_malzeme_test_degerlendir(parametreler)
+            elif arac_adi == "isg_risk_degerlendirme":
+                return self._arac_isg_risk_degerlendirme(parametreler)
             else:
                 return f"Bilinmeyen araç: {arac_adi}"
         except Exception as e:
@@ -1228,12 +1821,31 @@ class ClaudeEngine:
                     pass
             self._gantt_engine.tasks[tid] = yeni_task
 
-            # Gantt sinyal — UI varsa yenile
-            try:
-                if hasattr(self._gantt_engine, "veri_degisti"):
-                    self._gantt_engine.veri_degisti.emit()
-            except Exception:
-                pass
+            # _is_list güncelleme — GanttWindow UI'yı besleyen asıl kaynak
+            if self._gantt_window is not None:
+                try:
+                    from PyQt6.QtCore import QMetaObject, Qt
+                    is_dict = self._task_to_is_dict(
+                        tid, ad, sure_gun, miktar, birim, ekip, kaynak, oncul_listesi
+                    )
+                    # Çift eklemeyi önle
+                    mevcut_ids = {t.get("id") for t in self._gantt_window._is_list}
+                    if tid not in mevcut_ids:
+                        self._gantt_window._is_list.append(is_dict)
+                    # Tablo yenile
+                    QMetaObject.invokeMethod(
+                        self._gantt_window,
+                        "_yukle_is_listesi",
+                        Qt.ConnectionType.QueuedConnection,
+                    )
+                    # Görsel Gantt chart yenile
+                    QMetaObject.invokeMethod(
+                        self._gantt_window,
+                        "refresh_visual_gantt",
+                        Qt.ConnectionType.QueuedConnection,
+                    )
+                except Exception as _e:
+                    logger.warning(f"_is_list güncelleme hatası: {_e}")
 
             return (
                 f"Gantt görevi eklendi.\n"
@@ -1267,6 +1879,7 @@ class ClaudeEngine:
 
         eklenen = 0
         hatalar = []
+        _is_dict_listesi: list = []   # _is_list'e eklenecek dict'ler
 
         # Mevcut max ID
         mevcut_ids = [
@@ -1338,17 +1951,38 @@ class ClaudeEngine:
                     except (ValueError, TypeError):
                         pass
                 self._gantt_engine.tasks[tid] = yeni_task
+                # _is_list için dict topla
+                _is_dict_listesi.append(self._task_to_is_dict(
+                    tid, ad, sure_gun, miktar, birim, ekip, kaynak, oncul_listesi
+                ))
                 eklenen += 1
 
             except Exception as e:
                 hatalar.append(f"  Sıra {i+1} ({g.get('ad', '?')}): {e}")
 
-        # UI sinyali
-        try:
-            if hasattr(self._gantt_engine, "veri_degisti"):
-                self._gantt_engine.veri_degisti.emit()
-        except Exception:
-            pass
+        # GanttWindow._is_list'e toplu yaz + thread-safe UI yenileme
+        if self._gantt_window is not None and _is_dict_listesi:
+            try:
+                from PyQt6.QtCore import QMetaObject, Qt
+                mevcut_ids_set = {t.get("id") for t in self._gantt_window._is_list}
+                for d in _is_dict_listesi:
+                    if d["id"] not in mevcut_ids_set:
+                        self._gantt_window._is_list.append(d)
+                        mevcut_ids_set.add(d["id"])
+                # Tablo yenile
+                QMetaObject.invokeMethod(
+                    self._gantt_window,
+                    "_yukle_is_listesi",
+                    Qt.ConnectionType.QueuedConnection,
+                )
+                # Görsel Gantt chart yenile
+                QMetaObject.invokeMethod(
+                    self._gantt_window,
+                    "refresh_visual_gantt",
+                    Qt.ConnectionType.QueuedConnection,
+                )
+            except Exception as _e:
+                logger.warning(f"Toplu _is_list güncelleme hatası: {_e}")
 
         satirlar = [
             f"Toplu Gantt aktarımı tamamlandı.",
@@ -1565,3 +2199,582 @@ class ClaudeEngine:
             satirlar.append(f"  Hatalar : {len(hatalar)} adet")
             satirlar.extend(hatalar[:3])
         return "\n".join(satirlar)
+
+    # ── Yeni Araçlar: EKAP, Hakediş, Gecikme Cezası ─────────────────────────
+
+    def _arac_ekap_ihale_ara(self, parametreler: dict) -> str:
+        """EKAP v2 API üzerinden ihale arama."""
+        try:
+            from app.core.ekap_engine import EKAPEngine
+            engine = EKAPEngine()
+            sonuc = engine.ihale_ara(
+                anahtar_kelime=str(parametreler.get("anahtar_kelime", "")),
+                il=str(parametreler.get("il", "")),
+                ihale_turu=str(parametreler.get("ihale_turu", "")),
+                baslangic_tarihi=str(parametreler.get("baslangic_tarihi", "")),
+                bitis_tarihi=str(parametreler.get("bitis_tarihi", "")),
+                sayfa_boyutu=int(parametreler.get("sayfa_boyutu", 20)),
+            )
+        except Exception as e:
+            return f"EKAP bağlantı hatası: {e}"
+
+        if not sonuc.get("basarili"):
+            return f"EKAP Arama Başarısız:\n{sonuc.get('hata', 'Bilinmeyen hata')}"
+
+        ihaleler = sonuc.get("ihaleler", [])
+        toplam = sonuc.get("toplam", 0)
+        if not ihaleler:
+            return "Arama kriterlerine uygun ihale bulunamadı."
+
+        satirlar = [
+            f"EKAP İhale Arama Sonuçları — Toplam: {toplam} ihale",
+            f"  (İlk {len(ihaleler)} gösteriliyor)",
+            "─" * 60,
+        ]
+        for i, ih in enumerate(ihaleler[:15], 1):
+            d = ih.to_dict() if hasattr(ih, "to_dict") else ih
+            satirlar.append(
+                f"  {i:2d}. {str(d.get('ihale_adi', '?'))[:55]}\n"
+                f"      Kurum : {str(d.get('idare_adi', '?'))[:45]}\n"
+                f"      Tarih : {d.get('ihale_tarihi', '?')} | "
+                f"Tür: {d.get('ihale_turu', '?')} | "
+                f"Durum: {d.get('durum', '?')}\n"
+                f"      İl    : {d.get('il', '?')} | "
+                f"IKN: {d.get('ihale_no', '?')}"
+            )
+        return "\n".join(satirlar)
+
+    def _arac_hakedis_hesapla(self, parametreler: dict) -> str:
+        """KİK mevzuatına uygun hakediş hesabı (4734/4735)."""
+        try:
+            sozlesme = float(parametreler.get("sozlesme_bedeli", 0))
+            yuzde = float(parametreler.get("tamamlanma_yuzdesi", 0))
+            onceki = float(parametreler.get("onceki_hakediş_yuzdesi", 0))
+            kdv_oran = float(parametreler.get("kdv_orani", 20))
+            stopaj_oran = float(parametreler.get("stopaj_orani", 3))
+            damga_oran = float(parametreler.get("damga_vergisi_orani", 0.948))
+
+            if sozlesme <= 0:
+                return "HATA: Sözleşme bedeli sıfırdan büyük olmalıdır."
+            if not (0 <= yuzde <= 100):
+                return "HATA: Tamamlanma yüzdesi 0-100 arasında olmalıdır."
+            if onceki >= yuzde:
+                return "HATA: Mevcut tamamlanma yüzdesi önceki hakedişten düşük olamaz."
+
+            # Bu dönem tamamlanma farkı
+            donem_yuzdesi = yuzde - onceki
+            # Bu dönem brüt iş tutarı (KDV hariç)
+            brut_is = sozlesme * (donem_yuzdesi / 100)
+            # Toplam birikimli tutar
+            toplam_birikim = sozlesme * (yuzde / 100)
+
+            # KDV
+            kdv_tutari = brut_is * (kdv_oran / 100)
+            kdv_dahil = brut_is + kdv_tutari
+
+            # Kesintiler (KDV dahil tutardan)
+            stopaj_tutari = brut_is * (stopaj_oran / 100)  # Stopaj KDV hariç
+            damga_tutari = brut_is * (damga_oran / 100)
+
+            # Net ödeme
+            net_odeme = kdv_dahil - stopaj_tutari - damga_tutari
+
+            return (
+                f"Hakediş Hesabı — 4734/4735 KİK Mevzuatı\n"
+                f"{'─' * 55}\n"
+                f"  Sözleşme Bedeli      : {sozlesme:>15,.2f} ₺\n"
+                f"  Önceki Tamamlanma    : %{onceki:.2f}\n"
+                f"  Mevcut Tamamlanma    : %{yuzde:.2f}\n"
+                f"  Bu Dönem Farkı       : %{donem_yuzdesi:.2f}\n"
+                f"{'─' * 55}\n"
+                f"  Dönem İş Tutarı (KDV hariç) : {brut_is:>12,.2f} ₺\n"
+                f"  KDV (%{kdv_oran:.0f})              : {kdv_tutari:>12,.2f} ₺\n"
+                f"  KDV Dahil Tutar      : {kdv_dahil:>12,.2f} ₺\n"
+                f"{'─' * 55}\n"
+                f"  Gelir Vergisi Stopajı (%{stopaj_oran:.0f})  : -{stopaj_tutari:>10,.2f} ₺\n"
+                f"  Damga Vergisi (%{damga_oran:.3f})   : -{damga_tutari:>10,.2f} ₺\n"
+                f"{'─' * 55}\n"
+                f"  NET ÖDEME TUTARI     : {net_odeme:>12,.2f} ₺\n"
+                f"{'─' * 55}\n"
+                f"  Birikimli İş Tutarı  : {toplam_birikim:>12,.2f} ₺ (%{yuzde:.2f})\n"
+                f"  Kalan İş             : {sozlesme - toplam_birikim:>12,.2f} ₺ (%{100 - yuzde:.2f})"
+            )
+        except Exception as e:
+            return f"Hakediş hesap hatası: {e}"
+
+    # ── Saha Çözüm Araç Implementasyonları ─────────────────────────────────
+
+    def _arac_saha_sorun_tani(self, parametreler: dict) -> str:
+        """Saha sorununun kategorisini ve ilgili yönetmelikleri tespit eder."""
+        sorun = str(parametreler.get("sorun_tanimi", "")).lower()
+        yapi = parametreler.get("yapi_turu", "Betonarme")
+        asama = parametreler.get("imalat_asamasi", "Kaba Yapı")
+        aciliyet = parametreler.get("aciliyet", "Orta")
+
+        KATEGORI_YONETMELIK = {
+            "beton": {
+                "anahtar": ["beton", "segregasyon", "boşluk", "slump", "basınç",
+                            "dayanım", "kür", "çatlak", "balonc", "gözenek"],
+                "yonetmelikler": [
+                    "TS EN 206+A2:2021 — slump, su/çimento, dayanım sınıfları",
+                    "TS 500:2000 md.4.3 — minimum beton örtü kalınlıkları",
+                    "TS EN 13670:2010 md.8 — beton dökümü, sıkıştırma, kür",
+                    "TS 9967 — hazır beton: su ekleme YASAK, nakliye ≤90 dk",
+                ],
+                "risk_krisel": ["segregasyon", "dayanım düşük", "boşluk", "gözenek"]
+            },
+            "demir": {
+                "anahtar": ["demir", "donatı", "pası", "örtü", "bindirme",
+                            "nervür", "çap", "filiz"],
+                "yonetmelikler": [
+                    "TS 500:2000 md.5.3 — donatı örtü kalınlıkları (min 30mm)",
+                    "TBDY 2018 md.7.2 — bindirme ve kanca uzunlukları",
+                    "TS EN 1992-1-1 md.8 — donatı yerleşim ve birleşim kuralları",
+                    "TBDY 2018 — sargı donatısı, kolon-kiriş birleşim bölgesi",
+                ],
+                "risk_krisel": ["sargı yok", "örtü yok", "paslanma ciddi"]
+            },
+            "kalıp": {
+                "anahtar": ["kalıp", "söküm", "şişme", "göçme", "iskele",
+                            "payanda", "form"],
+                "yonetmelikler": [
+                    "TS EN 13670 md.9 — kalıp sökme süreleri (döşeme min 21 gün C25)",
+                    "TS 500:2000 md.4.4.4 — erken yükleme kısıtları",
+                    "İSG Yapı Yönetmeliği — iskele ve kalıp güvenlik kontrolleri",
+                ],
+                "risk_krisel": ["göçme", "çöküş", "erken sökme"]
+            },
+            "zemin": {
+                "anahtar": ["zemin", "oturma", "sıvılaşma", "heyelan", "kayma",
+                            "taşıma", "çökme", "zemin suyu"],
+                "yonetmelikler": [
+                    "TBDY 2018 Bölüm 16 — zemin sınıflaması ve sıvılaşma analizi",
+                    "Zemin Mekaniği ve Temel İnşaatı Yönetmeliği",
+                    "TS EN 1997 (Eurocode 7) — zemin tasarımı ve şev stabilitesi",
+                ],
+                "risk_krisel": ["sıvılaşma", "oturma", "heyelan", "kayma"]
+            },
+            "hafriyat": {
+                "anahtar": ["hafriyat", "kazı", "iksa", "destek", "göçme",
+                            "hendek", "şev"],
+                "yonetmelikler": [
+                    "6331 İSG Kanunu md.12 — kazılarda göçme riski önlemleri",
+                    "Yapı İşleri İSG Yönetmeliği — hendek güvenlik kuralları",
+                    "1m üzeri hendek: iksa veya min 45° şev açısı zorunlu",
+                    "2m+ derinlik: yatay destek veya şev + giriş merdiveni",
+                ],
+                "risk_krisel": ["göçme", "2m", "3m", "su geldi"]
+            },
+            "çatlak": {
+                "anahtar": ["çatlak", "kırılma", "deformasyon", "çatla"],
+                "yonetmelikler": [
+                    "TS 500:2000 md.11 — izin verilen çatlak genişlikleri",
+                    "  (w_k ≤ 0.3mm dış/nem, ≤ 0.4mm iç kuru ortam)",
+                    "TBDY 2018 — deprem sonrası hasar tespiti kriterleri",
+                    "Yapı Denetim Yönetmeliği 4708 — hasar bildirimi zorunluluğu",
+                ],
+                "risk_krisel": ["taşıyıcı", "yapısal", "kolon", "kiriş", "perde"]
+            },
+            "su_yalitim": {
+                "anahtar": ["su sızıntı", "nem", "yalıtım", "rutubet", "ıslaklık",
+                            "drenaj"],
+                "yonetmelikler": [
+                    "TS EN 14891 — su yalıtım malzemeleri performans standardı",
+                    "TS 11727 — su yalıtım uygulamaları",
+                    "CŞB 2026: Su yalıtımı poz no 27.xxx birim fiyatları",
+                ],
+                "risk_krisel": ["bodrum", "temel"]
+            },
+            "isg": {
+                "anahtar": ["kaza", "yaralanma", "güvenlik", "baret", "emniyet",
+                            "koruyucu", "iş kazası"],
+                "yonetmelikler": [
+                    "6331 İSG Kanunu — kaza anında durum tespiti ve bildirim",
+                    "SGK — 3 iş günü içinde kaza bildirimi zorunlu",
+                    "İşveren sorumluluğu — tüm işçiler SGK'lı olmalı",
+                    "Yapı İşleri İSG Yönetmeliği (2013/35076)",
+                ],
+                "risk_krisel": ["ölüm", "ağır yaralanma", "düşme", "elektrik"]
+            },
+        }
+
+        eslesen_kategoriler = []
+        eslesen_yonetmelikler = []
+        risk_seviyesi = aciliyet if aciliyet in ["Kritik", "Yüksek", "Orta", "Düşük"] else "Orta"
+
+        for kat, veri in KATEGORI_YONETMELIK.items():
+            for kelime in veri["anahtar"]:
+                if kelime in sorun:
+                    eslesen_kategoriler.append(kat)
+                    eslesen_yonetmelikler.extend(veri["yonetmelikler"])
+                    # Kritik risk anahtar kelimesi var mı?
+                    for kk in veri["risk_krisel"]:
+                        if kk in sorun:
+                            risk_seviyesi = "Kritik"
+                            break
+                    break
+
+        eslesen_yonetmelikler = list(dict.fromkeys(eslesen_yonetmelikler))
+
+        satirlar = [
+            "SAHA SORUN ANALİZ BAĞLAMI:",
+            f"  Sorun         : {parametreler.get('sorun_tanimi', '')}",
+            f"  Yapı Türü     : {yapi}",
+            f"  İmalat Aşaması: {asama}",
+            f"  Aciliyet      : {aciliyet}",
+            f"  Risk Seviyesi : {risk_seviyesi}",
+        ]
+
+        if eslesen_kategoriler:
+            satirlar.append(
+                f"\nTespit Edilen Kategori(ler): {', '.join(set(eslesen_kategoriler))}"
+            )
+
+        if eslesen_yonetmelikler:
+            satirlar.append("\nİlgili Yönetmelik / Standartlar:")
+            for yonetmelik in eslesen_yonetmelikler[:10]:
+                satirlar.append(f"  • {yonetmelik}")
+        else:
+            satirlar.append(
+                "\nNot: Otomatik kategori eşleşmesi bulunamadı — "
+                "genel mühendislik ve İSG kuralları geçerlidir."
+            )
+
+        satirlar.extend([
+            "\nBu bağlama dayanarak şu yapıda yanıt ver:",
+            "1. SORUN TEŞHİSİ — Teknik tanım",
+            "2. KÖK NEDEN — Öncelikli nedenler (2-3 madde)",
+            "3. YÖNETMELİK DAYANAĞI — Yukarıdaki maddeleri kullan",
+            "4. ÇÖZÜM ADIMLARI — Sıralı, sahada uygulanabilir",
+            "5. MALİYET ETKİSİ — TL/m² veya toplam tahmini",
+            f"6. RİSK: {risk_seviyesi}",
+        ])
+
+        return "\n".join(satirlar)
+
+    def _arac_malzeme_test_degerlendir(self, parametreler: dict) -> str:
+        """Malzeme test sonucunu standartlara göre değerlendirir."""
+        malzeme = str(parametreler.get("malzeme_turu", "")).lower()
+        test = str(parametreler.get("test_turu", "")).lower()
+        deger = float(parametreler.get("olculen_deger", 0))
+        birim = str(parametreler.get("birim", "MPa"))
+        beton_sinifi = str(parametreler.get("beton_sinifi", "C25")).upper()
+
+        # kg/cm² → MPa dönüşümü
+        deger_mpa = deger / 10.197 if birim in ("kg/cm²", "kgf/cm²") else deger
+
+        BETON_DAYANIM = {
+            "C16": 16, "C20": 20, "C25": 25, "C30": 30,
+            "C35": 35, "C40": 40, "C45": 45, "C50": 50,
+        }
+
+        satirlar = []
+
+        # ── Beton Basınç Dayanımı ─────────────────────────────────────────
+        if "beton" in malzeme and any(x in test for x in ["basınç", "dayanım", "küp", "silindir"]):
+            fck = BETON_DAYANIM.get(beton_sinifi, 25)
+            min_kabul = fck * 0.85  # TS EN 206: numune değeri fck × 0.85
+            kabul = deger_mpa >= min_kabul
+            etiket = "✅ KABUL" if kabul else "❌ RED"
+            oran = (deger_mpa / fck) * 100
+
+            satirlar = [
+                "BETON BASINÇ DAYANIMI DEĞERLENDİRMESİ (TS EN 206 + TS 500):",
+                f"  Beton Sınıfı            : {beton_sinifi}",
+                f"  Karakteristik Dayanım   : {fck} MPa",
+                f"  Min. Kabul Sınırı       : {min_kabul:.1f} MPa  (fck × 0.85 — TS EN 206)",
+                f"  Ölçülen Değer           : {deger:.1f} {birim}  ≈ {deger_mpa:.1f} MPa",
+                f"  KARAR                   : {etiket}",
+                f"  fck'ya Oranı            : %{oran:.0f}",
+            ]
+            if not kabul:
+                satirlar.extend([
+                    "",
+                    "ACİL ÖNLEMLER (Yüklenici ve Yapı Denetim Bilgilendirilmeli):",
+                    "  1. İlgili bölümde yüklemeyi DURDURUN (TS 500 md.4.4.4)",
+                    "  2. Yapı denetim kuruluşuna yazılı bildirim (4708 sayılı Kanun)",
+                    "  3. Karot testi ile teyit edin (min 3 karot, TS EN 12504-1)",
+                    "  4. Karot sonucu da düşükse: statik hesap kontrolü zorunlu",
+                    "  5. Nihai karar: Güçlendirme veya ilgili bölüm yeniden yapım",
+                ])
+            else:
+                satirlar.append(
+                    f"  Durum: Değer kabul sınırı üzerinde. "
+                    f"{'Yeterli güvenlik marjı.' if oran >= 100 else 'Limitin hemen üzerinde, yakın takip önerilir.'}"
+                )
+
+        # ── Slump / Kıvam Testi ───────────────────────────────────────────
+        elif any(x in test for x in ["slump", "kıvam", "çökme"]):
+            if 50 <= deger <= 90:
+                sinif, durum, kabul = "S2", "Normal — döşeme, kolon, kiriş", True
+            elif 90 < deger <= 150:
+                sinif, durum, kabul = "S3", "Akışkan — pompalı beton için uygun", True
+            elif deger < 50:
+                sinif, durum, kabul = "S1", "Çok kuru — işlenemez beton", False
+            else:
+                sinif, durum, kabul = "S4+", "Çok akışkan — su/çimento oranı fazla", False
+
+            etiket = "✅ KABUL" if kabul else "❌ RED"
+            satirlar = [
+                "SLUMP TESTİ DEĞERLENDİRMESİ (TS 9967 + TS EN 12350-2):",
+                f"  Ölçülen Slump : {deger:.0f} mm",
+                f"  Kıvam Sınıfı  : {sinif}",
+                f"  Durum         : {durum}",
+                f"  KARAR         : {etiket}",
+            ]
+            if not kabul:
+                onlem = (
+                    "Superplastizan katkı ekleyin — ASLA su eklemeyin (TS 9967 yasak)"
+                    if deger < 50
+                    else "Mikser geri gönderin. Su eklenmişse tüm partiyi reddedin."
+                )
+                satirlar.extend(["", f"Önlem: {onlem}"])
+
+        # ── Demir Çekme / Akma ────────────────────────────────────────────
+        elif any(x in malzeme for x in ["demir", "donatı", "çelik"]):
+            # B500C (yaygın): fy_min=500 MPa, ft_min=575 MPa
+            if any(x in test for x in ["akma", "fy", "yield"]):
+                min_val, sinif_adi = 500, "B500C Akma Dayanımı"
+            else:
+                min_val, sinif_adi = 575, "B500C Çekme Dayanımı"
+
+            kabul = deger_mpa >= min_val
+            etiket = "✅ KABUL" if kabul else "❌ RED — Parti Reddedilmeli"
+            satirlar = [
+                f"DEMİR TEST DEĞERLENDİRMESİ (TS 708 + TS EN 10080):",
+                f"  Test Türü     : {sinif_adi}",
+                f"  Min. Sınır    : {min_val} MPa",
+                f"  Ölçülen Değer : {deger:.1f} {birim}",
+                f"  KARAR         : {etiket}",
+            ]
+            if not kabul:
+                satirlar.extend([
+                    "",
+                    "Önlemler:",
+                    "  1. Tüm partiyi sertifika ile birlikte reddedin",
+                    "  2. Farklı partiden numune alın ve tekrar test ettirin",
+                    "  3. Yapı denetim kuruluşuna bilgi verin",
+                ])
+
+        else:
+            satirlar = [
+                "MALZEME TEST DEĞERLENDİRMESİ:",
+                f"  Malzeme    : {parametreler.get('malzeme_turu', '')}",
+                f"  Test       : {parametreler.get('test_turu', '')}",
+                f"  Ölçülen    : {deger} {birim}",
+                "",
+                "Bu test türü için otomatik değerlendirme henüz tanımlı değil.",
+                "İlgili TS/EN standardını ve CŞB özelname değerlerini kontrol edin.",
+            ]
+
+        return "\n".join(satirlar)
+
+    def _arac_isg_risk_degerlendirme(self, parametreler: dict) -> str:
+        """6331 İSG Kanunu + Yapı İşleri Yönetmeliğine göre risk değerlendirmesi."""
+        calisma = str(parametreler.get("calisma_turu", "")).lower()
+        yukseklik = float(parametreler.get("yukseklik_m", 0))
+        personel = int(parametreler.get("personel_sayisi", 1))
+        ortam = str(parametreler.get("ortam", "Açık Hava"))
+
+        CALISMA_KURALLARI = {
+            "kazı": {
+                "anahtar": ["kazı", "hafriyat", "hendek"],
+                "temel_tedbirler": [
+                    "1.5m üzeri kazı: iksa/destek ZORUNLU (Yapı İSG Yön. md.28)",
+                    "2m+ derinlik: her 2m'de destek veya şev açısı ≤45° (killi zemin)",
+                    "Kazı kenarına malzeme yığmayı yasakla — en az 1m mesafe bırak",
+                    "Günlük zemin stabilitesi kontrolü (özellikle yağmur/kar sonrası)",
+                    "Gece ve gündüz ışıklandırma + bariyer zorunlu",
+                    "3m+ derinlikte giriş/çıkış merdiveni zorunlu",
+                ],
+                "baz_risk": "Kritik"
+            },
+            "yüksekte": {
+                "anahtar": ["yüksekte", "çatı", "iskele", "çelik", "bina kenar"],
+                "temel_tedbirler": [
+                    "2m+ yükseklik: tam vücut paraşüt kemeri zorunlu (TS EN 361)",
+                    "İskele: zemine 4:1 oranı, çapraz ve yatay bağlantı şart",
+                    "İskele yükleme kapasitesi hesabı yapılmalı",
+                    "Paraşüt ağı veya koruma ağı kurulumu",
+                    "Sağlık raporu: vertigo, epilepsi olan çalışan çıkamaZ",
+                    "Rüzgar hızı >10 m/s → çalışmayı durdur",
+                ],
+                "baz_risk": "Kritik"
+            },
+            "beton dökümü": {
+                "anahtar": ["beton", "döküm", "pompa"],
+                "temel_tedbirler": [
+                    "Beton pompası hortumu: ani hareket riski — 2 kişi tutmalı",
+                    "Vibratör operatörü: yalıtımlı eldiven + uzun çizme",
+                    "Dökümden önce kalıp stabilitesi ve payanda kontrolü",
+                    "Gece dökümünde: min 50 lux aydınlatma",
+                    "Sıcak hava (>30°C): erken akşam saatlerinde dök, kür sulaması yap",
+                ],
+                "baz_risk": "Orta"
+            },
+            "demir": {
+                "anahtar": ["demir", "donatı", "kesim", "bükme"],
+                "temel_tedbirler": [
+                    "Demir uçları: mandal/plastik kapak ZORUNLU (göz yaralanması)",
+                    "Kesim ve bükme sırasında: koruyucu gözlük + deri eldiven",
+                    "Geçiş yollarına dağınık demir yığma — temiz koridor bırak",
+                    "Uzun demir taşıma: koordineli hareket, min 2 kişi",
+                    "Yatay demirler: altına destek konarak depolanmalı",
+                ],
+                "baz_risk": "Orta"
+            },
+            "kalıp": {
+                "anahtar": ["kalıp", "form", "iskele kurulum"],
+                "temel_tedbirler": [
+                    "Kalıp tasarımı: beton yükü + dinamik yük kapasitesi hesabı",
+                    "Lateral basınç: dökme hızı 1m/saatten fazlaysa ek destek",
+                    "Payandalar düz ve sağlam zemine oturmalı",
+                    "Söküm: TS EN 13670 süreleri kesinlikle bekle",
+                    "Kalıp sökme: destekler aşamalı kaldırılmalı, tek seferde değil",
+                ],
+                "baz_risk": "Yüksek"
+            },
+            "elektrik": {
+                "anahtar": ["elektrik", "kablo", "hat", "trafo"],
+                "temel_tedbirler": [
+                    "Şantiye dağıtım panosu: topraklama + kaçak akım rölesi ZORUNLU",
+                    "Kablo geçişleri: yerde plastik koruma tüpü içinde",
+                    "Islak zemin/su bölgesinde elektrikli alet kullanmayı yasakla",
+                    "ENERJ İkesim: lockout/tagout prosedürü uygula",
+                    "Elektrik uzmanı belgesi olmayan personel panel açamaz",
+                ],
+                "baz_risk": "Kritik"
+            },
+        }
+
+        eslesen_tedbirler = []
+        genel_risk = "Orta"
+
+        for kategori, veri in CALISMA_KURALLARI.items():
+            for kelime in veri["anahtar"]:
+                if kelime in calisma:
+                    eslesen_tedbirler = veri["temel_tedbirler"]
+                    genel_risk = veri["baz_risk"]
+                    break
+
+        # Yüksekliğe göre ek kurallar
+        ek_tedbirler = []
+        if yukseklik >= 2.0:
+            ek_tedbirler.append(
+                f"YÜKSEKLIK {yukseklik:.1f}m: Düşme önlemleri zorunlu (6331 md.12)"
+            )
+        if yukseklik >= 6.0:
+            ek_tedbirler.append(
+                f"YÜKSEKLIK {yukseklik:.1f}m: Güvenlik ağı + tam vücut kemeri ZORUNLU"
+            )
+            genel_risk = "Kritik"
+
+        # Personel sayısına göre yasal zorunluluklar
+        if personel >= 20:
+            ek_tedbirler.append(
+                "20+ PERSONEL: Tam zamanlı İSG uzmanı zorunlu (6331 md.8)"
+            )
+        if personel >= 50:
+            ek_tedbirler.append(
+                "50+ PERSONEL: İşyeri hekimi + sağlık birimi zorunlu"
+            )
+
+        # Kapalı alan
+        if any(x in ortam.lower() for x in ["kapalı", "bodrum", "tünel"]):
+            ek_tedbirler.extend([
+                "KAPALI ALAN: Oksijen seviyesi ölçümü (min %19.5) — girmeden önce",
+                "KAPALI ALAN: Tahliye planı + acil çıkış işaretleme zorunlu",
+            ])
+
+        emoji_risk = {
+            "Kritik": "🔴", "Yüksek": "🟠", "Orta": "🟡", "Düşük": "🟢"
+        }.get(genel_risk, "🟡")
+
+        satirlar = [
+            "İSG RİSK DEĞERLENDİRMESİ:",
+            f"  Çalışma Türü  : {parametreler.get('calisma_turu', '')}",
+            f"  Personel      : {personel} kişi",
+            f"  Yükseklik     : {yukseklik:.1f} m",
+            f"  Ortam         : {ortam}",
+            f"  RİSK SEVİYESİ : {emoji_risk} {genel_risk}",
+            "",
+            "Zorunlu Tedbirler (6331 + Yapı İşleri İSG Yönetmeliği):",
+        ]
+        for tedbir in eslesen_tedbirler:
+            satirlar.append(f"  ✔ {tedbir}")
+        for tedbir in ek_tedbirler:
+            satirlar.append(f"  ⚠ {tedbir}")
+
+        satirlar.extend([
+            "",
+            "Her Şantiyede Genel Zorunluluklar:",
+            "  ✔ Tüm işçiler SGK'ya kayıtlı olmalı",
+            "  ✔ KKD: baret + reflektif yelek + güvenlik ayakkabısı",
+            "  ✔ İş talimatları Türkçe levhalarla bildirilmeli",
+            "  ✔ Kaza → işveren 3 iş günü içinde SGK'ya bildirim",
+            "  Yasal Dayanak: 6331 Sayılı İSG Kanunu + Yapı İşlerinde",
+            "                 Sağlık ve Güvenlik Yönetmeliği (2013/35076)",
+        ])
+
+        return "\n".join(satirlar)
+
+    def _arac_gecikme_ceza_hesapla(self, parametreler: dict) -> str:
+        """4735 md.20 gecikme cezası hesabı — günlük ‰5."""
+        try:
+            from decimal import Decimal, ROUND_HALF_UP
+            sozlesme = Decimal(str(parametreler.get("sozlesme_bedeli", 0)))
+            gun = int(parametreler.get("gecikme_gun_sayisi", 0))
+            onceki_yuzde = Decimal(str(parametreler.get("onceki_ceza_yuzdesi", 0)))
+
+            if sozlesme <= 0:
+                return "HATA: Sözleşme bedeli sıfırdan büyük olmalıdır."
+            if gun < 0:
+                return "HATA: Gecikme gün sayısı negatif olamaz."
+
+            GUNLUK_ORAN = Decimal("0.005")   # ‰5 = %0.5/gün
+            FESIH_ESIGI = Decimal("0.30")    # %30 toplam ceza → fesih
+
+            ceza_bu_donem = sozlesme * GUNLUK_ORAN * gun
+            ceza_bu_donem_yuzdesi = GUNLUK_ORAN * gun * 100
+
+            toplam_ceza_yuzdesi = onceki_yuzde + ceza_bu_donem_yuzdesi
+            toplam_ceza_tutari = sozlesme * (toplam_ceza_yuzdesi / 100)
+
+            fesih_esigi_tl = sozlesme * FESIH_ESIGI
+            fesih_asim = toplam_ceza_yuzdesi > (FESIH_ESIGI * 100)
+
+            kalan_fesih_gun = 0
+            if not fesih_asim:
+                kalan_yuzde = (FESIH_ESIGI * 100) - toplam_ceza_yuzdesi
+                kalan_fesih_gun = int(kalan_yuzde / (GUNLUK_ORAN * 100)) + 1
+
+            sonuc = (
+                f"Gecikme Cezası Hesabı — 4735 Sayılı KİK md.20\n"
+                f"{'─' * 55}\n"
+                f"  Sözleşme Bedeli      : {float(sozlesme):>15,.2f} ₺\n"
+                f"  Günlük Ceza Oranı    : ‰5 (%0.5/gün)\n"
+                f"  Fesih Eşiği          : %30\n"
+                f"{'─' * 55}\n"
+                f"  Gecikme Süresi       : {gun} gün\n"
+                f"  Bu Dönem Ceza (%{float(ceza_bu_donem_yuzdesi):.1f}) : {float(ceza_bu_donem):>12,.2f} ₺\n"
+                f"{'─' * 55}\n"
+                f"  Önceki Birikimli     : %{float(onceki_yuzde):.2f}\n"
+                f"  TOPLAM CEZA ORANI    : %{float(toplam_ceza_yuzdesi):.2f}\n"
+                f"  TOPLAM CEZA TUTARI   : {float(toplam_ceza_tutari):>12,.2f} ₺\n"
+                f"{'─' * 55}\n"
+                f"  Fesih Eşiği Tutarı   : {float(fesih_esigi_tl):>12,.2f} ₺ (%30)\n"
+            )
+            if fesih_asim:
+                sonuc += (
+                    f"  ⚠️  FESİH EŞİĞİ AŞILDI!\n"
+                    f"  Toplam ceza %30'u geçti → İdare sözleşmeyi feshedebilir.\n"
+                    f"  (4735 md.20: İdare tek taraflı fesih hakkına sahiptir)"
+                )
+            else:
+                sonuc += (
+                    f"  Fesih Eşiğine Kalan  : {kalan_fesih_gun} gün daha gecikme\n"
+                    f"  Durum                : Fesih eşiği henüz aşılmadı"
+                )
+            return sonuc
+        except Exception as e:
+            return f"Gecikme ceza hesap hatası: {e}"
