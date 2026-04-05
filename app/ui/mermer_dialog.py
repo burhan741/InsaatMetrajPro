@@ -23,7 +23,10 @@ from app.core.mermer_hesaplama import (
     get_standart_denizlik_boyutlari,
     format_para,
     rapor_olustur,
-    VARSAYILAN_FIRE_ORANI
+    VARSAYILAN_FIRE_ORANI,
+    merdiven_mermer_metraj_dxf,
+    EZDXF_AVAILABLE,
+    PANDAS_AVAILABLE,
 )
 
 
@@ -403,6 +406,82 @@ class MermerHesaplamaDialog(QDialog):
         maliyet_layout.addWidget(self.maliyet_text)
         self.tab_widget.addTab(maliyet_tab, "Maliyet")
 
+        # Tab 6: DXF Metraj
+        dxf_tab = QWidget()
+        dxf_tab_layout = QVBoxLayout(dxf_tab)
+
+        # DXF dosya seçimi
+        dxf_dosya_group = QGroupBox("DXF Dosyasi ve Ayarlar")
+        dxf_dosya_form = QFormLayout(dxf_dosya_group)
+
+        dxf_dosya_row = QHBoxLayout()
+        self.dxf_path_edit = QLineEdit()
+        self.dxf_path_edit.setPlaceholderText("DXF dosyasi seciniz...")
+        self.dxf_path_edit.setReadOnly(True)
+        dxf_dosya_row.addWidget(self.dxf_path_edit)
+        btn_dxf_sec = QPushButton("Gozat...")
+        btn_dxf_sec.clicked.connect(self.dxf_dosya_sec)
+        btn_dxf_sec.setFixedWidth(90)
+        dxf_dosya_row.addWidget(btn_dxf_sec)
+        dxf_dosya_form.addRow("DXF Dosyasi:", dxf_dosya_row)
+
+        self.dxf_layer_edit = QLineEdit("A-MERMER")
+        self.dxf_layer_edit.setToolTip("Merdiven mermer cizimlerinin bulundugu layer ismi")
+        dxf_dosya_form.addRow("Layer Adı:", self.dxf_layer_edit)
+
+        dxf_birim_row = QHBoxLayout()
+        self.dxf_birim_combo = QComboBox()
+        self.dxf_birim_combo.addItems(["cm", "mm", "m"])
+        self.dxf_birim_combo.setCurrentText("cm")
+        self.dxf_birim_combo.setToolTip("Cizim birimi (cogu AutoCAD cizimi cm'dir)")
+        dxf_birim_row.addWidget(self.dxf_birim_combo)
+        dxf_birim_row.addStretch()
+        dxf_dosya_form.addRow("Cizim Birimi:", dxf_birim_row)
+
+        self.dxf_riht_spin = QDoubleSpinBox()
+        self.dxf_riht_spin.setRange(0.10, 0.25)
+        self.dxf_riht_spin.setValue(0.16)
+        self.dxf_riht_spin.setSingleStep(0.01)
+        self.dxf_riht_spin.setSuffix(" m")
+        self.dxf_riht_spin.setToolTip("Standart: 16 cm")
+        dxf_dosya_form.addRow("Riht Yüksekliği:", self.dxf_riht_spin)
+
+        self.dxf_basamak_spin = QDoubleSpinBox()
+        self.dxf_basamak_spin.setRange(0.25, 0.40)
+        self.dxf_basamak_spin.setValue(0.30)
+        self.dxf_basamak_spin.setSingleStep(0.01)
+        self.dxf_basamak_spin.setSuffix(" m")
+        self.dxf_basamak_spin.setToolTip("Standart: 30 cm (baskisi/basamak genisligi)")
+        dxf_dosya_form.addRow("Basamak Derinliği:", self.dxf_basamak_spin)
+
+        dxf_tab_layout.addWidget(dxf_dosya_group)
+
+        btn_dxf_hesapla = QPushButton("DXF'den Metraj Hesapla")
+        btn_dxf_hesapla.setMinimumHeight(40)
+        btn_dxf_hesapla.setStyleSheet("background-color: #795548; color: white; font-weight: bold;")
+        btn_dxf_hesapla.clicked.connect(self.dxf_metraj_hesapla)
+        dxf_tab_layout.addWidget(btn_dxf_hesapla)
+
+        # DXF sonuç tablosu
+        self.dxf_sonuc_table = QTableWidget()
+        self.dxf_sonuc_table.setColumnCount(8)
+        self.dxf_sonuc_table.setHorizontalHeaderLabels([
+            "Tip", "No", "Uzunluk/Cevre (m)", "Basamak Alan (m2)",
+            "Riht Alan (m2)", "Toplam Alan (m2)", "Hacim (m3)", "Limonluk (mtul)"
+        ])
+        self.dxf_sonuc_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.dxf_sonuc_table.setAlternatingRowColors(True)
+        dxf_tab_layout.addWidget(self.dxf_sonuc_table)
+
+        # DXF özet label
+        self.dxf_ozet_label = QLabel("DXF dosyasi secip 'Hesapla' butonuna basin.")
+        self.dxf_ozet_label.setStyleSheet("color: #aaa; padding: 6px;")
+        dxf_tab_layout.addWidget(self.dxf_ozet_label)
+
+        _dxf_ok = EZDXF_AVAILABLE and PANDAS_AVAILABLE
+        _dxf_tab_title = "DXF Metraj" if _dxf_ok else "DXF Metraj (ezdxf gerekli)"
+        self.tab_widget.addTab(dxf_tab, _dxf_tab_title)
+
         sag_layout.addWidget(self.tab_widget)
 
         # Export butonlari
@@ -426,6 +505,13 @@ class MermerHesaplamaDialog(QDialog):
 
         # Alt butonlar
         bottom_layout = QHBoxLayout()
+
+        btn_yardim = QPushButton("? Yardım")
+        btn_yardim.setToolTip("Kullanım kılavuzu")
+        btn_yardim.clicked.connect(self.yardim_goster)
+        btn_yardim.setStyleSheet("background-color: #37474F; color: white; padding: 6px 14px;")
+        bottom_layout.addWidget(btn_yardim)
+
         bottom_layout.addStretch()
         btn_kapat = QPushButton("Kapat")
         btn_kapat.clicked.connect(self.close)
@@ -612,20 +698,20 @@ class MermerHesaplamaDialog(QDialog):
         maliyet_text.append("=" * 50)
         maliyet_text.append("")
 
-        id = sonuc['iscilik_detay']
-        maliyet_text.append(f"Asansor: {'AKTIF' if id['asansor_aktif'] else 'YOK (Hamaliye +%20)'}")
+        iscilik_d = sonuc['iscilik_detay']
+        maliyet_text.append(f"Asansor: {'AKTIF' if iscilik_d['asansor_aktif'] else 'YOK (Hamaliye +%20)'}")
         maliyet_text.append("")
 
         maliyet_text.append("ISCILIK:")
-        if id['basamak_sayisi'] > 0:
-            maliyet_text.append(f" Merdiven: {id['basamak_sayisi']} basamak x {format_para(id['basamak_birim_fiyat'])}")
-            maliyet_text.append(f" = {format_para(id['basamak_iscilik_tl'])}")
-        if id['denizlik_mtul'] > 0:
-            maliyet_text.append(f" Denizlik: {id['denizlik_mtul']:.2f} mtul x {format_para(id['denizlik_birim_fiyat'])}")
-            maliyet_text.append(f" = {format_para(id['denizlik_iscilik_tl'])}")
-        if id['hamaliye_farki_tl'] > 0:
-            maliyet_text.append(f" Hamaliye Farki: {format_para(id['hamaliye_farki_tl'])}")
-        maliyet_text.append(f" ISCILIK TOPLAM: {format_para(id['final_toplam_tl'])}")
+        if iscilik_d['basamak_sayisi'] > 0:
+            maliyet_text.append(f" Merdiven: {iscilik_d['basamak_sayisi']} basamak x {format_para(iscilik_d['basamak_birim_fiyat'])}")
+            maliyet_text.append(f" = {format_para(iscilik_d['basamak_iscilik_tl'])}")
+        if iscilik_d['denizlik_mtul'] > 0:
+            maliyet_text.append(f" Denizlik: {iscilik_d['denizlik_mtul']:.2f} mtul x {format_para(iscilik_d['denizlik_birim_fiyat'])}")
+            maliyet_text.append(f" = {format_para(iscilik_d['denizlik_iscilik_tl'])}")
+        if iscilik_d['hamaliye_farki_tl'] > 0:
+            maliyet_text.append(f" Hamaliye Farki: {format_para(iscilik_d['hamaliye_farki_tl'])}")
+        maliyet_text.append(f" ISCILIK TOPLAM: {format_para(iscilik_d['final_toplam_tl'])}")
         maliyet_text.append("")
 
         sd = sonuc['sure_detay']
@@ -741,6 +827,174 @@ class MermerHesaplamaDialog(QDialog):
             f"Tas: {self.son_hesaplama['gereken_mermer_m2']:.2f} m2\n"
             f"Toplam: {format_para(self.son_hesaplama['maliyet_detayi']['genel_toplam_tl'])}"
         )
+
+    # ── DXF Metraj ────────────────────────────────────────────────────────────
+
+    def dxf_dosya_sec(self):
+        """DXF dosyası seç"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "DXF Dosyasi Sec", "", "DXF Dosyalari (*.dxf);;Tum Dosyalar (*)"
+        )
+        if path:
+            self.dxf_path_edit.setText(path)
+
+    def dxf_metraj_hesapla(self):
+        """DXF'den merdiven mermer metrajını hesapla"""
+        if not EZDXF_AVAILABLE:
+            QMessageBox.warning(
+                self, "Eksik Kutüphane",
+                "DXF metraj için 'ezdxf' kütüphanesi gerekli.\nKurulum: pip install ezdxf"
+            )
+            return
+        if not PANDAS_AVAILABLE:
+            QMessageBox.warning(
+                self, "Eksik Kütüphane",
+                "DXF metraj için 'pandas' kütüphanesi gerekli.\nKurulum: pip install pandas"
+            )
+            return
+
+        dxf_path = self.dxf_path_edit.text().strip()
+        if not dxf_path:
+            QMessageBox.warning(self, "Uyari", "Lutfen DXF dosyasi seciniz!")
+            return
+
+        layer = self.dxf_layer_edit.text().strip() or "A-MERMER"
+        birim = self.dxf_birim_combo.currentText()
+        riht = self.dxf_riht_spin.value()
+        basamak_d = self.dxf_basamak_spin.value()
+
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            df = merdiven_mermer_metraj_dxf(
+                dxf_path=dxf_path,
+                layer_name=layer,
+                riht_yuksekligi=riht,
+                basamak_genisligi=basamak_d,
+                cizim_birimi=birim,
+            )
+        except FileNotFoundError as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Dosya Bulunamadı", str(e))
+            return
+        except RuntimeError as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "DXF Okuma Hatası", str(e))
+            return
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Hata", f"DXF metraj hatası:\n{str(e)}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        # Tabloyu doldur
+        self.dxf_sonuc_table.blockSignals(True)
+        self.dxf_sonuc_table.setRowCount(0)
+
+        if df.empty:
+            self.dxf_ozet_label.setText(
+                f"'{layer}' layer'ında hiç merdiven entity bulunamadı. "
+                "Layer adını kontrol ediniz."
+            )
+            self.dxf_sonuc_table.blockSignals(False)
+            return
+
+        self.dxf_sonuc_table.setRowCount(len(df))
+        sutunlar = [
+            "Tip", "No", "Uzunluk/Cevre (m)", "Basamak Alani (m2)",
+            "Riht Alani (m2)", "Toplam Alan (m2)", "Hacim (m3)", "Limonluk (mtul)"
+        ]
+        for row_idx, row_data in df.iterrows():
+            for col_idx, col in enumerate(sutunlar):
+                val = row_data.get(col, "")
+                item = QTableWidgetItem(str(val) if val != "" else "")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                # Toplam satırlarını kalın yap
+                tip = str(row_data.get("Tip", ""))
+                if "Toplam" in tip or tip == "TOPLAM":
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    item.setForeground(QColor("#FFD700"))
+                self.dxf_sonuc_table.setItem(row_idx, col_idx, item)
+
+        self.dxf_sonuc_table.blockSignals(False)
+
+        # Özet
+        try:
+            toplam_row = df[df["Tip"] == "TOPLAM"].iloc[0]
+            toplam_alan = toplam_row["Toplam Alan (m2)"]
+            limonluk = toplam_row["Limonluk (mtul)"]
+            basamak_sayisi = len(df[df["Tip"] == "Basamak"])
+            sahanlik_sayisi = len(df[df["Tip"] == "Sahanlik"])
+            self.dxf_ozet_label.setText(
+                f"Sonuç: {basamak_sayisi} basamak + {sahanlik_sayisi} sahanlık  |  "
+                f"Toplam Alan: {toplam_alan:.4f} m2  |  "
+                f"Limonluk: {limonluk:.3f} mtul"
+            )
+            self.dxf_ozet_label.setStyleSheet("color: #4CAF50; font-weight: bold; padding: 6px;")
+        except Exception:
+            self.dxf_ozet_label.setText("Hesaplama tamamlandı.")
+
+        # DXF sekmesine geç
+        self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
+
+    # ── Yardım ────────────────────────────────────────────────────────────────
+
+    def yardim_goster(self):
+        """Kullanım kılavuzunu göster"""
+        kilavuz = """
+MERMER İŞLERİ HESAPLAMA — KULLANIM KILAVUZU
+============================================================
+
+📐 1. MERDİVEN BİLGİSİ
+  • Kat Sayısı    : Binanın kat adedi (0 girilirse merdiven hesaplanmaz)
+  • Kat Başı Basamak : Genellikle 15–18 adet (standart: 17)
+  • Basamak Genişliği : Mermer taşının boyu (cm) — genellikle 120 cm
+  • Sahanlık Alanı : Tüm katlardaki dönüş sahanlıklarının toplam m2'si
+
+  Hesaplama: (0.33m + 0.16m) × genişlik = tek basamak m2
+  Süpürgelik: Basamak alanının %20'si otomatik eklenir
+
+🪟 2. DENİZLİK LİSTESİ
+  • "+ Denizlik Ekle" ile her pencere tipi için ayrı kayıt girin
+  • Kulak Payı: +10 cm (5 sağ + 5 sol) otomatik eklenir
+  • Damlalık Payı: +5 cm (dışa taşma) otomatik eklenir
+
+💰 3. BİRİM FİYATLAR
+  • Mermer/Taş m2  : Malzeme fiyatı (işçilik dahil değil)
+  • İşçilik (Basamak) : Basamak başına (adet)
+  • İşçilik (Denizlik) : Metre uzunluk başına
+
+⚙️ 4. PARAMETRELER
+  • Asansör Aktif  : İşaretliyse normal tempo; değilse %20 hamaliye zammı
+  • Fire Oranı    : Sipariş miktarına eklenen fire (varsayılan %10)
+
+📄 5. SEKME AÇIKLAMALARI
+  • Özet Rapor    : Tüm hesaplamanın yazılı çıktısı
+  • Merdiven Detay : Adım adım alan hesabı
+  • Denizlik Detay : Her pencere boyutunun tablosu
+  • Malzeme/Harç  : Fire dahil sipariş miktarları + harç sarfiyatı
+  • Maliyet      : İşçilik, malzeme ve genel toplam
+  • DXF Metraj   : AutoCAD çiziminden otomatik metraj
+
+📁 6. DXF METRAJ (AutoCAD)
+  • DXF dosyanızdaki merdiven mermer çizimlerini seçin
+  • Layer adını doğru girin (genellikle "A-MERMER")
+  • LINE entity → basamak kenarları
+  • Kapalı LWPOLYLINE → sahanlık alanları
+
+📊 7. DIŞA AKTARMA
+  • "Excel'e Aktar" : .xlsx formatında rapor
+  • "Metraja Ekle"  : Sonuçları ana program metraj listesine aktarır
+        """
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Mermer İşleri Hesaplama — Yardım")
+        msg.setText(kilavuz)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.setMinimumWidth(700)
+        msg.exec()
 
 
 # Test
