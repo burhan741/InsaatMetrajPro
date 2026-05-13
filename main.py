@@ -58,10 +58,19 @@ from app.ui.styles import apply_dark_theme
 logging.info("Temel moduller import edildi - Uygulama hazir")
 
 
+def _get_log_path() -> Path:
+    """EXE ve geliştirme ortamı için doğru log yolunu döndür."""
+    import os
+    log_dir = os.environ.get('QUANTIX_LOG_DIR')
+    if log_dir:
+        return Path(log_dir) / "error_log.txt"
+    return Path(__file__).parent / "error_log.txt"
+
+
 def log_error_to_file(error_msg: str, error_trace: str = "") -> None:
     """Hatayı dosyaya yaz"""
     try:
-        error_log_path = Path(__file__).parent / "error_log.txt"
+        error_log_path = _get_log_path()
         with open(error_log_path, 'a', encoding='utf-8') as f:
             from datetime import datetime
             f.write(f"\n{'=' * 60}\n")
@@ -204,8 +213,14 @@ def gui_uygulamasi():
             app.processEvents()
 
             # Veritabanı bağlantısı
+            # EXE modunda AppData'daki kalıcı DB'yi kullan
             from app.core.database import DatabaseManager
-            db = DatabaseManager()
+            import os as _os
+            _data_dir = _os.environ.get('QUANTIX_DATA_DIR')
+            if _data_dir:
+                db = DatabaseManager(db_path=Path(_data_dir) / "insaat_metraj.db")
+            else:
+                db = DatabaseManager()
 
             # Ana pencere — tüm paketler için tek pencere;
             # hangi sekme/aracın aktif olduğunu selected_package + enabled_modules belirler.

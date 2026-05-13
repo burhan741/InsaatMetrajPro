@@ -503,16 +503,19 @@ class EKAPEngine:
                 f"api-version={_ver} | body: {body_snippet}"
             )
             self._ardisik_hata_sayisi += 1
+            self._son_istek_zamani = time.time()
             return None
         except urllib.error.URLError as e:
             logger.error(f"EKAP POST [{endpoint}] URL hatası: {e.reason}")
             self._ardisik_hata_sayisi += 1
+            self._son_istek_zamani = time.time()
             return None
         except Exception as e:
             logger.error(
                 f"EKAP POST [{endpoint}] beklenmeyen hata: {type(e).__name__}: {e}"
             )
             self._ardisik_hata_sayisi += 1
+            self._son_istek_zamani = time.time()
             return None
 
     def _yanit_gecerli_mi(self, yanit: Any) -> bool:
@@ -555,6 +558,8 @@ class EKAPEngine:
         max_bedel: float = 0,
         sayfa: int = 1,
         sayfa_boyutu: int = 50,
+        ikn_yili: Optional[int] = None,
+        ikn_sayi: Optional[int] = None,
     ) -> Dict[str, Any]:
         """İhale ara — ekapv2 POST API"""
 
@@ -619,8 +624,8 @@ class EKAPEngine:
             "sozlesmeTasarisindaAra": False,
             "teklifCetvelindeAra": False,
             "searchType": "GirdigimGibi",
-            "iknYili": None,
-            "iknSayi": None,
+            "iknYili": ikn_yili,
+            "iknSayi": ikn_sayi,
             "ihaleTarihSaatBaslangic": ihale_tarih_baslangic,
             "ihaleTarihSaatBitis": ihale_tarih_bitis,
             "ilanTarihSaatBaslangic": None,
@@ -722,14 +727,15 @@ class EKAPEngine:
                 or yanit.get("results")
                 or (yanit if isinstance(yanit, list) else [])
             )
-            toplam = (
-                yanit.get("totalCount")
-                or yanit.get("toplamKayit")
-                or yanit.get("total_count")
-                or yanit.get("toplam")
-                or yanit.get("count")
-                or yanit.get("total")
-                or (len(liste) if isinstance(liste, list) else 0)
+            # 0 değerini kaybetmemek için "or" zinciri yerine None kontrolü
+            _toplam_val = None
+            for _tk in ("totalCount", "toplamKayit", "total_count", "toplam", "count", "total"):
+                _v = yanit.get(_tk)
+                if _v is not None:
+                    _toplam_val = _v
+                    break
+            toplam = int(_toplam_val) if _toplam_val is not None else (
+                len(liste) if isinstance(liste, list) else 0
             )
 
             if not isinstance(liste, list):

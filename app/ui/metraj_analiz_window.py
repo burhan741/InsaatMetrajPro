@@ -600,6 +600,11 @@ class MetrajAnalizWindow(QMainWindow):
         alan_turu_row.addStretch()
         layout.addWidget(alan_turu_widget, 2, 1)
 
+        # Alan katsayısı bilgi etiketi
+        self._alan_bilgi_label = QLabel("ℹ Net Alan — %12 azaltma uygulanıyor (katsayı: 0.88)")
+        self._alan_bilgi_label.setStyleSheet("color: #ffaa00; font-size: 10px; padding: 2px;")
+        layout.addWidget(self._alan_bilgi_label, 3, 1)
+
         self.settings_group.setLayout(layout)
         parent_layout.addWidget(self.settings_group)
 
@@ -1025,7 +1030,8 @@ class MetrajAnalizWindow(QMainWindow):
         self.menha_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.menha_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.menha_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.menha_table.setMaximumHeight(120)
+        self.menha_table.setMinimumHeight(280)
+        self.menha_table.setMaximumHeight(400)
         self.menha_table.setStyleSheet(
         "QTableWidget { background: #252535; color: white; gridline-color: #444; }"
         "QHeaderView::section { background: #333345; color: white; font-weight: bold; padding: 3px; border: 1px solid #555; }"
@@ -1454,7 +1460,8 @@ class MetrajAnalizWindow(QMainWindow):
 
         # Kat listesi
         self.demir_kat_listesi = QListWidget()
-        self.demir_kat_listesi.setMaximumHeight(100)
+        self.demir_kat_listesi.setMinimumHeight(200)
+        self.demir_kat_listesi.setMaximumHeight(350)
         self.demir_kat_listesi.setStyleSheet("""
         QListWidget {
         background: #2a2a3a;
@@ -2199,6 +2206,7 @@ class MetrajAnalizWindow(QMainWindow):
         # Sekme değişikliği callback'i
         self.acad_tab_widget.currentChanged.connect(self._sekme_degisti)
 
+        self.acad_tab_widget.setMinimumHeight(600)
         acad_main_layout.addWidget(self.acad_tab_widget)
 
         acad_group.setLayout(acad_main_layout)
@@ -3938,34 +3946,34 @@ class MetrajAnalizWindow(QMainWindow):
             QMessageBox.warning(self, "Uyarı", "Lütfen bir kat ismi girin!")
             return
 
-            # Aynı isimde kat var mı kontrol et
-            for kat_data in self.demir_kat_verileri:
-                if kat_data["kat_adi"].lower() == kat_adi.lower():
-                    QMessageBox.warning(self, "Uyarı", f"'{kat_adi}' isimli kat zaten mevcut!")
-                    return
+        # Aynı isimde kat var mı kontrol et
+        for kat_data in self.demir_kat_verileri:
+            if kat_data["kat_adi"].lower() == kat_adi.lower():
+                QMessageBox.warning(self, "Uyarı", f"'{kat_adi}' isimli kat zaten mevcut!")
+                return
 
-                    # Yeni kat ekle
-                    yeni_kat = {
-                    "kat_adi": kat_adi,
-                    "demirler": [],
-                    "rapor": None
-                    }
-                    self.demir_kat_verileri.append(yeni_kat)
+        # Yeni kat ekle
+        yeni_kat = {
+            "kat_adi": kat_adi,
+            "demirler": [],
+            "rapor": None
+        }
+        self.demir_kat_verileri.append(yeni_kat)
 
-                    # Listeye ekle
-                    self.demir_kat_listesi.addItem(f" {kat_adi} (0 demir)")
+        # Listeye ekle
+        self.demir_kat_listesi.addItem(f" {kat_adi} (0 demir)")
 
-                    # Input'u temizle
-                    self.demir_kat_input.clear()
+        # Input'u temizle
+        self.demir_kat_input.clear()
 
-                    # Yeni eklenen katı seç
-                    self.demir_kat_listesi.setCurrentRow(self.demir_kat_listesi.count() - 1)
-                    self.aktif_kat_adi = kat_adi
+        # Yeni eklenen katı seç
+        self.demir_kat_listesi.setCurrentRow(self.demir_kat_listesi.count() - 1)
+        self.aktif_kat_adi = kat_adi
 
-                    # Silme butonunu etkinleştir
-                    self.btn_kat_sil.setEnabled(True)
+        # Silme butonunu etkinleştir
+        self.btn_kat_sil.setEnabled(True)
 
-                    logger.info(f"Yeni kat eklendi: {kat_adi}")
+        logger.info(f"Yeni kat eklendi: {kat_adi}")
 
     def _demir_kat_sil(self):
         """Seçili katı sil"""
@@ -4678,11 +4686,13 @@ class MetrajAnalizWindow(QMainWindow):
                 self.malzeme_ihtiyaclari[imalat]["Toplam Tuketim"] += tuketim
                 self.malzeme_ihtiyaclari[imalat]["Paket Sayisi"] += paket_sayisi
 
+        katsayi = self._alan_katsayisi()
         for sap in self.sap_eslestirme:
             mahal = sap["mahal_adi"]
-            zemin_alan = sap["deger"]  # m2
+            brut_alan = sap["deger"]  # m2 (DXF'den okunan brut değer)
+            zemin_alan = brut_alan * katsayi  # katsayı uygulanmış alan
             recete = recete_getir(mahal)
-            tahmini_cevre_m = 4 * math.sqrt(zemin_alan)
+            tahmini_cevre_m = 4 * math.sqrt(max(zemin_alan, 0.01))
             duvar_alan = tahmini_cevre_m * (kat_h / 100)  # m2
 
             for kalem in recete["ZEMIN"]:
@@ -5237,9 +5247,27 @@ class MetrajAnalizWindow(QMainWindow):
 
 
     def _alan_turu_degistir(self, net_secili: bool):
-        """Kullanıcı Net / Brüt seçtiğinde alan türünü güncelle."""
+        """Kullanıcı Net / Brüt seçtiğinde alan türünü güncelle ve yeniden hesapla."""
         self.alan_turu = "net" if net_secili else "brut"
         logger.info(f"Alan türü değiştirildi: {self.alan_turu}")
+
+        # Bilgi etiketini güncelle
+        if hasattr(self, '_alan_bilgi_label'):
+            if self.alan_turu == "net":
+                self._alan_bilgi_label.setText("ℹ Net Alan — %12 azaltma uygulanıyor (katsayı: 0.88)")
+                self._alan_bilgi_label.setStyleSheet("color: #ffaa00; font-size: 10px; padding: 2px;")
+            else:
+                self._alan_bilgi_label.setText("ℹ Brüt Alan — katsayı uygulanmıyor (katsayı: 1.00)")
+                self._alan_bilgi_label.setStyleSheet("color: #aaaaaa; font-size: 10px; padding: 2px;")
+
+        # sap_eslestirme doluysa yeniden hesapla
+        if self.sap_eslestirme:
+            self._hesapla_imalat_listesi()
+            self._3d_onizle_guncelle()
+            logger.info(
+                f"İmalat listesi yeniden hesaplandı: katsayı={self._alan_katsayisi()}, "
+                f"{len(self.imalat_listesi)} kalem"
+            )
 
     def _alan_katsayisi(self) -> float:
         """Net alan katsayısını döndür.
@@ -5262,19 +5290,19 @@ class MetrajAnalizWindow(QMainWindow):
         """AutoCAD bağlantısını kontrol et, bağlı değilse kullanıcıyı uyar."""
         if self.acad_connector is None or not getattr(self.acad_connector, '_bagli', False):
             QMessageBox.warning(
-            self, "AutoCAD Bağlantısı Yok",
-            "Önce ' AutoCAD'e Bağlan' butonuna basın!\n\n"
-            "AutoCAD açık ve bir çizim yüklü olmalıdır."
+                self, "AutoCAD Bağlantısı Yok",
+                "Önce ' AutoCAD'e Bağlan' butonuna basın!\n\n"
+                "AutoCAD açık ve bir çizim yüklü olmalıdır."
             )
             return False
-            return True
+        return True
 
     def _coklu_kat_aktif_al(self):
         """Şu an listede seçili olan kat sözlüğünü döndür; yoksa None."""
         row = self.coklu_kat_listesi.currentRow()
         if row < 0 or row >= len(self.mimari_katlar):
             return None
-            return self.mimari_katlar[row]
+        return self.mimari_katlar[row]
 
     def _coklu_kat_ekle(self):
         """Listeye yeni bir kat ekle (ölçüm AutoCAD ile yapılacak)."""
@@ -5282,16 +5310,16 @@ class MetrajAnalizWindow(QMainWindow):
         if not kat_adi:
             QMessageBox.warning(self, "Uyarı", "Kat adı girin!")
             return
-            for k in self.mimari_katlar:
-                if k["kat_adi"].lower() == kat_adi.lower():
-                    QMessageBox.warning(self, "Uyarı", f"'{kat_adi}' zaten mevcut!")
-                    return
-                    self.mimari_katlar.append({"kat_adi": kat_adi, "imalat": []})
-                    self.coklu_kat_listesi.addItem(f" {kat_adi} | 0 ölçüm")
-                    self.coklu_kat_input.clear()
-                    self.coklu_kat_listesi.setCurrentRow(len(self.mimari_katlar) - 1)
-                    self._coklu_kat_ozet_guncelle()
-                    logger.info(f"Çoklu kat eklendi: {kat_adi}")
+        for k in self.mimari_katlar:
+            if k["kat_adi"].lower() == kat_adi.lower():
+                QMessageBox.warning(self, "Uyarı", f"'{kat_adi}' zaten mevcut!")
+                return
+        self.mimari_katlar.append({"kat_adi": kat_adi, "imalat": []})
+        self.coklu_kat_listesi.addItem(f" {kat_adi} | 0 ölçüm")
+        self.coklu_kat_input.clear()
+        self.coklu_kat_listesi.setCurrentRow(len(self.mimari_katlar) - 1)
+        self._coklu_kat_ozet_guncelle()
+        logger.info(f"Çoklu kat eklendi: {kat_adi}")
 
     def _coklu_kat_aktif_degisti(self, row: int):
         """Listede farklı kat seçildiğinde ölçüm panelini güncelle."""
@@ -5303,17 +5331,17 @@ class MetrajAnalizWindow(QMainWindow):
         if row < 0:
             QMessageBox.warning(self, "Uyarı", "Silinecek katı seçin!")
             return
-            kat_adi = self.mimari_katlar[row]["kat_adi"]
-            reply = QMessageBox.question(
+        kat_adi = self.mimari_katlar[row]["kat_adi"]
+        reply = QMessageBox.question(
             self, "Onayla",
             f"'{kat_adi}' katını ve tüm ölçümlerini silmek istiyor musunuz?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.mimari_katlar.pop(row)
-                self.coklu_kat_listesi.takeItem(row)
-                self._coklu_kat_aktif_panel_guncelle()
-                self._coklu_kat_ozet_guncelle()
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.mimari_katlar.pop(row)
+            self.coklu_kat_listesi.takeItem(row)
+            self._coklu_kat_aktif_panel_guncelle()
+            self._coklu_kat_ozet_guncelle()
 
     def _coklu_kat_olcum_polyline(self):
         """Aktif kat icin AutoCAD'de polyline cizerek alan veya uzunluk olc."""
@@ -5650,46 +5678,46 @@ class MetrajAnalizWindow(QMainWindow):
             QMessageBox.warning(self, "Uyarı", "Lütfen geçerli bir inşaat alanı girin!")
             return
 
-            toplam_alan = alan * n_kat
+        toplam_alan = alan * n_kat
 
-            # Yapı sistemine göre katsayılar
-            katsayilar = {
+        # Yapı sistemine göre katsayılar
+        katsayilar = {
             "Betonarme Çerçeve": {"beton": 0.35, "kalip": 2.20, "demir": 95, "temel_beton": 0.50},
             "Betonarme Perde+Çerçeve": {"beton": 0.42, "kalip": 2.80, "demir": 120, "temel_beton": 0.60},
             "Yığma Tuğla": {"beton": 0.10, "kalip": 0.50, "demir": 20, "temel_beton": 0.30},
             "Çelik Konstrüksiyon": {"beton": 0.15, "kalip": 0.80, "demir": 50, "temel_beton": 0.40},
-            }
-            k = katsayilar.get(sistem, katsayilar["Betonarme Çerçeve"])
+        }
+        k = katsayilar.get(sistem, katsayilar["Betonarme Çerçeve"])
 
-            satirlar = [
+        satirlar = [
             ("Beton (Döşeme+Kolon+Kiriş)", round(toplam_alan * k["beton"], 2), "m³"),
             ("Kalıp Alanı", round(toplam_alan * k["kalip"], 2), "m²"),
             ("Demir (Donatı)", round(toplam_alan * k["demir"], 2), "kg"),
             ("Temel Beton", round(alan * k["temel_beton"], 2), "m³"),
             ("Hazır Beton (Pompajlı)", round(toplam_alan * k["beton"] + alan * k["temel_beton"], 2), "m³"),
             ("Toplam İnşaat Alanı", round(toplam_alan, 2), "m²"),
-            ]
+        ]
 
-            self.kaba_yapi_table.setRowCount(0)
-            for tanim, miktar, birim in satirlar:
-                row = self.kaba_yapi_table.rowCount()
-                self.kaba_yapi_table.insertRow(row)
-                self.kaba_yapi_table.setItem(row, 0, QTableWidgetItem(tanim))
-                item_miktar = QTableWidgetItem(f"{miktar:,.2f}")
-                item_miktar.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.kaba_yapi_table.setItem(row, 1, item_miktar)
-                self.kaba_yapi_table.setItem(row, 2, QTableWidgetItem(birim))
+        self.kaba_yapi_table.setRowCount(0)
+        for tanim, miktar, birim in satirlar:
+            row = self.kaba_yapi_table.rowCount()
+            self.kaba_yapi_table.insertRow(row)
+            self.kaba_yapi_table.setItem(row, 0, QTableWidgetItem(tanim))
+            item_miktar = QTableWidgetItem(f"{miktar:,.2f}")
+            item_miktar.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.kaba_yapi_table.setItem(row, 1, item_miktar)
+            self.kaba_yapi_table.setItem(row, 2, QTableWidgetItem(birim))
 
-                # Son satırı vurgula
-                son_row = self.kaba_yapi_table.rowCount() - 1
-                for col in range(3):
-                    if self.kaba_yapi_table.item(son_row, col):
-                        self.kaba_yapi_table.item(son_row, col).setBackground(QColor("#1a3a1a"))
-                        self.kaba_yapi_table.item(son_row, col).setForeground(QColor("#4CAF50"))
+        # Son satırı vurgula
+        son_row = self.kaba_yapi_table.rowCount() - 1
+        for col in range(3):
+            if self.kaba_yapi_table.item(son_row, col):
+                self.kaba_yapi_table.item(son_row, col).setBackground(QColor("#1a3a1a"))
+                self.kaba_yapi_table.item(son_row, col).setForeground(QColor("#4CAF50"))
 
-                        logger.info(
-                        f"Kaba yapı hesabı: {alan:.0f} m² × {n_kat} kat = {toplam_alan:.0f} m² — {sistem}"
-                        )
+        logger.info(
+            f"Kaba yapı hesabı: {alan:.0f} m² × {n_kat} kat = {toplam_alan:.0f} m² — {sistem}"
+        )
 
                         # ═══════════════════════════════════════════════════════════════════════════
                         # ÖZELLİK 6 — Tedarikçi Entegrasyonu

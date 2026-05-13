@@ -39,7 +39,7 @@ from app.utils.data_loader_minimal import (
     initialize_database_data, check_pozlar_loaded,
     initialize_material_data, check_malzemeler_loaded, check_formuller_loaded
 )
-from app.ui.dialogs_minimal import MetrajItemDialog, TaseronOfferDialog
+from app.ui.dialogs import MetrajItemDialog, TaseronOfferDialog
 
 # Ağır modüller lazy import ile yüklenir (başlangıç hızı için)
 # MaterialCalculator, DXFAnaliz, DemirEngine, ExportManager, PDFBirimFiyatImporter
@@ -180,8 +180,8 @@ class MainWindow(QMainWindow):
         # Veritabanı yüklemelerini async yap (UI'ı bloklamadan)
         self.load_data_async()
         
-        # İlk açılışta pozları kontrol et ve yükle (async - arka planda)
-        self.check_and_load_pozlar_async()
+        # Poz yüklemesi devre dışı — kullanıcı talep ettiğinde entegre edilecek
+        # self.check_and_load_pozlar_async()
         
         if self.splash:
             self.splash.showMessage(
@@ -598,15 +598,15 @@ class MainWindow(QMainWindow):
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
             from matplotlib.figure import Figure
             import matplotlib.pyplot as plt
-            
+
             self.kategori_figure = Figure(figsize=(5, 4))
             self.kategori_canvas = FigureCanvasQTAgg(self.kategori_figure)
             self.kategori_ax = self.kategori_figure.add_subplot(111)
             self.kategori_canvas.setMinimumHeight(250)
             kategori_layout.addWidget(self.kategori_canvas)
-        except ImportError:
-            # Matplotlib yoksa placeholder
-            placeholder = QLabel("Matplotlib yüklenmedi. Grafik gösterilemiyor.")
+        except Exception:
+            # Matplotlib yoksa veya EXE modunda backend hatası → placeholder
+            placeholder = QLabel("Grafik gösterilemiyor (matplotlib backend hatası).")
             placeholder.setStyleSheet("color: #666; padding: 20px;")
             kategori_layout.addWidget(placeholder)
             self.kategori_canvas = None
@@ -641,14 +641,15 @@ class MainWindow(QMainWindow):
         try:
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
             from matplotlib.figure import Figure
-            
+
             self.pahali_figure = Figure(figsize=(5, 4))
             self.pahali_canvas = FigureCanvasQTAgg(self.pahali_figure)
             self.pahali_ax = self.pahali_figure.add_subplot(111)
             self.pahali_canvas.setMinimumHeight(250)
             pahali_layout.addWidget(self.pahali_canvas)
-        except ImportError:
-            placeholder = QLabel("Matplotlib yüklenmedi. Grafik gösterilemiyor.")
+        except Exception:
+            # EXE modunda backend hatası → placeholder
+            placeholder = QLabel("Grafik gösterilemiyor (matplotlib backend hatası).")
             placeholder.setStyleSheet("color: #666; padding: 20px;")
             pahali_layout.addWidget(placeholder)
             self.pahali_canvas = None
@@ -1781,6 +1782,10 @@ class MainWindow(QMainWindow):
         show_missing_prices_action = data_menu.addAction("🔍 Fiyatsız Pozları Göster")
         show_missing_prices_action.triggered.connect(self.show_missing_prices)
 
+        # Eksik Kalem Kontrolü
+        eksik_kalem_action = data_menu.addAction("⚠️ Eksik Kalem Kontrolü")
+        eksik_kalem_action.triggered.connect(self.show_eksik_kalemler)
+
         check_pozlar_action = data_menu.addAction("Poz Durumunu Kontrol Et")
         check_pozlar_action.triggered.connect(self.check_pozlar_status)
         
@@ -1920,7 +1925,30 @@ class MainWindow(QMainWindow):
                 gantt_engine = getattr(gantt_ref, '_engine', None)
                 if gantt_engine is not None:
                     self._asistan_pencere.set_gantt_engine(gantt_engine)
+                self._asistan_pencere.set_gantt_window(gantt_ref)
+            # Gantt sekme açma isteğini bağla
+            self._asistan_pencere.gantt_ac_istegi.connect(self._asistan_gantt_ac)
+            # Gantt güncelleme sinyalini bağla
+            self._asistan_pencere.gantt_guncellendi.connect(self._asistan_gantt_yenile)
         self._asistan_pencere.goster_veya_one_getir()
+
+    def _asistan_gantt_ac(self):
+        """AI asistandan gelen Gantt sekme açma isteğini işle."""
+        try:
+            self.tabs.setCurrentIndex(9)
+        except Exception:
+            pass
+
+    def _asistan_gantt_yenile(self):
+        """AI asistandan veri aktarımı sonrası Gantt görselini yenile."""
+        gantt_ref = getattr(self, '_gantt_widget', None)
+        if gantt_ref is None:
+            return
+        try:
+            if gantt_ref._is_list:
+                gantt_ref.refresh_visual_gantt()
+        except Exception as e:
+            logger.warning(f"Gantt görsel yenileme hatası: {e}")
 
     # Proje İşlemleri
     def load_data_async(self) -> None:
@@ -2393,75 +2421,12 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Uyarı", "Lütfen silmek için bir satır seçin")
     
-    def load_dxf_for_metraj(self) -> None:
-        """DXF dosyası yükle ve duvar yüksekliği tahmin et"""
-        if not self.current_project_id:
-            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir proje seçin")
-            return
-        
-        # Birim seçimi dialog'u
-        birim, ok = QInputDialog.getItem(
-            self,
-            "DXF Birim Seçimi",
-            "DXF dosyasının çizim birimi nedir?",
-            ["cm (Santimetre)", "m (Metre)", "mm (Milimetre)"],
-            0,  # Varsayılan: cm
-            False
-        )
-        
-        if not ok:
-            return
-        
-        # Birim string'ini parse et
-        if "cm" in birim.lower():
-            cizim_birimi = "cm"
-        elif "m" in birim.lower() and "mm" not in birim.lower():
-            cizim_birimi = "m"
-        else:
-            cizim_birimi = "mm"
-        
-        # DXF dosyası seç
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "DXF Dosyası Seç",
-            "",
-            "DXF Dosyaları (*.dxf);;Tüm Dosyalar (*.*)"
-        )
-        
-        if not file_path:
-            return
-        
-        try:
-            # DXF dosyasını yükle
-            from app.core.dxf_engine import DXFAnaliz
-            dxf_analiz = DXFAnaliz(file_path, cizim_birimi=cizim_birimi)
-            katmanlar = dxf_analiz.katmanlari_listele()
-            
-            if not katmanlar:
-                QMessageBox.warning(self, "Uyarı", "DXF dosyasında katman bulunamadı")
-                return
-            
-            # Duvar katmanlarını filtrele (DIS_DUVAR, IC_DUVAR vb.)
-            duvar_katmanlari = [k for k in katmanlar if 'DUVAR' in k.upper() or 'DIS' in k.upper()]
-            
-            if not duvar_katmanlari:
-                QMessageBox.information(
-                    self, "Bilgi",
-                    f"DXF dosyasında {len(katmanlar)} katman bulundu ancak duvar katmanı bulunamadı.\n"
-                    f"Katmanlar: {', '.join(katmanlar[:10])}"
-                )
-                return
-            
-            # Duvar yüksekliği tahmin dialog'u göster
-            self.show_duvar_yukseklik_dialog(dxf_analiz, duvar_katmanlari, file_path)
-            
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Hata",
-                f"DXF dosyası yüklenirken hata oluştu:\n{str(e)}"
-            )
-    
-    def show_duvar_yukseklik_dialog(self, dxf_analiz: DXFAnaliz, 
+    # ── DXF metraj kaldırıldı (Rev-64, 2026-04-09) ──────────────────────────
+    # load_dxf_for_metraj / show_duvar_yukseklik_dialog / duzelt_duvar_yuksekligi
+    # _guncelle_dxf_dialog_tablo_satiri / kaydet_duvar_metraji / _duvar_malzeme_hesapla
+    # Bu metodlar kullanılmıyordu; dxf_engine.py ile birlikte kaldırıldı.
+
+    def show_duvar_yukseklik_dialog(self, dxf_analiz: "DXFAnaliz",
                                     katmanlar: List[str], file_path: str) -> None:
         """Duvar yüksekliği tahmin dialog'unu göster"""
         dialog = QDialog(self)
@@ -3643,11 +3608,9 @@ class MainWindow(QMainWindow):
                     if placeholder:
                         placeholder.deleteLater()
                 except Exception as e:
-                    self.tabs.blockSignals(False)  # Hata durumunda da bloklamayı kaldır
-                    print(f"Proje Özeti sekmesi oluşturma hatası: {e}")
+                    self.tabs.blockSignals(False)
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"Proje Özeti sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 2 and not self._tabs_created['taseron']:
                 try:
                     # Taşeron Analizi sekmesi
@@ -3663,10 +3626,8 @@ class MainWindow(QMainWindow):
                         placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"Taşeron Analizi sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"Taşeron Analizi sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 3 and not self._tabs_created['malzeme']:
                 try:
                     # Malzeme Listesi sekmesi
@@ -3682,10 +3643,8 @@ class MainWindow(QMainWindow):
                         placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"Malzeme Listesi sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"Malzeme Listesi sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 4 and not self._tabs_created['birim_fiyat']:
                 try:
                     # Birim Fiyat Yönetimi sekmesi
@@ -3702,10 +3661,8 @@ class MainWindow(QMainWindow):
                         placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"Birim Fiyat sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"Birim Fiyat sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 5 and not self._tabs_created['ihale']:
                 try:
                     # İhale Dosyası Hazırlama sekmesi
@@ -3722,10 +3679,8 @@ class MainWindow(QMainWindow):
                         placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"İhale Dosyası sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"İhale Dosyası sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 6 and not self._tabs_created.get('enflasyon', False):
                 try:
                     # Enflasyon ve Fiyat Farkı sekmesi
@@ -3742,10 +3697,8 @@ class MainWindow(QMainWindow):
                         placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"Enflasyon sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"Enflasyon sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 7 and not self._tabs_created.get('tedarikci', False):
                 try:
                     # Tedarikçi Fiyat Karşılaştırma sekmesi
@@ -3762,10 +3715,8 @@ class MainWindow(QMainWindow):
                         placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"Tedarikçi sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"Tedarikçi sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 8 and not self._tabs_created.get('surdurulebilirlik', False):
                 try:
                     # Çevre ve Sürdürülebilirlik sekmesi
@@ -3782,10 +3733,8 @@ class MainWindow(QMainWindow):
                         placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"Sürdürülebilirlik sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"Sürdürülebilirlik sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 9 and not self._tabs_created.get('gantt', False):
                 try:
                     # Gantt Chart ve İş Programı sekmesi
@@ -3801,20 +3750,29 @@ class MainWindow(QMainWindow):
                     self._gantt_widget = gantt_widget  # referans sakla
                     if placeholder:
                         placeholder.deleteLater()
-                    # Floating asistan açıksa Gantt engine'i bağla
+                    # Floating asistan açıksa Gantt engine ve window'u bağla
                     if self._asistan_pencere is not None:
                         try:
                             gantt_engine = getattr(gantt_widget, '_engine', None)
                             if gantt_engine is not None:
                                 self._asistan_pencere.set_gantt_engine(gantt_engine)
+                            self._asistan_pencere.set_gantt_window(gantt_widget)
+                            # Gantt bağlantısı kurulduğunda asistana bildir
+                            try:
+                                self._asistan_pencere.gantt_ac_istegi.disconnect(
+                                    self._asistan_gantt_ac
+                                )
+                            except Exception:
+                                pass
+                            self._asistan_pencere.gantt_ac_istegi.connect(
+                                self._asistan_gantt_ac
+                            )
                         except Exception:
                             pass
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"Gantt Chart sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
-                    raise
+                    logger.error(f"Gantt Chart sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
             elif index == 10 and not self._tabs_created.get('ekap', False):
                 try:
                     placeholder = self.tabs.widget(10)
@@ -3852,7 +3810,9 @@ class MainWindow(QMainWindow):
             
             # Hatayı dosyaya yaz
             try:
-                error_log_path = Path(__file__).parent.parent.parent / "error_log.txt"
+                import os as _os_log
+                _log_dir = _os_log.environ.get('QUANTIX_LOG_DIR')
+                error_log_path = Path(_log_dir) / "error_log.txt" if _log_dir else Path(__file__).parent.parent.parent / "error_log.txt"
                 with open(error_log_path, 'a', encoding='utf-8') as f:
                     from datetime import datetime
                     f.write(f"\n{'='*60}\n")
@@ -3873,7 +3833,7 @@ class MainWindow(QMainWindow):
                     f"Sekme değiştirilirken bir hata oluştu:\n{str(e)}\n\n"
                     f"Hata detayları 'error_log.txt' dosyasına kaydedildi.\n\n"
                     f"Lütfen programı yeniden başlatın."
-            )
+                )
             except Exception as msg_error:
                 print(f"QMessageBox hatası: {msg_error}")
                 # Uygulamayı kapatma, sadece logla
@@ -4099,6 +4059,8 @@ class MainWindow(QMainWindow):
                 from reportlab.lib.units import cm
                 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
                 from datetime import datetime
+                from app.utils.font_utils import get_fonts as _gf
+                _F, _FB = _gf()
                 
                 # Logo yolu kontrolü
                 logo_path = Path(__file__).parent.parent.parent / "assets" / "logo.png"
@@ -4148,8 +4110,8 @@ class MainWindow(QMainWindow):
                     ('BACKGROUND', (1, 0), (1, -1), colors.white),
                     ('TEXTCOLOR', (1, 0), (1, -1), colors.black),
                     ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                    ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+                    ('FONTNAME', (0, 0), (0, -1), _FB),
+                    ('FONTNAME', (1, 0), (1, -1), _F),
                     ('FONTSIZE', (0, 0), (-1, -1), 10),
                     ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                 ]))
@@ -4180,7 +4142,7 @@ class MainWindow(QMainWindow):
                         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#16213e')),
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTNAME', (0, 0), (-1, 0), _FB),
                         ('FONTSIZE', (0, 0), (-1, 0), 10),
                         ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f5f5f5')]),
@@ -5493,6 +5455,91 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
 
+    def show_eksik_kalemler(self) -> None:
+        """Eksik veya sıfır fiyatlı metraj kalemlerini gösterir (Bug-5)."""
+        try:
+            from PyQt6.QtWidgets import (
+                QDialog, QVBoxLayout, QTabWidget, QTableWidget,
+                QTableWidgetItem, QPushButton, QLabel, QHBoxLayout
+            )
+            from PyQt6.QtCore import Qt
+
+            # bi_engine üzerinden eksik kalem raporu al
+            try:
+                from app.core.bi_engine import BIEngine
+                engine = BIEngine(self.db)
+                proje_id = getattr(self, 'current_project_id', None)
+                rapor = engine.get_eksik_kalemler(proje_id)
+            except Exception as exc:
+                QMessageBox.critical(self, "Hata", f"Analiz hatası: {exc}")
+                return
+
+            sifir_fiyatli = rapor.get('sifir_fiyatli', [])
+            poz_no_eksik = rapor.get('poz_no_eksik', [])
+
+            if not sifir_fiyatli and not poz_no_eksik:
+                proje_bilgi = f" (Proje #{proje_id})" if proje_id else " (Tüm projeler)"
+                QMessageBox.information(
+                    self, "✅ Metraj Tam",
+                    f"Tüm kalemlerde fiyat ve poz numarası eksiksiz!{proje_bilgi}"
+                )
+                return
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("⚠️ Eksik Kalem Kontrolü")
+            dialog.setMinimumSize(850, 550)
+            layout = QVBoxLayout(dialog)
+
+            ozet = QLabel(
+                f"⚠️  Sıfır fiyatlı kalem: {len(sifir_fiyatli)}   |   "
+                f"Poz numarası eksik: {len(poz_no_eksik)}"
+            )
+            ozet.setStyleSheet(
+                "font-size: 13px; font-weight: bold; padding: 8px;"
+                "background-color: #fff3cd; border-radius: 4px;"
+            )
+            layout.addWidget(ozet)
+
+            tabs = QTabWidget()
+
+            # ── Tab 1: Sıfır fiyatlı ──────────────────────────────────
+            t1 = QTableWidget(len(sifir_fiyatli), 4)
+            t1.setHorizontalHeaderLabels(["Poz No", "Tanım", "Miktar", "Kategori"])
+            for i, k in enumerate(sifir_fiyatli):
+                t1.setItem(i, 0, QTableWidgetItem(k['poz_no']))
+                t1.setItem(i, 1, QTableWidgetItem(k['tanim'][:70]))
+                t1.setItem(i, 2, QTableWidgetItem(f"{k['miktar']:.2f} {k['birim']}"))
+                t1.setItem(i, 3, QTableWidgetItem(k['kategori']))
+            t1.horizontalHeader().setStretchLastSection(True)
+            t1.setColumnWidth(0, 100)
+            t1.setColumnWidth(1, 380)
+            tabs.addTab(t1, f"Sıfır Fiyatlı ({len(sifir_fiyatli)})")
+
+            # ── Tab 2: Poz no eksik ───────────────────────────────────
+            t2 = QTableWidget(len(poz_no_eksik), 3)
+            t2.setHorizontalHeaderLabels(["Tanım", "Miktar", "Kategori"])
+            for i, k in enumerate(poz_no_eksik):
+                t2.setItem(i, 0, QTableWidgetItem(k['tanim'][:70]))
+                t2.setItem(i, 1, QTableWidgetItem(f"{k['miktar']:.2f} {k['birim']}"))
+                t2.setItem(i, 2, QTableWidgetItem(k['kategori']))
+            t2.horizontalHeader().setStretchLastSection(True)
+            t2.setColumnWidth(0, 420)
+            tabs.addTab(t2, f"Poz No Eksik ({len(poz_no_eksik)})")
+
+            layout.addWidget(tabs)
+
+            btn_kapat = QPushButton("Kapat")
+            btn_kapat.clicked.connect(dialog.accept)
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            btn_row.addWidget(btn_kapat)
+            layout.addLayout(btn_row)
+
+            dialog.exec()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Eksik kalem kontrolü hatası:\n{str(e)}")
+
     def on_search_text_changed(self) -> None:
         """Gelişmiş arama ve filtreleme - Tüm modüllerde arama"""
         search_text = self.search_input.text().strip()
@@ -6568,9 +6615,11 @@ class MainWindow(QMainWindow):
                 # Birim
                 self.ihale_poz_results_table.setItem(row, 2, QTableWidgetItem(birim))
                 
-                # Birim fiyatı getir
+                # Birim fiyatı getir — önce birim_fiyatlar, sonra pozlar.resmi_fiyat
                 fiyat_data = self.db.get_birim_fiyat(poz_no=poz_no)
                 birim_fiyat = fiyat_data.get('birim_fiyat', 0) if fiyat_data else 0
+                if not birim_fiyat:
+                    birim_fiyat = poz.get('resmi_fiyat') or 0
                 self.ihale_poz_results_table.setItem(row, 3, QTableWidgetItem(f"{birim_fiyat:,.2f} ₺" if birim_fiyat else "Fiyat yok"))
                 
                 # Poz bilgisini sakla (tüm bilgileri içeren dict)
@@ -7372,42 +7421,8 @@ class MainWindow(QMainWindow):
                 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
                 from reportlab.lib.units import cm
                 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-                from reportlab.pdfbase import pdfmetrics
-                from reportlab.pdfbase.ttfonts import TTFont
-                
-                # Türkçe karakter desteği için font yükle (eğer yoksa varsayılan font kullanılır)
-                font_name = 'Helvetica'
-                font_bold_name = 'Helvetica-Bold'
-                try:
-                    # Windows'ta Arial fontunu kullan
-                    import platform
-                    if platform.system() == 'Windows':
-                        arial_path = 'C:/Windows/Fonts/arial.ttf'
-                        arial_bold_path = 'C:/Windows/Fonts/arialbd.ttf'
-                        if Path(arial_path).exists():
-                            pdfmetrics.registerFont(TTFont('Arial', arial_path))
-                            font_name = 'Arial'
-                            # Arial Bold fontunu da yükle
-                            if Path(arial_bold_path).exists():
-                                try:
-                                    pdfmetrics.registerFont(TTFont('Arial-Bold', arial_bold_path))
-                                    font_bold_name = 'Arial-Bold'
-                                except:
-                                    # Arial-Bold yüklenemezse Helvetica-Bold kullan
-                                    font_bold_name = 'Helvetica-Bold'
-                            else:
-                                # Arial Bold yoksa, Helvetica-Bold kullan
-                                font_bold_name = 'Helvetica-Bold'
-                        else:
-                            font_name = 'Helvetica'
-                            font_bold_name = 'Helvetica-Bold'
-                    else:
-                        font_name = 'Helvetica'
-                        font_bold_name = 'Helvetica-Bold'
-                except Exception as e:
-                    print(f"Font yükleme hatası: {e}")
-                    font_name = 'Helvetica'
-                    font_bold_name = 'Helvetica-Bold'
+                from app.utils.font_utils import get_fonts as _gf2
+                font_name, font_bold_name = _gf2()
                 
                 # Logo yolu kontrolü
                 logo_path = Path(__file__).parent.parent.parent / "assets" / "logo.png"
@@ -7496,7 +7511,7 @@ class MainWindow(QMainWindow):
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                         ('ALIGN', (2, 1), (2, -1), 'LEFT'),
-                        ('FONTNAME', (0, 0), (-1, 0), f'{font_name}-Bold' if font_name == 'Arial' else 'Helvetica-Bold'),
+                        ('FONTNAME', (0, 0), (-1, 0), font_bold_name),
                         ('FONTNAME', (0, 1), (-1, -1), font_name),
                         ('FONTSIZE', (0, 0), (-1, 0), 10),
                         ('FONTSIZE', (0, 1), (-1, -1), 9),
@@ -7513,7 +7528,7 @@ class MainWindow(QMainWindow):
                         ('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#16213e')),
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                         ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-                        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                        ('FONTNAME', (0, 0), (-1, 0), font_bold_name),
                         ('FONTSIZE', (0, 0), (-1, 0), 12),
                         ('GRID', (0, 0), (-1, -1), 1, colors.grey),
                     ]))
@@ -7683,7 +7698,7 @@ class MainWindow(QMainWindow):
         """Saha demiri hesabı penceresini aç"""
         try:
             from app.ui.saha_demiri_window import SahaDemiriWindow
-            self.saha_demiri_window = SahaDemiriWindow(self.db)
+            self.saha_demiri_window = SahaDemiriWindow(self)
             self.saha_demiri_window.setWindowTitle("Saha Demiri Hesabı")
             self.saha_demiri_window.resize(1200, 800)
             self.saha_demiri_window.show()
@@ -8636,6 +8651,246 @@ class MainWindow(QMainWindow):
                     "  - Cevre dostu malzeme onerileri"
                 ),
             },
+            "YAPAY ZEKA ASISTANI": {
+                "Genel Bakis ve API Kurulumu": (
+                    "YAPAY ZEKA ASISTANI — GENEL BAKIS\n"
+                    "=" * 44 + "\n\n"
+                    "Claude AI destekli asistan, insaat projelerinde:\n"
+                    "  - Metraj listesi uretimi\n"
+                    "  - Maliyet ve verimlilik hesabi\n"
+                    "  - Saha sorun teshisi ve tamir talimati\n"
+                    "  - Gantt is programi olusturma\n"
+                    "  - Hakedis ve gecikme cezasi hesabi\n"
+                    "  - Gayrimenkul degerlemesi\n"
+                    "konularinda yardimci olur.\n\n"
+                    "API ANAHTARI KURULUMU:\n"
+                    "  1. console.anthropic.com adresine gidin\n"
+                    "  2. Hesap olusturun veya giris yapin\n"
+                    "  3. 'API Keys' bolumunden yeni anahtar olusturun\n"
+                    "     (sk-ant-... ile baslar)\n"
+                    "  4. Programda: Yapay Zeka Asistani sekmesi >\n"
+                    "     Sag ustteki 'API Ayarlari' butonuna basin\n"
+                    "  5. Anahtari yapistirin ve 'Kaydet'\n\n"
+                    "NOT: API anahtari bilgisayarinizda sifrelenmis\n"
+                    "olarak saklanir, disariya gonderilmez.\n\n"
+                    "KULLANIM MALIYETI:\n"
+                    "  Her sorgu Anthropic tarafindan ucretlendirilir.\n"
+                    "  Ortalama soru: ~0.01-0.05 USD.\n"
+                    "  Kullanim istatistiklerini console.anthropic.com\n"
+                    "  adresinden takip edebilirsiniz."
+                ),
+                "Mod 1 — Genel Sohbet ve Metraj Uretimi": (
+                    "MOD 1 — GENEL SOHBET\n"
+                    "=" * 44 + "\n\n"
+                    "Genel insaat sorulari ve metraj uretimi icin.\n\n"
+                    "METRAJ URETIMI (en onemli ozellik):\n"
+                    "  Proje tanimi verince sistem otomatik olarak\n"
+                    "  CsB poz sirasi ile metraj listesi olusturur\n"
+                    "  ve projenize ekler.\n\n"
+                    "  Ornek sorgular:\n"
+                    "    '4 katli 800 m2 konut, betonarme cerceve —\n"
+                    "     tum kaba yapi metrajini cikar'\n"
+                    "    '200 m2 ticari zemin kat — metraj listesi'\n"
+                    "    '1 daireli villa, 350 m2, bodrum+zemin+1'\n\n"
+                    "  Asistan su kalemleri uretir:\n"
+                    "    Hafriyat > Temel > Kaba Yapi > Duvar >\n"
+                    "    Siva > Kaplama > Boya > Tesisat\n"
+                    "  Her kalem: Poz No + Tanim + Miktar + Birim\n"
+                    "             + Birim Fiyat (2026 Q1)\n\n"
+                    "GENEL SORULAR:\n"
+                    "  - Mevzuat sorulari (4734, 4735, TS standartlari)\n"
+                    "  - Birim fiyat bilgisi\n"
+                    "  - Malzeme ozellikleri\n"
+                    "  - Yapim teknikleri\n\n"
+                    "IPUCU: Ctrl+Enter ile mesaj gonderin."
+                ),
+                "Mod 2 — Hesap Asistani": (
+                    "MOD 2 — HESAP ASISTANI\n"
+                    "=" * 44 + "\n\n"
+                    "CsB birim fiyat analizleri ile verimlilik\n"
+                    "ve maliyet hesabi yapar.\n\n"
+                    "KULLANIM ORNEKLERI:\n"
+                    "  'Kalip Doseme, 500 m2, 4 usta, kac gun?'\n"
+                    "    Yanit: ceil(500 / (4.0 * 4)) = 32 is gunu\n\n"
+                    "  'Demir Baglama, 20.000 kg, 8 usta'\n"
+                    "    Yanit: ceil(20000 / (333 * 8)) = 8 gun\n\n"
+                    "  '1000 m2 Betonarme Cerceve kaba yapi maliyeti'\n"
+                    "    Beton + Demir + Kalip + Iscilik toplami\n\n"
+                    "HESAPLANAN DEGERLER:\n"
+                    "  - is suresi (gun)\n"
+                    "  - Malzeme maliyeti (TL)\n"
+                    "  - Iscilik maliyeti (TL)\n"
+                    "  - Toplam maliyet (KDV haric/dahil)\n\n"
+                    "Sonuclar istenirse dogrudan metraj\n"
+                    "cetvelina aktarilabilir."
+                ),
+                "Mod 3 — Proje Analizi": (
+                    "MOD 3 — PROJE ANALIZI\n"
+                    "=" * 44 + "\n\n"
+                    "Aktif projenizin tum metraj kalemlerini\n"
+                    "analiz ederek risk ve optimizasyon raporu\n"
+                    "olusturur.\n\n"
+                    "KULLANIM:\n"
+                    "  1. Sol panelden bir proje secin\n"
+                    "  2. 'Proje Analizini Basllat' butonuna basin\n"
+                    "  3. Asistan otomatik olarak:\n"
+                    "     - Tum kalemleri ceker\n"
+                    "     - Kategori dagilimini analiz eder\n"
+                    "     - Eksik kalemleri tespit eder\n"
+                    "     - Fiyat anomalilerini isaret eder\n"
+                    "     - Risk ve firsat raporu uretir\n\n"
+                    "RAPOR ICERIGI:\n"
+                    "  - Toplam maliyet ozeti\n"
+                    "  - Kategori dagilim analizi\n"
+                    "  - Dikkat gerektiren kalemler\n"
+                    "  - Optimizasyon onerileri"
+                ),
+                "Mod 4 — Gantt Planlama": (
+                    "MOD 4 — GANTT PLANLAMA\n"
+                    "=" * 44 + "\n\n"
+                    "Yapay zeka destekli is programi olusturur\n"
+                    "ve dogrudan Gantt semasina aktarir.\n\n"
+                    "KULLANIM:\n"
+                    "  1. 'Gantt Plani Olustur' butonuna basin\n"
+                    "  2. Proje bilgisi verin:\n"
+                    "     'Bodrum+Zemin+3 kat, 1.200 m2, Nisan'dan\n"
+                    "      baslayacak, 3 ekip'\n"
+                    "  3. Asistan is sirasi ve sureyi hesaplar:\n"
+                    "     CsB verimliligi ile (kalip, demir, beton...)\n"
+                    "  4. Liste gozden gecirin\n"
+                    "  5. 'Gancte Aktar' ile Gantt semasina gonderin\n\n"
+                    "OTOMATIK HESAPLANAN:\n"
+                    "  - Her is icin sure (is gunu)\n"
+                    "  - Oncul/ardil bagimliliklar (FS)\n"
+                    "  - Paralel yukrutilebilecek isler\n"
+                    "  - Kritik yol\n\n"
+                    "NOT: Gantt sekmesi acik olmasa bile\n"
+                    "aktarim sinyali otomatik acar."
+                ),
+                "Mod 5 — Hakedis Asistani": (
+                    "MOD 5 — HAKEDIS ASISTANI\n"
+                    "=" * 44 + "\n\n"
+                    "KIK 4734/4735 mevzuatina uygun hakedis\n"
+                    "ve gecikme cezasi hesabi yapar.\n\n"
+                    "HAKEDIS HESABI:\n"
+                    "  Ornek sorgu:\n"
+                    "  'Sozlesme bedeli 5.000.000 TL (KDV haric),\n"
+                    "   toplam tamamlanma %45, onceki hakedis %20'\n\n"
+                    "  Asistan hesaplar:\n"
+                    "  - Bu hakedis miktari\n"
+                    "  - KDV (%20)\n"
+                    "  - Kesin teminat kesintisi (%6)\n"
+                    "  - Damga vergisi (%0.948)\n"
+                    "  - Gelir vergisi stopaji (%3)\n"
+                    "  - Net odeme tutari\n\n"
+                    "GECIKME CEZASI HESABI:\n"
+                    "  Ornek:\n"
+                    "  'Sozlesme 3.000.000 TL, 45 gun gecikme'\n"
+                    "  Ceza: 3.000.000 x 0.005 x 45 = 675.000 TL\n"
+                    "  (Maksimum %30 fesih esigi kontrolu dahil)\n\n"
+                    "MEVZUAT REFERANSI:\n"
+                    "  - 4735 Sayili KIK Kanunu md.20\n"
+                    "  - Gunluk binde bes (permille 5 = %0,5/gun)"
+                ),
+                "Mod 6 — Saha Cozum (Tamir Talimati)": (
+                    "MOD 6 — SAHA COZUM DANISMANI\n"
+                    "=" * 44 + "\n\n"
+                    "Sahada karsilasilan beton, demir, test ve\n"
+                    "guvenlik sorunlarina pratik tamir talimati\n"
+                    "uretir. Fotograf ile calisir.\n\n"
+                    "FOTOGRAF ILE ANALIZ:\n"
+                    "  1. 'Fotograf ile Analiz Et' butonuna basin\n"
+                    "  2. Saha fotografini secin (PNG/JPG)\n"
+                    "  3. Asistan soruyu tanimlayarak:\n"
+                    "     - Sorun tespiti yapar\n"
+                    "     - Tamir malzemesini belirtir\n"
+                    "       (ornek: 'R3 sinifi tamir harci,\n"
+                    "        polimer katkili, TS EN 1504-3 uyumlu')\n"
+                    "     - Adim adim uygulama talimatini verir\n"
+                    "     - Kur suresini belirtir\n"
+                    "     - Maliyet tahmini verir\n\n"
+                    "KAPSAMINDAKI SORUNLAR:\n"
+                    "  - Segregasyon / bal petegi (hafif/orta/derin)\n"
+                    "  - Catlak (genislige gore epoksi/dolgu/harci)\n"
+                    "  - Slump degeri kabul/red karari\n"
+                    "  - 28 gunluk basinc testi yorumu\n"
+                    "  - Demir pasi ve ortu yetersizligi\n"
+                    "  - Soguk derz\n"
+                    "  - Cimento sutyeni\n"
+                    "  - Kalip sokme suresi kontrolu (TS EN 13670)\n"
+                    "  - ISG ihlalleri\n\n"
+                    "KAPSAM DISI (bu mod icin):\n"
+                    "  - Kolon/kiris boyutu hesabi\n"
+                    "  - Demir tasarim hesaplari\n"
+                    "  - Statik analiz\n"
+                    "  (Bu sorular icin statik muhendisinize danisIn)\n\n"
+                    "MEVZUAT REFERANSLARI:\n"
+                    "  TS EN 1504-3 (beton tamir)\n"
+                    "  TS EN 206 (beton nitelikleri)\n"
+                    "  TS 500 md.11 (ortu kalinligi)\n"
+                    "  6331 (ISG)"
+                ),
+                "Mod 7 — Gayrimenkul Degerleme": (
+                    "MOD 7 — GAYRIMENKUL DEGERLEME UZMANI\n"
+                    "=" * 44 + "\n\n"
+                    "Arsa, daire, dukkan, villa gibi gayrimenkullerin\n"
+                    "gercekci piyasa degerini hesaplar.\n\n"
+                    "KULLANIM — 2 YONTEM:\n\n"
+                    "  YONTEM 1: Ilan URL'si yapistir\n"
+                    "    - URL giris kutusuna sahibinden.com/\n"
+                    "      emlakjet.com veya hepsiemlak.com\n"
+                    "      linkini yapistirin\n"
+                    "    - 'Degerlemesi Basllat' butonuna basin\n"
+                    "    - Asistan ilandaki bilgileri cekmeye calisir,\n"
+                    "      basaramazsa manuel bilgi ister\n\n"
+                    "  YONTEM 2: Bilgileri yazin\n"
+                    "    Ornek: 'Kadikoy, 3+1, 120 m2, 5. kat,\n"
+                    "     15 yasinda, kat mulkiyeti'\n\n"
+                    "RAPOR ICERIGI:\n"
+                    "  - Bolge emsal m2 fiyati araligii\n"
+                    "  - Yas, kat, tapu, manzara duzeltmeleri\n"
+                    "  - MIN - ORT - MAX deger araligi\n"
+                    "  - Ilan fiyati karsilastirmasi (%X pahali/ucuz)\n"
+                    "  - Tahmini kira geliri ve brut yillik getiri\n"
+                    "  - Geri odeme suresi (yil)\n"
+                    "  - Yatirim puani (1-10)\n"
+                    "  - AL / BEKLE / ALMA karari + gerekcesi\n\n"
+                    "NOT: Degerler Claude'un egitim verisine dayanir\n"
+                    "(Agustos 2025). Yasal degerleme icin SPK lisansli\n"
+                    "eksper gereklidir."
+                ),
+                "Ipuclari ve Kisayollar": (
+                    "YAPAY ZEKA ASISTANI — IPUCLARI\n"
+                    "=" * 44 + "\n\n"
+                    "KLAVYE KISAYOLLARI:\n"
+                    "  Ctrl + Enter  : Mesaji gonder\n"
+                    "  Esc           : Devam eden yaniti durdur\n\n"
+                    "DOSYA EKLEME:\n"
+                    "  'Dosya Ekle' butonu ile:\n"
+                    "  - PNG / JPG : Saha fotograflari (Mod 6)\n"
+                    "  - PDF       : Proje belgeleri, sartnameler\n"
+                    "  - Excel     : Fiyat listeleri, teklifler\n"
+                    "  - DXF       : CAD cizim bilgisi (metin olarak)\n\n"
+                    "HIZLI SORULAR:\n"
+                    "  Sag paneldeki 'Hizli Sorular' kategorilerinden\n"
+                    "  hazir sorulara tiklayin — otomatik dolar.\n\n"
+                    "GECMIS KONUSMALAR:\n"
+                    "  Asistan mevcut oturumdaki konusmayi hatirar.\n"
+                    "  'Gecmisi Temizle' ile sifirlanir.\n\n"
+                    "EN IYI SONUC ICIN:\n"
+                    "  - Metraj isteginde: m2, kat sayisi, yapi turu\n"
+                    "    bilgilerini verin\n"
+                    "  - Saha sorununda: Konumu, boyutu, ne zaman\n"
+                    "    olusdugunu belirtin\n"
+                    "  - Degerlemede: Ilce, m2, oda, kat, yas ve\n"
+                    "    tapu turunu yazin\n\n"
+                    "VERI AKTARIMI:\n"
+                    "  Asistan olusturdugu metraj listelerini ve\n"
+                    "  Gantt gorevlerini dogrudan sisteme kaydeder.\n"
+                    "  Onay sormadan aktardiginda onay belgesi\n"
+                    "  sohbet ekraninda gosterilir."
+                ),
+            },
         }
 
         item_contents = {}
@@ -8699,7 +8954,10 @@ class MainWindow(QMainWindow):
             "  IHALE VE FINANS\n"
             "    Ihale dosyasi, enflasyon, fiyat takibi\n\n"
             "  DIGER MODULLER\n"
-            "    Gantt, puantaj, cevre ve daha fazlasi"
+            "    Gantt, puantaj, cevre ve daha fazlasi\n\n"
+            "  YAPAY ZEKA ASISTANI\n"
+            "    API kurulumu, 7 mod, fotograf analizi,\n"
+            "    metraj uretimi, saha tamir talimati"
         )
 
         dlg.exec()

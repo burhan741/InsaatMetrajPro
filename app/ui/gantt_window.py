@@ -24,8 +24,8 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QGraphicsItem, QGraphicsRectItem, QGraphicsScene,
     QGraphicsTextItem, QGraphicsView, QGridLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
-    QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
     QSlider, QSpinBox, QSplitter, QStackedWidget, QTabWidget, QTableWidget,
     QTableWidgetItem, QTextEdit, QToolBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
@@ -189,6 +189,8 @@ class GanttChartView(QGraphicsView):
         self._draw_month_headers(start, total_days)
         self._draw_day_grid(start, total_days, len(tasks))
         self._draw_task_bars(tasks, start)
+        if len(tasks) <= 50:
+            self._draw_dependency_arrows(tasks, start, total_days)
         self._draw_today_line(start, total_days, len(tasks))
 
     def _draw_month_headers(self, start: date, total_days: int) -> None:
@@ -321,6 +323,69 @@ class GanttChartView(QGraphicsView):
                     bar_x, y + 3, prog_w, bar_h,
                     QPen(Qt.PenStyle.NoPen), QBrush(QColor(255, 255, 255, 80))
                 )
+
+    def _draw_dependency_arrows(self, tasks: List[Dict], start: date, total_days: int) -> None:
+        """Bağımlılık oklarını L-şeklinde çizer. Kırmızı=kritik, Gri=normal."""
+        dw = self.DAY_WIDTH * self._zoom
+        id_to_row = {t.get("id"): i for i, t in enumerate(tasks)}
+
+        for row, task in enumerate(tasks):
+            deps = task.get("bagimliliklar_detay", [])
+            if not deps:
+                dep_ids = task.get("bagimliliklar", [])
+                deps = [{"id": d, "tip": "FS"} for d in dep_ids if isinstance(d, int)]
+
+            t_start = task.get("baslangic")
+            if not t_start:
+                continue
+            try:
+                t_start = date.fromisoformat(str(t_start))
+            except (ValueError, TypeError):
+                continue
+
+            offset_to = (t_start - start).days
+            if not (0 <= offset_to <= total_days):
+                continue
+
+            x_to = self.LEFT_MARGIN + offset_to * dw
+            y_to = self.HEADER_HEIGHT + row * self.ROW_HEIGHT + self.ROW_HEIGHT // 2
+
+            for dep in deps:
+                pred_id = dep.get("id")
+                pred_row = id_to_row.get(pred_id)
+                if pred_row is None:
+                    continue
+                pred_task = tasks[pred_row]
+                pred_bitis = pred_task.get("bitis")
+                if not pred_bitis:
+                    continue
+                try:
+                    pred_bitis = date.fromisoformat(str(pred_bitis))
+                except (ValueError, TypeError):
+                    continue
+
+                offset_from = (pred_bitis - start).days + 1
+                if not (0 <= offset_from <= total_days):
+                    continue
+
+                x_from = self.LEFT_MARGIN + offset_from * dw
+                y_from = self.HEADER_HEIGHT + pred_row * self.ROW_HEIGHT + self.ROW_HEIGHT // 2
+
+                is_kritik = task.get("kritik_yol") and pred_task.get("kritik_yol")
+                pen = QPen(
+                    QColor("#F44336") if is_kritik else QColor("#9E9E9E"),
+                    1.2,
+                    Qt.PenStyle.SolidLine,
+                )
+                # L-şekilli ok: yatay sonra dikey
+                mid_x = x_from + max(dw * 0.5, 4)
+                self._scene.addLine(x_from, y_from, mid_x, y_from, pen)
+                self._scene.addLine(mid_x, y_from, mid_x, y_to, pen)
+                self._scene.addLine(mid_x, y_to, x_to, y_to, pen)
+                # Ok ucu
+                arrow_pen = QPen(pen.color(), 1.2)
+                self._scene.addLine(x_to - 5, y_to - 4, x_to, y_to, arrow_pen)
+                self._scene.addLine(x_to - 5, y_to + 4, x_to, y_to, arrow_pen)
 
     def _draw_today_line(self, start: date, total_days: int, row_count: int) -> None:
         today = date.today()
@@ -1110,6 +1175,8 @@ class TaskDialog(QDialog):
             self.ekip_turu_input.addItem(ad)
             idx = self.ekip_turu_input.count() - 1
             item = model.item(idx)
+            if item is None:
+                continue
             if birim is None:
                 # Grup başlığı: seçilemez, kalın-italik stil
                 item.setEnabled(False)
@@ -1453,6 +1520,12 @@ class GanttWindow(QWidget):
         self._build_ui()
         self._load_projeler()
 
+        # Otomatik CPM — iş ekle/sil/düzenle sonrası 500ms debounce
+        self._cpm_timer = QTimer(self)
+        self._cpm_timer.setSingleShot(True)
+        self._cpm_timer.setInterval(500)
+        self._cpm_timer.timeout.connect(lambda: self.hesapla_program(silent=True))
+
     # ------------------------------------------------------------------
     # Ana UI
     # ------------------------------------------------------------------
@@ -1473,15 +1546,12 @@ class GanttWindow(QWidget):
         self._tabs.setTabPosition(QTabWidget.TabPosition.North)
         self._create_program_tab()
         self._create_gantt_tab()
-        self._create_tablo_tab()
         self._create_kritik_tab()
         self._create_s_curve_tab()
         self._create_what_if_tab()
         self._create_baseline_tab()
-        self._create_kaynak_tab()
         self._create_gecikme_tab()
         self._create_hakedis_tab()
-        self._create_maliyet_takibi_tab()
         self._create_bugun_tab()
         splitter.addWidget(self._tabs)
 
@@ -1511,6 +1581,7 @@ class GanttWindow(QWidget):
 
         for label, slot in [
             ("▶ Hesapla (CPM)", self.hesapla_program),
+            ("📅 Tarihi Kaydır", self._toplu_tarih_kaydir),
             ("📋 Metrajdan Üret", self._metrajdan_gorev_uret),
             ("💾 Kaydet", self.kaydet_program),
             ("📂 Yükle", self.yukle_program),
@@ -1612,6 +1683,7 @@ class GanttWindow(QWidget):
         self._is_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._is_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._is_table.doubleClicked.connect(self.duzenle_is)
+        self._is_table.itemChanged.connect(self._on_is_table_item_changed)
         layout.addWidget(self._is_table)
 
         self._tabs.addTab(tab, "📋 İş Programı")
@@ -1982,6 +2054,81 @@ class GanttWindow(QWidget):
         self._tabs.addTab(tab, "📊 Maliyet Takibi")
 
     # ------------------------------------------------------------------
+    # Auto-CPM & Tarih Kaydırma
+    # ------------------------------------------------------------------
+    def _schedule_auto_cpm(self) -> None:
+        """İş değişikliğinden 500ms sonra CPM'i sessiz modda yeniden hesapla."""
+        if hasattr(self, "_cpm_timer"):
+            self._cpm_timer.start()
+
+    def _toplu_tarih_kaydir(self) -> None:
+        """Tüm işlerin başlangıç ve bitiş tarihlerini N gün kaydır."""
+        if not self._is_list:
+            QMessageBox.information(self, "Bilgi", "Kaydırılacak iş yok.")
+            return
+        gun, ok = QInputDialog.getInt(
+            self, "Tarihi Kaydır",
+            "Tüm işlerin tarihlerini kaç gün kaydırmak istiyorsunuz?\n"
+            "(Pozitif = ileri, Negatif = geri)",
+            value=0, min=-730, max=730,
+        )
+        if not ok or gun == 0:
+            return
+        self._push_undo()
+        delta = timedelta(days=gun)
+        for task in self._is_list:
+            for alan in ("baslangic", "bitis", "plan_bitis", "gercek_bitis"):
+                val = task.get(alan)
+                if val:
+                    try:
+                        d = date.fromisoformat(str(val))
+                        task[alan] = (d + delta).isoformat()
+                    except (ValueError, TypeError):
+                        pass
+        self._yukle_is_listesi()
+        self._schedule_auto_cpm()
+        self._status_label.setText(f"Tüm tarihler {gun:+d} gün kaydırıldı.")
+
+    # ------------------------------------------------------------------
+    # F2 Satır İçi Düzenleme
+    # ------------------------------------------------------------------
+    def keyPressEvent(self, event) -> None:
+        if (
+            event.key() == Qt.Key.Key_F2
+            and self._is_table.hasFocus()
+            and self._is_table.currentRow() >= 0
+        ):
+            row = self._is_table.currentRow()
+            self._is_table.setEditTriggers(
+                QTableWidget.EditTrigger.AllEditTriggers
+            )
+            self._is_table.editItem(self._is_table.item(row, 1))
+        else:
+            super().keyPressEvent(event)
+
+    def _on_is_table_item_changed(self, item) -> None:
+        """F2 ile düzenlenen hücreyi _is_list'e yaz ve auto-CPM tetikle."""
+        self._is_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        row = item.row()
+        col = item.column()
+        if row < 0 or row >= len(self._is_list):
+            return
+        val = item.text().strip()
+        if col == 1:  # İş Adı
+            self._is_list[row]["ad"] = val
+            self._status_label.setText(f"İş adı güncellendi: {val}")
+        elif col == 2:  # Süre
+            try:
+                self._is_list[row]["sure"] = int(val)
+                self._status_label.setText(f"Süre güncellendi: {val} gün")
+            except ValueError:
+                self._yukle_is_listesi()
+                return
+        self._schedule_auto_cpm()
+
+    # ------------------------------------------------------------------
     # İlerleme Güncelleme
     # ------------------------------------------------------------------
     def _toplu_ilerleme_guncelle(self) -> None:
@@ -2328,6 +2475,7 @@ class GanttWindow(QWidget):
                 logger.error("Proje yükleme: %s", exc)
 
     def _yukle_is_listesi(self) -> None:
+        self._is_table.blockSignals(True)
         self._is_table.setRowCount(0)
         for task in self._is_list:
             row = self._is_table.rowCount()
@@ -2359,6 +2507,7 @@ class GanttWindow(QWidget):
                 row, 7,
                 QTableWidgetItem(dep_str)
             )
+        self._is_table.blockSignals(False)
 
     # ------------------------------------------------------------------
     # İş CRUD
@@ -2374,6 +2523,7 @@ class GanttWindow(QWidget):
             self._is_list.append(data)
             self._yukle_is_listesi()
             self._status_label.setText(f"İş eklendi: {data['ad']}")
+            self._schedule_auto_cpm()
 
     def duzenle_is(self) -> None:
         row = self._is_table.currentRow()
@@ -2389,6 +2539,7 @@ class GanttWindow(QWidget):
             self._is_list[row] = updated
             self._yukle_is_listesi()
             self._status_label.setText(f"İş güncellendi: {updated['ad']}")
+            self._schedule_auto_cpm()
 
     def sil_is(self) -> None:
         row = self._is_table.currentRow()
@@ -2405,6 +2556,7 @@ class GanttWindow(QWidget):
             self._is_list.pop(row)
             self._yukle_is_listesi()
             self._status_label.setText(f"İş silindi: {task['ad']}")
+            self._schedule_auto_cpm()
 
     def ekle_bagimliluk(self) -> None:
         row = self._is_table.currentRow()
@@ -2431,9 +2583,10 @@ class GanttWindow(QWidget):
     # ------------------------------------------------------------------
     # CPM Hesaplama
     # ------------------------------------------------------------------
-    def hesapla_program(self) -> None:
+    def hesapla_program(self, silent: bool = False) -> None:
         if not self._is_list:
-            QMessageBox.information(self, "Bilgi", "Önce iş listesi oluşturun.")
+            if not silent:
+                QMessageBox.information(self, "Bilgi", "Önce iş listesi oluşturun.")
             return
         try:
             try:
@@ -2531,9 +2684,13 @@ class GanttWindow(QWidget):
             )
         except Exception as exc:
             logger.error("Hesaplama hatası: %s", exc)
-            QMessageBox.critical(self, "Hata", f"Hesaplama hatası:\n{exc}")
+            if not silent:
+                QMessageBox.critical(self, "Hata", f"Hesaplama hatası:\n{exc}")
 
     def _yukle_tablo_goruntum(self, result: Dict) -> None:
+        if not hasattr(self, "_tablo"):
+            return
+        self._tablo.blockSignals(True)
         self._tablo.setRowCount(0)
         for task in result.get("tasks", []):
             row = self._tablo.rowCount()
@@ -2558,6 +2715,7 @@ class GanttWindow(QWidget):
                 row, 8,
                 QTableWidgetItem(f"{task.get('tamamlanma_yuzdesi', 0):.0f}%")
             )
+        self._tablo.blockSignals(False)
 
     def _yukle_kritik_yol(self, result: Dict) -> None:
         self._kritik_table.setRowCount(0)
@@ -2788,19 +2946,37 @@ class GanttWindow(QWidget):
         self._gantt_view.zoom_fit()
 
     def on_task_dragged(self, task_id: int, delta_days: float) -> None:
+        """
+        Drag & Drop görev taşıma.
+        delta_days: sürükleme ile elde edilen gün farkı (int/float).
+        move_task(task_id, yeni_baslangic: datetime) bekliyor — datetime hesaplanır.
+        cascade_dependents(task_id, gun_farki: int) bekliyor — gun_farki iletilir.
+        """
         if not self._drag_drop_enabled or not self._engine:
+            return
+        gun_farki = int(delta_days)
+        if gun_farki == 0:
             return
         self._push_undo()
         try:
+            # Mevcut görevin başlangıç tarihini bul
+            mevcut_task = self._engine.tasks.get(task_id) if hasattr(self._engine, "tasks") else None
+            if mevcut_task is None:
+                return
+
+            from datetime import timedelta
+            yeni_baslangic = mevcut_task.early_start + timedelta(days=gun_farki)
+
             if hasattr(self._engine, "move_task"):
-                self._engine.move_task(task_id, int(delta_days))
+                self._engine.move_task(task_id, yeni_baslangic)
             if hasattr(self._engine, "cascade_dependents"):
-                self._engine.cascade_dependents(task_id)
+                self._engine.cascade_dependents(task_id, gun_farki)
             if hasattr(self._engine, "get_tasks"):
                 self._is_list = self._engine.get_tasks()
             self._yukle_is_listesi()
             self.refresh_visual_gantt()
-            self._status_label.setText(f"İş taşındı: {delta_days:+.0f} gün")
+            self._status_label.setText(f"İş taşındı: {gun_farki:+d} gün")
+            self._schedule_auto_cpm()
         except Exception as exc:
             logger.error("Drag-drop hatası: %s", exc)
 
@@ -2967,6 +3143,8 @@ class GanttWindow(QWidget):
             self._kaynak_guncelle_tablo()
 
     def yukle_kaynaklar(self, kaynaklar: List[Dict]) -> None:
+        if not hasattr(self, "_kaynak_table"):
+            return
         self._kaynak_table.setRowCount(0)
         for k in kaynaklar:
             row = self._kaynak_table.rowCount()
@@ -2982,6 +3160,8 @@ class GanttWindow(QWidget):
             self._kaynak_table.setItem(row, 3, durum_item)
 
     def _kaynak_guncelle_tablo(self) -> None:
+        if not hasattr(self, "_kaynak_table"):
+            return
         self._kaynak_table.setRowCount(0)
         if not self._engine:
             return

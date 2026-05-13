@@ -42,11 +42,15 @@ hiddenimports = [
     # --- Win32 (AutoCAD Connector) ---
     'win32com', 'win32com.client', 'win32con', 'pywintypes',
     'pythoncom',
+    # --- Stdlib (pkg_resources icin zorunlu) ---
+    'email', 'email.mime', 'email.mime.text', 'email.mime.multipart',
+    'email.mime.base', 'email.encoders', 'email.charset',
+    'pkg_resources', 'setuptools',
     # --- Paketleme ---
     'packaging', 'packaging.version', 'packaging.requirements',
     # --- Core Engine Modulleri ---
     'app.core.database', 'app.core.calculator', 'app.core.calculator_minimal',
-    'app.core.material_calculator', 'app.core.dxf_engine',
+    'app.core.material_calculator',
     'app.core.cad_manager', 'app.core.room_3d_builder',
     'app.core.demir_engine', 'app.core.bi_engine',
     'app.core.enflasyon_engine', 'app.core.tedarikci_engine',
@@ -138,7 +142,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=['runtime_hook_db.py'],
     excludes=[
-        'tkinter', 'test', 'unittest', 'email', 'http.server',
+        'tkinter', 'test', 'unittest', 'http.server',
         'xmlrpc', 'pydoc', 'doctest', 'difflib',
         'calculator_BACKUP_1space',
     ],

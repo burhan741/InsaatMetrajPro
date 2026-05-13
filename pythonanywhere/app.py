@@ -60,6 +60,13 @@ def init_db():
         anahtar TEXT PRIMARY KEY,
         deger TEXT
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS beton_hakedis (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tarih DATE DEFAULT CURRENT_DATE,
+        miktar_m3 REAL DEFAULT 0,
+        birim_fiyat REAL DEFAULT 0,
+        aciklama TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -178,6 +185,7 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   <button class="tab" onclick="sekme('gider',this)">Giderler</button>
   <button class="tab" onclick="sekme('isciler',this)">Isciler</button>
   <button class="tab" onclick="sekme('ayarlar',this)">Ayarlar</button>
+  <button class="tab" onclick="sekme('hakedis',this)">Hakedis</button>
 </div>
 
 <!-- PUANTAJ PANELİ -->
@@ -228,6 +236,17 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   </div>
 </div>
 
+<!-- HAKEDİŞ PANELİ -->
+<div id="panel-hakedis" class="panel">
+  <div style="padding:0 0 10px;display:flex;gap:8px;align-items:center">
+    <input type="month" id="hakedisAy" style="flex:1;padding:10px;border:none;border-radius:10px;background:var(--inp);color:var(--tx);font-size:15px">
+    <button class="btn btn-pr" style="width:auto;padding:10px 16px;margin:0" onclick="loadHakedis()">Goster</button>
+  </div>
+  <button class="btn btn-pr" onclick="hakedisEkleModal()">+ Dokum Ekle</button>
+  <div id="hakedisOzet" style="margin-top:10px"></div>
+  <div id="hakedisList" style="margin-top:10px"><div class="empty">Ay secin</div></div>
+</div>
+
 <!-- NAVİGASYON -->
 <div class="nav">
   <button class="nav-btn aktif" onclick="sekme('puantaj',this)" id="nav-puantaj">
@@ -244,6 +263,9 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   </button>
   <button class="nav-btn" onclick="sekme('isciler',this)" id="nav-isciler">
     <span class="ico">&#128104;</span><span>Isciler</span>
+  </button>
+  <button class="nav-btn" onclick="sekme('hakedis',this)" id="nav-hakedis">
+    <span class="ico">&#128220;</span><span>Hakedis</span>
   </button>
 </div>
 
@@ -336,6 +358,7 @@ function sekme(id, btn) {
   if (id === 'gider') loadGider();
   if (id === 'isciler') loadIsciler();
   if (id === 'ayarlar') loadAyarlar();
+  if (id === 'hakedis') loadHakedis();
 }
 
 // ====== API ======
@@ -878,6 +901,92 @@ function modalKapat(e) {
   document.getElementById('modal-arka').className = 'modal-arka gizli';
 }
 
+// ====== HAKEDİŞ ======
+function loadHakedis() {
+  var ay = document.getElementById('hakedisAy').value;
+  if (!ay) { toast('Ay secin'); return; }
+  document.getElementById('hakedisList').innerHTML = '<div class="empty">Yukleniyor...</div>';
+  document.getElementById('hakedisOzet').innerHTML = '';
+  apiFetch('/api/hakedis?ay=' + ay).then(function(d) {
+    if (!d.kayitlar.length) {
+      document.getElementById('hakedisList').innerHTML = '<div class="empty">Bu ay dokum kaydi bulunamadi.</div>';
+      return;
+    }
+    var ozHtml = '<div class="ozet-kart">';
+    ozHtml += '<h3>' + ay + ' Beton Ozeti</h3>';
+    ozHtml += '<div class="ozet-row"><span>Toplam Beton</span><span class="tutar">' + fmt(d.toplam_m3) + ' m³</span></div>';
+    ozHtml += '<div class="ozet-row"><span>Toplam Tutar</span><span class="tutar">' + fmtTL(d.toplam_tutar) + '</span></div>';
+    ozHtml += '</div>';
+    document.getElementById('hakedisOzet').innerHTML = ozHtml;
+    var html = '';
+    for (var i = 0; i < d.kayitlar.length; i++) {
+      var k = d.kayitlar[i];
+      var toplam = k.miktar_m3 * k.birim_fiyat;
+      html += '<div class="kart" style="padding:12px 14px;margin-bottom:8px">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+      html += '<div style="flex:1">';
+      html += '<div style="font-size:12px;color:#a0a0a0;margin-bottom:6px">' + k.tarih + (k.aciklama ? ' &bull; ' + k.aciklama : '') + '</div>';
+      html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15px">';
+      html += '<strong style="color:var(--ok)">' + fmt(k.miktar_m3) + ' m³</strong>';
+      html += '<span style="color:#a0a0a0">&times;</span>';
+      html += '<strong>' + fmtTL(k.birim_fiyat) + '/m³</strong>';
+      html += '<span style="color:#a0a0a0">=</span>';
+      html += '<strong style="color:var(--pr);font-size:16px">' + fmtTL(toplam) + '</strong>';
+      html += '</div></div>';
+      html += '<button onclick="hakedisSil(' + k.id + ')" style="background:none;border:none;color:var(--er);font-size:20px;cursor:pointer;padding:4px;flex-shrink:0">&#128465;</button>';
+      html += '</div></div>';
+    }
+    document.getElementById('hakedisList').innerHTML = html;
+  }).catch(function(e) {
+    document.getElementById('hakedisList').innerHTML = '<div class="empty" style="color:var(--er)">Hata: ' + e.message + '</div>';
+  });
+}
+
+function hakedisEkleModal() {
+  var t = document.getElementById('tarih').value || new Date().toISOString().substring(0, 10);
+  document.getElementById('modal-ici').innerHTML =
+    '<button class="kapanis-btn" onclick="modalKapat()">&#10005;</button>' +
+    '<h2>Beton Dokumu Ekle</h2>' +
+    '<div class="form-row"><label>Tarih</label><input type="text" id="hk-tarih" value="' + t + '" placeholder="YYYY-MM-DD"></div>' +
+    '<div class="form-row"><label>Miktar (m³)</label><input type="number" id="hk-m3" placeholder="0.00" step="0.5" min="0"></div>' +
+    '<div class="form-row"><label>Birim Fiyat (TL/m³)</label><input type="number" id="hk-fiyat" placeholder="0" step="50"></div>' +
+    '<div class="form-row"><label>Aciklama (Opsiyonel)</label><textarea id="hk-acik" placeholder="Notlar..."></textarea></div>' +
+    '<button class="btn btn-ok" onclick="hakedisKaydet()">Kaydet</button>';
+  document.getElementById('modal-arka').className = 'modal-arka';
+}
+
+function hakedisKaydet() {
+  var tarih = document.getElementById('hk-tarih').value;
+  var m3 = parseFloat(document.getElementById('hk-m3').value);
+  var fiyat = parseFloat(document.getElementById('hk-fiyat').value);
+  if (!tarih || isNaN(m3) || m3 <= 0 || isNaN(fiyat) || fiyat <= 0) {
+    toast('Tarih, miktar ve birim fiyat gerekli');
+    return;
+  }
+  apiFetch('/api/hakedis', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      tarih: tarih,
+      miktar_m3: m3,
+      birim_fiyat: fiyat,
+      aciklama: document.getElementById('hk-acik').value
+    })
+  }).then(function() {
+    modalKapat();
+    toast('Kaydedildi!');
+    document.getElementById('hakedisAy').value = tarih.substring(0, 7);
+    loadHakedis();
+  }).catch(function(e) { toast('Hata: ' + e.message); });
+}
+
+function hakedisSil(id) {
+  if (!confirm('Bu kaydi sil?')) return;
+  apiFetch('/api/hakedis/' + id, {method: 'DELETE'})
+    .then(function() { toast('Silindi'); loadHakedis(); })
+    .catch(function(e) { toast('Hata: ' + e.message); });
+}
+
 // ====== BASLANGIC ======
 bugun();
 var simdi = new Date();
@@ -1284,6 +1393,49 @@ def api_rapor_haftalik():
         'haftalik_giderler': giderler,
         'toplam_gider': toplam_gider
     })
+
+
+@app.route('/api/hakedis', methods=['GET', 'POST'])
+def api_hakedis():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    if request.method == 'POST':
+        d = request.json
+        c.execute(
+            'INSERT INTO beton_hakedis (tarih, miktar_m3, birim_fiyat, aciklama) VALUES (?,?,?,?)',
+            (d.get('tarih', date.today().isoformat()), d.get('miktar_m3', 0),
+             d.get('birim_fiyat', 0), d.get('aciklama', ''))
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+    ay = request.args.get('ay', date.today().strftime('%Y-%m'))
+    c.execute("SELECT * FROM beton_hakedis WHERE strftime('%Y-%m', tarih)=? ORDER BY tarih", (ay,))
+    kayitlar = [dict(r) for r in c.fetchall()]
+    conn.close()
+
+    toplam_m3 = round(sum(k['miktar_m3'] for k in kayitlar), 2)
+    toplam_tutar = round(sum(k['miktar_m3'] * k['birim_fiyat'] for k in kayitlar), 2)
+
+    return jsonify({
+        'ay': ay,
+        'kayitlar': kayitlar,
+        'toplam_m3': toplam_m3,
+        'toplam_tutar': toplam_tutar
+    })
+
+
+@app.route('/api/hakedis/<int:hakedis_id>', methods=['DELETE'])
+def api_hakedis_sil(hakedis_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM beton_hakedis WHERE id=?', (hakedis_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
 
 
 if __name__ == '__main__':

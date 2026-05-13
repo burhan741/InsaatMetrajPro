@@ -123,6 +123,13 @@ class DemirHesaplamaWindow(QMainWindow):
 
         ana_layout.addWidget(self._ust_panel())
 
+        # durum_label once olusturulmali: _toplu_hesap_sekmesi icindeki
+        # _ornek_satirlar_ekle -> _toplu_satir_ekle bu label'i kullanir
+        self.durum_label = QLabel("Hazir.")
+        self.durum_label.setStyleSheet(
+            "color: #555; font-size: 11px; padding: 2px 4px;"
+        )
+
         self.tab_widget = QTabWidget()
         self.tab_widget.setDocumentMode(True)
         ana_layout.addWidget(self.tab_widget, stretch=1)
@@ -131,10 +138,6 @@ class DemirHesaplamaWindow(QMainWindow):
         self.tab_widget.addTab(self._toplu_hesap_sekmesi(), "  Toplu Hesap  ")
         self.tab_widget.addTab(self._referans_tablo_sekmesi(), "  Birim Agirlik Tablosu  ")
 
-        self.durum_label = QLabel("Hazir.")
-        self.durum_label.setStyleSheet(
-            "color: #555; font-size: 11px; padding: 2px 4px;"
-        )
         ana_layout.addWidget(self.durum_label)
 
         self._uygula_stil()

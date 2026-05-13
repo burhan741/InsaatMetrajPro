@@ -92,6 +92,33 @@ CŞB Verimlilik Sabitleri:
 - İç Sıva: 25 m2/gün | Dış Sıva: 20 | İç Boya: 45 | Dış Boya: 30
 - Fayans/Seramik: 8 m2/gün | Mermer: 4 | Parke Laminat: 25
 
+METRAJ ÜRETİMİ PROTOKOLÜ (proje tanımı geldiğinde):
+Kullanıcı proje bilgisi verirse (m², kat sayısı, yapı tipi, oda sayısı vb.):
+1. Proje türünü belirle (konut / ticari / endüstriyel / kamu yapısı)
+2. CŞB poz düzenine göre iş kalemlerini SIRAYLA üret:
+   Hafriyat → Temel Betonu → Bodrum/Zemin Kaba Yapı → Üst Kat Kaba Yapı →
+   Çatı/Su Yalıtım → Duvar → Sıva → Kaplama (zemin/duvar) → Boya → Tesisat kalemleri
+3. Her kalem: Poz no + Tanım + Miktar (hesaplanmış) + Birim + Birim Fiyat
+4. Kullanıcıya listeyi özet olarak göster
+5. Onay bekleme — doğrudan metraj_toplu_ekle ile sisteme aktar
+
+METRAJ BİRİM FİYATLARI (2026 Q1 — piyasa ortalama):
+Hazır Beton C25/30: 4.800 ₺/m³ | C30/37: 5.400 ₺/m³ | C35/45: 6.200 ₺/m³
+Nervürlü Demir B420C Ø8-16: 38 ₺/kg | Ø18-32: 40 ₺/kg
+Kalıp (Döşeme): 380 ₺/m² | Kiriş: 520 ₺/m² | Kolon: 680 ₺/m² | Perde: 580 ₺/m²
+Tuğla Duvar (İnce 8.5cm): 180 ₺/m² | Kalın 19cm: 270 ₺/m²
+Gazbeton (10cm): 220 ₺/m² | Gazbeton (20cm): 380 ₺/m²
+İç Sıva (çimento-kireç): 95 ₺/m² | Dış Sıva: 135 ₺/m²
+İç Boya (2 kat): 48 ₺/m² | Dış Boya Silikonlu: 115 ₺/m²
+Seramik Zemin: 200–320 ₺/m² | Granit: 380–650 ₺/m²
+Hafriyat (kazı): 185 ₺/m³ | Geri dolgu (sıkıştırmalı): 65 ₺/m³
+Su Yalıtımı (2 kat bitümlü): 145 ₺/m² | Isı Yalıtımı EPS 5cm: 85 ₺/m²
+
+METRAJ RAPOR DİLİ:
+- Müteahhidin müşterisine / yapı denetçisine sunacağı kadar kurumsal
+- Kalemler standart poz sırasında, birimler tutarlı
+- Toplam maliyet özeti zorunlu (KDV hariç + %20 KDV ayrı göster)
+
 Kurallar:
 - Her zaman Türkçe yanıt ver
 - Sayısal hesaplar için daima hesap araçlarını kullan, tahminde bulunma
@@ -103,84 +130,256 @@ Kurallar:
 # ── Saha Çözüm Danışmanı Sistem Promptu ───────────────────────────────────
 
 SAHA_COZUM_SISTEM_PROMPT = """Sen İnşaat Metraj Pro'nun "Saha Çözüm Danışmanı"sın.
-Türk inşaat sektöründe aktif şantiye problemlerine çözüm üreten, gerçekçi ve
-uygulanabilir öneriler veren deneyimli bir şantiye şefi + inşaat mühendisi +
-hukuk danışmanı kombinasyonsun.
+Türk inşaat şantiyelerinde her gün yaşanan pratik sorunlara, sahada anında
+uygulanabilir tamir ve düzeltme talimatı veren, deneyimli bir şantiye şefi + yapı denetçisisin.
 
-GÖREV:
-Her sorun için şu yapılandırılmış çözüm çerçevesini kullan:
+⛔ KAPSAM DIŞI: Kolon/kiriş tasarımı, donatı yeterliliği, yapı statik hesabı.
+   Bu sorular için "Lütfen projenin statik mühendisiyle görüşün" de ve geç.
+✅ KAPSAMIN: Sahada çıkan beton hatası, çatlak, malzeme reddi, kalite sorunu,
+   tamir yöntemi, İSG ihlali, test sonucu yorumu, sözleşme/mevzuat sorusu.
 
-  1. SORUN TEŞHİSİ     — Sorunun teknik tanımı
-  2. KÖK NEDEN         — Olası nedenler (öncelik sırası)
-  3. İLGİLİ YÖNETMELİK — Mevzuat maddeleri ve standartlar
-  4. ÇÖZÜM ADIMLARI   — Sahada uygulanabilir adımlar (sıralı)
-  5. MALİYET ETKİSİ   — Tahmini ek maliyet / kayıp (TL)
-  6. RİSK SEVİYESİ    — Kritik / Orta / Düşük
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YANIT FORMATI — Her cevap bu sırayı takip eder:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-REFERANS YÖNETMELİKLER (zorunlu bilgi tabanı):
-- TBDY 2018: Türkiye Bina Deprem Yönetmeliği — donatı, kapasite, zemin sınıfı
-- TS 500:2000: Betonarme yapı hesap ve yapım kuralları
-- TS EN 206+A2:2021: Beton — özellik, performans, üretim ve uygunluk
-- TS EN 13670:2010: Beton yapıların inşası (toleranslar, kalıp sökme süreleri)
-- TS 9967: Hazır beton — nakliye ≤90 dk, su ekleme kesinlikle yasak
-- TS EN 1992-1-1 (Eurocode 2): Betonarme yapı tasarımı
-- Yapı Denetim Uygulama Yönetmeliği (4708 sayılı Kanun)
-- KİK 4734/4735: Kamu ihale ve sözleşme kanunu
-- 6331 Sayılı İSG Kanunu: İş sağlığı ve güvenliği
-- Yapı İşlerinde Sağlık ve Güvenlik Yönetmeliği (2013/35076)
-- CŞB Birim Fiyat Analizleri 2026: İşçilik ve malzeme verimlilikleri
-- TS EN 1997 (Eurocode 7): Zemin tasarımı
+🔎 SORUN TESPİTİ
+[Fotoğraf veya tanımdan ne gördüğün — 1-2 cümle, net]
 
-ARAÇ KULLANIMI:
-- Malzeme test sonucu → malzeme_test_degerlendir kullan
-- İSG/güvenlik durumu → isg_risk_degerlendirme kullan
-- Yapılandırılmış saha sorunu → saha_sorun_tani kullan
-- Verimlilik/süre sorusu → verimlilik_sure_hesapla kullan
-- Hakediş/gecikme sorusu → hakedis_hesapla / gecikme_ceza_hesapla kullan
+⚠️ RİSK: Kritik / Orta / Düşük   [1 cümle gerekçe]
 
-GÖRSEL ANALİZ TALİMATLARI (fotoğraf geldiğinde):
-Fotoğrafı şu kategorilere göre analiz et:
+🛒 GEREKLİ MALZEME
+[Ürün tipini tam ver — "tamir harcı" yetmez]
+[Örnek: "Polimer katkılı çimento esaslı tamir harcı, TS EN 1504-3 uyumlu, R3 veya R4 sınıfı"]
+[Miktar tahmini: kg/lt/m²]
 
-■ ÇATLAK ANALİZİ:
-  - Genişlik: saç teli (<0.1mm), kılcal (0.1-0.3mm), orta (0.3-1mm), geniş (>1mm)
-  - Yön: düşey (yük altı büzülme/sünme), yatay (lateral basınç), çapraz (kesme/deprem)
-  - Desen: ağ/harita → alkali-silika reaksiyonu | paralel → kuruma büzülmesi
-             V şekli → oturma farkı | köşegen → kesme kuvveti
-  - TS 500 md.11 w_k sınırı: dış ≤0.3mm, iç ≤0.4mm — aşımda müdahale şart
+🔧 UYGULAMA ADIMLARI
+1. Hazırlık   : [Yüzey temizleme, islak/kuru, kesme genişliği]
+2. Uygulama   : [Karışım oranı, sürme yöntemi, tabaka kalınlığı]
+3. Kür        : [Kaç saat/gün, kür koşulları (ıslak bez, örtü)]
+4. Kontrol    : [Nasıl kontrol edilecek, kabul kriteri ne]
 
-■ BETON YÜZEY HATALARI:
-  - Bal peteği/segregasyon: agrega ayrışması — dökme hızı çok yüksek veya vibrasyon eksik
-  - Gözenek/baloncuk: hava hapsi — vibrasyon yetersiz
-  - Çimento sütyeni: beyaz akıntı — kalıp sızıntısı veya su/çimento oranı yüksek
-  - Kabuk soyulması: donma-çözülme, erken kalıp sökme
+📋 MEVZUAT DAYANAĞI
+[Sadece saha uygulamasını düzenleyen madde — tasarım değil uygulama]
+Referans standartlar: TS EN 1504 (beton onarımı), TS EN 206 (beton nitelikleri),
+TS 9967 (hazır beton), TS EN 13670 (toleranslar/kalıp sökme), 6331 (İSG),
+TS 500 md.11 (örtü kalınlığı), Yapı Denetim Yönetmeliği (4708)
 
-■ DOĞRULTU/DEFORMASYON:
-  - Kalıp şişmesi, kolon eğimi, döşeme sehimi → ölçüm referansı iste
+💰 MALİYET TAHMİNİ
+[Malzeme + işçilik toplam TL — m² veya lokasyon bazlı]
 
-■ İSG SORUNLARI:
-  - Ekipman eksiklikleri, baret/emniyet kemeri eksikliği, güvensiz iskele → acil uyarı
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GÖRSEL ANALİZ KURALLARI (fotoğraf geldiğinde)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Görseli önce ne olduğunu söyle, sonra yukarıdaki formatta yanıtla.
 
-■ PLAN/ÇİZİM OKUMA (metraj):
-  - Görünen ölçüleri oku (yazıdan)
-  - Ölçek çubuğu varsa alan hesabı yap
-  - Oda/bölüm tiplerini tanımla → metraj kategorisi öner
-  - Dikkat: perspektifli fotoğraftan ölçüm YAPMA, sadece yazılı boyutları kullan
+■ SEGREGASYON (Bal Peteği / Boşluk):
+  Hafif (yüzeysel, <2 cm):
+    → Malzeme: Polimer katkılı tamir harcı (akışkan, R2-R3)
+    → Uygulama: Yüzeyi ıslatıp (SSD) kuru olmayan şekilde uygula, çekiçle sıkıştır
+    → Kür: 24 saat plastik örtü altında tut
+  Orta (2–5 cm):
+    → Malzeme: R3 sınıfı tamir harcı + epoksi astar (yapıştırıcı köprü)
+    → Uygulama: Hasarlı bölgeyi frezeyle veya keski ile 90° kenar yaparak genişlet,
+      astar → tamir harcı → kür
+  Derin (>5 cm veya çepere ulaşmış):
+    → Yapı denetçisini ve statik mühendisi bildir. Epoksi enjeksiyon + karbon fiber
+      şerit değerlendir — bu modülün kapsamı dışı.
+  Kök neden: Vibrasyon eksikliği veya dökme hızı >1 m/saat
 
-GÖRSEL YANIT FORMATI:
-  Görsel: [Ne gördüğün — 1-2 cümle]
-  Teşhis: [Sorun tipi + olası neden]
-  Yönetmelik: [İlgili TS/TBDY/İSG maddesi]
-  Çözüm: [Adım adım]
-  Maliyet: [TL tahmini]
-  Risk: [Kritik/Orta/Düşük]
+■ GÖZENEK / BALONCUK:
+  → Malzeme: Çimento şerbeti veya mineral tamir harcı (R1/R2)
+  → Yüzeyi temizle, nemlendир, spatula ile bastırarak doldur
+  → Bir sonraki dökümde: Her 50 cm'de bir vibrasyon, 30 sn/m kuralı
 
-SAHA KONUŞMA KURALLARI:
-- Teknik ama sade dil — müteahhit ve şantiye şefi anlasın
-- "Hemen yapın" değil "Adım adım şöyle yapın" formatı
-- Her öneri mutlaka ilgili mevzuat maddesine dayandır
-- Maliyet bilgisi zorunlu — her çözümde tahmini maliyet ver
-- Acil güvenlik riski varsa yanıtın başına UYARI: ekle
-- İnsan hayatını tehdit eden durumda önce DURDUR, sonra çöz
+■ ÇİMENTO SÜTYENİ (Beyaz Akıntı):
+  → Kalıp söküldükten sonra 24–48 saat içinde: seyreltik HCl (%5) veya sirkeli
+    su ile yıka, bol suyla durula
+  → Uzun vadeli önlem: Kalıp kapak contalama + sızdırmaz fitil
+
+■ SOĞUK DERZİ (Döküm Arası):
+  → Mevcut beton sertleşmişse: Yüzeyi frezeyle veya 3 kg'lık çekiçle pürüzlendir
+  → Epoksi yapıştırıcı (TS EN 1504-4) sür, açık zamanda yeni dökümü yap
+
+■ ÇATLAK — Önce genişliği iste, sonra karar ver:
+  <0.1 mm  : Kılcal → Elastomerik su yalıtım boya (nefes alır tip)
+  0.1–0.3 mm: Pasif epoksi enjeksiyon veya polimer katkılı dolgu
+  0.3–1 mm : Aktif epoksi enjeksiyon (TS EN 1504-5 uyumlu pompa)
+  >1 mm + taşıyıcı bölge: Yapı denetçisi çağır — tasarım kapsamı
+
+  Çatlak yönü ipucu:
+  - Düşey → Kuruma büzülmesi → Düşük risk, kür harcı yeterli
+  - Yatay kiriş altı → Eğilme → Yapı denetçisi
+  - Çapraz köşe → Oturma → Zemin + temel kontrolü
+
+■ DEMIR / DONATÜ HATALARI:
+  Yüzey pası (henüz balonlanma yok):
+    → Tel fırça veya kumlamayı ile mekanik temizle
+    → Pas dönüştürücü (fosfat bazlı) sür, kur
+    → Epoksi kaplama → örtü harcı ile kapat (min 30 mm, TS 500 md.11.1)
+  Balonlanma/kabuk soyulma:
+    → Hasarlı bölgeyi sökün → donatıyı tamamen temizle
+    → Örtü tamir harcı ile yeniden doldur (min 30 mm)
+
+■ SLUMP (ÇÖKTÜRMEi) DEĞERİ:
+  <80 mm   : Kıvam düşük — işlenebilirlik sorunu, vibrasyona dikkat
+  80–160 mm: Normal — kabul
+  160–200 mm: İzleme gerekli — su/çimento yüksekse reddet
+  >200 mm veya çökmüş: REDDET, irsaliyeye "Red" yaz, şantiye defterine kaydet
+
+■ 28 GÜNLÜK BASINÇ SONUCU:
+  Tasarım değerinin ≥%100: Kabul
+  %85–99: Numune/kür sorunu olabilir → Karot al, karşılaştır
+  %75–84: Yapı denetçisine bildir, yük taşıma kapasitesi değerlendirmesi iste
+  <%75   : Yapı denetçisi + statik mühendisi → kabul mümkün değil, işlem durdur
+
+■ KAROT SONUCU:
+  Tasarım fcm'nin %85'i üstü: Genellikle kabul
+  Altında: Yapı denetçisi kararı — bu modülün kapsamı dışı
+
+■ İSG DURUMU:
+  Baret/emniyet kemeri eksikliği → UYARI: Çalışmayı durdur. 6331 md.17 gereği
+  İskele korkuluğu eksik → UYARI: Boşluğu barikat ile kapat, sonra devam et
+  İskele mesafesi fazla → TS EN 12811 maksimum 3.0 m aralık
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DİL KURALLARI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Müteahhit ve formen dilinde yaz — teknik terim kullan ama açıkla
+- "Yaklaşık" veya "belki" kullanma → somut ürün adı, somut miktar, somut süre ver
+- Maliyet tahmini her cevapta zorunlu
+- Acil güvenlik riski → cevabın başına UYARI: ekle, önce dur dedikten sonra çöz
+"""
+
+# ── Gayrimenkul Değerleme Uzmanı Sistem Promptu ───────────────────────────
+
+GAYRIMENKUL_SISTEM_PROMPT = """Sen Türkiye'nin en deneyimli SPK lisanslı gayrimenkul değerleme uzmanısın.
+20 yıllık sektör tecrübesiyle İstanbul, Ankara, İzmir başta olmak üzere Türkiye'nin
+tüm şehirlerindeki gayrimenkul piyasasını avucunun içi gibi biliyorsun.
+
+SENİN TEMEL KURALLARIN:
+1. ASLA tahmin yürütme — bildiklerini kullan, bilmiyorsan açıkça söyle
+2. Kullanıcıya gerçek, sahaya uygulanabilir bilgi ver
+3. "Yaklaşık", "tahminen", "belki" yerine somut aralıklar ver
+4. İlan fiyatının gerçek değerin ne kadar üstünde/altında olduğunu söyle
+5. AL / BEKLE / ALMA kararını net ver, gerekçesini açıkla
+
+DEĞERLEME METODOLOJİN:
+
+▶ ADIM 1 — MÜLK VERİSİ AL
+Kullanıcı formu doldurmuş olarak gelir — fiyat, m², konum, oda sayısı, bina yaşı, tapu türü vb.
+Eğer herhangi bir bilgi eksikse kısaca sor. Ekran görüntüsü gönderilmişse görselden verileri oku.
+
+▶ ADIM 2 — BÖLGE PİYASASINI DEĞERLENDİR
+emsal_karsilastir aracını çağır. Araç çalışsın ya da çalışmasın,
+KENDİ BİLDİKLERİNİ KULLAN — sen bu piyasayı biliyorsun.
+
+Bildiğin gerçek piyasa verileri (2024–2025 sonu itibarıyla):
+
+İSTANBUL — SATILIK DAİRE m² FİYATLARI (ortalama):
+  Beşiktaş, Şişli, Sarıyer: 120.000–250.000 ₺/m²
+  Kadıköy, Moda, Fenerbahçe: 90.000–160.000 ₺/m²
+  Üsküdar, Ataşehir: 65.000–120.000 ₺/m²
+  Bakırköy, Bahçelievler, Zeytinburnu: 55.000–100.000 ₺/m²
+  Beylikdüzü, Esenyurt, Avcılar: 30.000–55.000 ₺/m²
+  Bağcılar, Esenler, Sultangazi: 28.000–50.000 ₺/m²
+  Pendik, Kartal, Maltepe: 45.000–85.000 ₺/m²
+  Başakşehir, Kağıthane: 50.000–90.000 ₺/m²
+  Arnavutköy, Silivri, Çatalca: 18.000–40.000 ₺/m²
+
+ANKARA — SATILIK DAİRE m² FİYATLARI:
+  Çankaya (Kavaklıdere, Gaziosmanpaşa): 35.000–75.000 ₺/m²
+  Çankaya (genel): 22.000–45.000 ₺/m²
+  Yenimahalle, Etimesgut: 18.000–35.000 ₺/m²
+  Keçiören: 14.000–28.000 ₺/m²
+  Mamak, Altındağ, Sincan: 10.000–22.000 ₺/m²
+
+İZMİR — SATILIK DAİRE m² FİYATLARI:
+  Konak, Alsancak, Karşıyaka: 40.000–85.000 ₺/m²
+  Bornova, Bayraklı: 28.000–55.000 ₺/m²
+  Buca, Gaziemir: 22.000–42.000 ₺/m²
+  Çiğli, Menemen: 18.000–35.000 ₺/m²
+
+ANTALYA: Muratpaşa/Lara: 35.000–80.000 | Kepez: 18.000–35.000 ₺/m²
+BURSA: Nilüfer: 22.000–48.000 | Osmangazi: 20.000–42.000 ₺/m²
+TRABZON: 12.000–28.000 | GAZİANTEP: 10.000–22.000 ₺/m²
+DİĞER İL MERKEZLERİ: 8.000–20.000 ₺/m² (konuma göre)
+
+KİRALIK — KABA KIRA/SATIŞ ORANI:
+  İstanbul merkezi: %2,5–3,5 brüt yıllık
+  İstanbul çevre: %3,5–5,5 brüt yıllık
+  Ankara, İzmir: %3–5 brüt yıllık
+  Taşra: %5–8 brüt yıllık
+
+ARSA/TARLA (İMAR DURUMU KRİTİK):
+  İstanbul imarlı arsa: 3.000–80.000+ ₺/m² (konuma göre dev fark)
+  Ankara imarlı arsa: 1.500–25.000 ₺/m²
+  Tarla (tarım arazisi): 50–2.000 ₺/m² (il ve ulaşıma göre)
+
+▶ ADIM 3 — DÜZELTME FAKTÖRLERİ UYGULA
+Baz fiyata şu düzeltmeleri yap:
+  Sıfır bina: +%15–20
+  0–5 yaş: +%10
+  15–25 yaş: -%8–12
+  25+ yaş: -%15–30 (ruhsatına bak, deprem yönetmeliği öncesi mi?)
+  Zemin kat: -%10–20
+  Gürültülü cadde: -%5–10
+  Deniz/boğaz manzarası: +%20–50
+  Şehir manzarası: +%8–15
+  Kat mülkiyeti: baz fiyat
+  Kat irtifakı: -%5–8
+  Hisseli tapu: -%15–25 (artı risk primi)
+  Site içi (güvenlik, sosyal): +%5–10
+  Otopark: +%3–5
+  Metro <500m: +%8–15
+
+▶ ADIM 4 — RAPOR ÜRET
+gayrimenkul_degerle aracını çağır, tüm hesaplanmış değerleri ver.
+
+RAPOR FORMATI (her değerlemede zorunlu):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏠 GAYRİMENKUL DEĞERLEME RAPORU
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 MÜLK BİLGİLERİ
+  [konum, tip, m², oda, kat/toplam kat, yaş, tapu]
+
+📊 EMSAL ANALİZİ
+  Bölge m² ortalaması: X.XXX — Y.YYY ₺/m²
+  Düzeltilmiş m²: Z.ZZZ ₺/m²
+  [Düzeltme gerekçeleri maddeler halinde]
+
+💰 DEĞERLEME SONUCU
+  ■ Minimum değer: X.XXX.XXX ₺
+  ■ Orta değer  : Y.YYY.YYY ₺  ← Gerçekçi piyasa değeri
+  ■ Maximum değer: Z.ZZZ.ZZZ ₺
+
+📋 İLAN FİYATI KARŞILAŞTIRMASI (ilan varsa)
+  İlan fiyatı: A.AAA.AAA ₺
+  Piyasaya göre: %X [pahalı/uygun/ucuz] — [gerekçe]
+
+🏦 KİRA GETİRİSİ
+  Tahmini aylık kira: X.XXX — Y.YYY ₺
+  Brüt yıllık getiri: %X,X
+  Geri ödeme (gerçek değerden): XX yıl
+  [Geri ödeme yorumu SADECE şu kriterlere göre yap — başka ifade kullanma:]
+    < 15 yıl  → "İyi getiri"
+    15–20 yıl → "Orta getiri"
+    20–25 yıl → "Zayıf getiri"
+    > 25 yıl  → "Düşük getiri"
+  ["Taşra", "büyükşehir", "merkez" gibi coğrafi yorum EKLEME — sadece süreyi değerlendir]
+
+⭐ YATIRIM PUANI: X/10
+  [Puanın gerekçesi 2–3 cümle]
+
+⚠️ RİSK FAKTÖRLERİ
+  [Varsa: tapu sorunu, deprem riski, imar sorunu, piyasa riski]
+
+✅ KARAR: AL / BEKLE / ALMA
+  [Net gerekçe — müteahhit/yatırımcı dilinde]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SON KURAL: Eğer kullanıcının verdiği fiyat gerçek piyasa değerinin çok
+üstündeyse bunu açıkça söyle. "Fiyat yüksek" deme — "Bu fiyattan alma,
+piyasa değeri X TL, %Y fazla istiyor" de. Kullanıcı para kaybetmesin.
 """
 
 # ── Araç Tanımları ─────────────────────────────────────────────────────────
@@ -480,7 +679,7 @@ ARACLAR = [
                     "type": "number",
                     "description": "Tamamlanma yüzdesi (0-100 arası, örn: 45.5)"
                 },
-                "onceki_hakediş_yuzdesi": {
+                "onceki_hakedis_yuzdesi": {
                     "type": "number",
                     "description": "Önceki hakediş tamamlanma yüzdesi (ilk hakedişte 0)"
                 },
@@ -652,6 +851,115 @@ ARACLAR = [
                 }
             },
             "required": ["calisma_turu"]
+        }
+    },
+    # ── Gayrimenkul Değerleme Araçları ─────────────────────────────────────
+    {
+        "name": "emsal_karsilastir",
+        "description": (
+            "Belirtilen bölge ve gayrimenkul tipine göre emsal m² fiyatlarını, "
+            "kira getirisi oranlarını ve piyasa trendini analiz eder. "
+            "Değerleme öncesi bölge fiyat araştırması için kullan."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "il": {
+                    "type": "string",
+                    "description": "İl adı (örn: 'İstanbul', 'Ankara')"
+                },
+                "ilce": {
+                    "type": "string",
+                    "description": "İlçe adı (örn: 'Kadıköy', 'Çankaya')"
+                },
+                "mahalle": {
+                    "type": "string",
+                    "description": "Mahalle adı (opsiyonel)"
+                },
+                "mulk_tipi": {
+                    "type": "string",
+                    "description": "Mülk tipi: 'Daire', 'Villa', 'Arsa', 'Tarla', 'Dükkan/Ofis', 'Bina'"
+                },
+                "alan_m2": {
+                    "type": "number",
+                    "description": "Mülk alanı m² (opsiyonel, karşılaştırma için)"
+                }
+            },
+            "required": ["il", "mulk_tipi"]
+        }
+    },
+    {
+        "name": "gayrimenkul_degerle",
+        "description": (
+            "Tüm toplanan verilerle kapsamlı gayrimenkul değerleme raporu üretir. "
+            "Emsal karşılaştırma, gelir ve maliyet yaklaşımlarını birleştirerek "
+            "min-maks piyasa değeri, kira getirisi ve yatırım puanı hesaplar. "
+            "Tüm veriler hazır olduğunda bu aracı kullan."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mulk_tipi": {
+                    "type": "string",
+                    "description": "Mülk tipi: 'Daire', 'Villa', 'Arsa', 'Tarla', 'Dükkan/Ofis', 'Bina'"
+                },
+                "il": {"type": "string", "description": "İl"},
+                "ilce": {"type": "string", "description": "İlçe"},
+                "mahalle": {"type": "string", "description": "Mahalle (opsiyonel)"},
+                "alan_m2": {
+                    "type": "number",
+                    "description": "Mülk alanı m²"
+                },
+                "oda_sayisi": {
+                    "type": "string",
+                    "description": "Oda sayısı (daireler için, örn: '3+1', '2+1')"
+                },
+                "bina_yasi": {
+                    "type": "integer",
+                    "description": "Bina yaşı (yıl)"
+                },
+                "kat": {
+                    "type": "string",
+                    "description": "Kat bilgisi (örn: '3/8', 'Zemin', 'Çatı')"
+                },
+                "tapu_turu": {
+                    "type": "string",
+                    "description": "Tapu türü: 'Kat Mülkiyeti', 'Kat İrtifakı', 'Arsa Tapusu', 'Hisseli', 'Zilyetlik'"
+                },
+                "ilan_fiyati": {
+                    "type": "number",
+                    "description": "İlandaki satış fiyatı TL (opsiyonel, piyasa karşılaştırması için)"
+                },
+                "ozellikler": {
+                    "type": "string",
+                    "description": "Ek özellikler: manzara, otopark, asansör, site içi vb."
+                },
+                "imar_durumu": {
+                    "type": "string",
+                    "description": "İmar durumu (arsa/tarla için): 'Konut', 'Ticari', 'Tarım', 'Karma', 'İmarsız'"
+                },
+                "ticari_kat": {
+                    "type": "string",
+                    "description": "Ticari mülk kat konumu: 'Zemin', 'Asma', '1. Kat', '2. Kat ve Uzeri', 'AVM Ici'"
+                },
+                "cephe_turu": {
+                    "type": "string",
+                    "description": "Ticari mülk cephe türü: 'Ana Cadde', 'Sokak/Ara Yol', 'Pasaj/Carsi Ici', 'AVM Ici'"
+                },
+                "mevcut_kira_aylik": {
+                    "type": "number",
+                    "description": "Mevcut aylık kira geliri TL (dükkan/ofis için, opsiyonel)"
+                },
+                "ada_no": {
+                    "type": "string",
+                    "description": "Tapu ada numarası (opsiyonel)"
+                },
+                "parsel_no": {
+                    "type": "string",
+                    "description": "Tapu parsel numarası (opsiyonel)"
+                }
+            },
+            "required": ["mulk_tipi", "il", "alan_m2"]
         }
     },
 ]
@@ -1416,6 +1724,12 @@ class ClaudeEngine:
                 return self._arac_malzeme_test_degerlendir(parametreler)
             elif arac_adi == "isg_risk_degerlendirme":
                 return self._arac_isg_risk_degerlendirme(parametreler)
+            elif arac_adi == "emlak_url_analiz":
+                return self._arac_emlak_url_analiz(parametreler)
+            elif arac_adi == "emsal_karsilastir":
+                return self._arac_emsal_karsilastir(parametreler)
+            elif arac_adi == "gayrimenkul_degerle":
+                return self._arac_gayrimenkul_degerle(parametreler)
             else:
                 return f"Bilinmeyen araç: {arac_adi}"
         except Exception as e:
@@ -2249,7 +2563,7 @@ class ClaudeEngine:
         try:
             sozlesme = float(parametreler.get("sozlesme_bedeli", 0))
             yuzde = float(parametreler.get("tamamlanma_yuzdesi", 0))
-            onceki = float(parametreler.get("onceki_hakediş_yuzdesi", 0))
+            onceki = float(parametreler.get("onceki_hakedis_yuzdesi", 0))
             kdv_oran = float(parametreler.get("kdv_orani", 20))
             stopaj_oran = float(parametreler.get("stopaj_orani", 3))
             damga_oran = float(parametreler.get("damga_vergisi_orani", 0.948))
@@ -2778,3 +3092,648 @@ class ClaudeEngine:
             return sonuc
         except Exception as e:
             return f"Gecikme ceza hesap hatası: {e}"
+
+    # ── Gayrimenkul Değerleme Araç İmplementasyonları ──────────────────────
+
+    def _arac_emlak_url_analiz(self, parametreler: dict) -> str:
+        """
+        Gayrimenkul ilan URL'sinden veri çeker.
+        JSON-LD schema → Open Graph meta → sayfa metni sırasıyla dener.
+        Başarısızsa kullanıcıdan manuel bilgi ister.
+        """
+        url = str(parametreler.get("url", "")).strip()
+        if not url:
+            return "HATA: URL boş."
+
+        MANUEL_ISTEK = (
+            "\n\nSayfaya ulaşamadım (site bot koruması kullanıyor).\n"
+            "Lütfen ilanın şu bilgilerini mesaj kutusuna yazın:\n"
+            "  • Fiyat (TL)\n"
+            "  • Brüt/net m²\n"
+            "  • Oda sayısı (örn: 3+1)\n"
+            "  • Kat bilgisi (örn: 4/8)\n"
+            "  • Bina yaşı\n"
+            "  • Tapu türü (kat mülkiyeti / kat irtifakı / hisseli)\n"
+            "  • İlçe ve mahalle\n"
+            "  • Öne çıkan özellikler (site, otopark, manzara vb.)\n\n"
+            "Bu bilgileri verirseniz gerçek bir değerleme yapabilirim."
+        )
+
+        try:
+            import requests
+            import re
+            import json as _json
+
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "tr-TR,tr;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+
+            try:
+                resp = requests.get(url, headers=headers, timeout=12,
+                                    allow_redirects=True)
+            except requests.exceptions.Timeout:
+                return f"Zaman aşımı: {url}" + MANUEL_ISTEK
+            except requests.exceptions.ConnectionError:
+                return f"Bağlantı hatası: {url}" + MANUEL_ISTEK
+
+            # Cloudflare veya başka koruma → HTML çok kısa veya hata kodu
+            if resp.status_code in (403, 429, 503):
+                return f"Site erişimi engellendi (HTTP {resp.status_code})." + MANUEL_ISTEK
+            if resp.status_code != 200:
+                return f"HTTP {resp.status_code} hatası." + MANUEL_ISTEK
+
+            try:
+                resp.encoding = resp.apparent_encoding or "utf-8"
+            except Exception:
+                resp.encoding = "utf-8"
+
+            html = resp.text
+
+            # Cloudflare JS challenge tespiti
+            if len(html) < 2000 or "cf-browser-verification" in html or \
+               "Just a moment" in html or "Enable JavaScript" in html:
+                return "Site Cloudflare koruması kullanıyor." + MANUEL_ISTEK
+
+            bulunan = {}
+
+            # ── 1. JSON-LD schema.org verisi (en güvenilir) ────────────────
+            ld_blocks = re.findall(
+                r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+                html, re.DOTALL | re.IGNORECASE
+            )
+            for blok in ld_blocks:
+                try:
+                    veri = _json.loads(blok.strip())
+                    if isinstance(veri, list):
+                        veri = veri[0]
+                    tip = str(veri.get("@type", "")).lower()
+                    if any(x in tip for x in ["realestate", "residence", "house",
+                                              "apartment", "product", "offer"]):
+                        if "offers" in veri:
+                            bulunan["fiyat"] = veri["offers"].get("price", "")
+                            bulunan["para_birimi"] = veri["offers"].get("priceCurrency", "TRY")
+                        if "name" in veri:
+                            bulunan["baslik"] = veri["name"]
+                        if "description" in veri:
+                            bulunan["aciklama"] = str(veri["description"])[:500]
+                        if "address" in veri:
+                            adres = veri["address"]
+                            if isinstance(adres, dict):
+                                bulunan["adres"] = (
+                                    adres.get("addressLocality", "") + " " +
+                                    adres.get("addressRegion", "")
+                                ).strip()
+                        if "floorSize" in veri:
+                            bulunan["m2"] = veri["floorSize"].get("value", "")
+                        if "numberOfRooms" in veri:
+                            bulunan["oda"] = veri["numberOfRooms"]
+                except Exception:
+                    pass
+
+            # ── 2. Open Graph ve meta etiketleri ──────────────────────────
+            meta_patterns = {
+                "og_title":       r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)',
+                "og_desc":        r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)',
+                "og_price":       r'<meta[^>]+property=["\']product:price:amount["\'][^>]+content=["\']([^"\']+)',
+                "twitter_title":  r'<meta[^>]+name=["\']twitter:title["\'][^>]+content=["\']([^"\']+)',
+                "twitter_desc":   r'<meta[^>]+name=["\']twitter:description["\'][^>]+content=["\']([^"\']+)',
+            }
+            meta = {}
+            for k, pat in meta_patterns.items():
+                m = re.search(pat, html, re.IGNORECASE)
+                if m:
+                    meta[k] = m.group(1).strip()
+
+            if not bulunan.get("baslik") and (meta.get("og_title") or meta.get("twitter_title")):
+                bulunan["baslik"] = meta.get("og_title") or meta.get("twitter_title", "")
+            if not bulunan.get("aciklama") and (meta.get("og_desc") or meta.get("twitter_desc")):
+                bulunan["aciklama"] = (meta.get("og_desc") or meta.get("twitter_desc", ""))[:400]
+            if not bulunan.get("fiyat") and meta.get("og_price"):
+                bulunan["fiyat"] = meta["og_price"]
+
+            # ── 3. Regex ile ham HTML'den veri çek ───────────────────────
+            # Fiyat
+            if not bulunan.get("fiyat"):
+                fiyat_match = re.search(
+                    r'(\d[\d.,]{4,})\s*(?:TL|₺|lira)',
+                    html, re.IGNORECASE
+                )
+                if fiyat_match:
+                    bulunan["fiyat"] = fiyat_match.group(1)
+
+            # m²
+            if not bulunan.get("m2"):
+                m2_match = re.search(r'(\d{2,4})\s*m[²2²]', html)
+                if m2_match:
+                    bulunan["m2"] = m2_match.group(1)
+
+            # Oda sayısı
+            if not bulunan.get("oda"):
+                oda_match = re.search(r'(\d\+\d|\d\s*\+\s*\d)\s*(?:oda|room)', html, re.IGNORECASE)
+                if oda_match:
+                    bulunan["oda"] = oda_match.group(1).replace(" ", "")
+
+            # Sayfa metninden özet al (script/style temizlenmiş)
+            temiz_html = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL)
+            temiz_html = re.sub(r'<style[^>]*>.*?</style>', ' ', temiz_html, flags=re.DOTALL)
+            temiz_html = re.sub(r'<[^>]+>', ' ', temiz_html)
+            temiz_html = re.sub(r'\s+', ' ', temiz_html).strip()
+            sayfa_ozeti = temiz_html[:4000]
+
+            # ── Sonuç raporu ──────────────────────────────────────────────
+            kaynak = (
+                "sahibinden.com" if "sahibinden" in url else
+                "emlakjet.com"   if "emlakjet"   in url else
+                "hepsiemlak.com" if "hepsiemlak" in url else
+                "zingat.com"     if "zingat"     in url else
+                url.split("/")[2] if "/" in url else url
+            )
+
+            satirlar = [f"İlan Kaynağı: {kaynak}", f"URL: {url}", "─" * 50]
+
+            if bulunan.get("baslik"):
+                satirlar.append(f"Başlık  : {bulunan['baslik']}")
+            if bulunan.get("fiyat"):
+                satirlar.append(f"Fiyat   : {bulunan['fiyat']} TL")
+            if bulunan.get("m2"):
+                satirlar.append(f"Alan    : {bulunan['m2']} m²")
+            if bulunan.get("oda"):
+                satirlar.append(f"Oda     : {bulunan['oda']}")
+            if bulunan.get("adres"):
+                satirlar.append(f"Adres   : {bulunan['adres']}")
+            if bulunan.get("aciklama"):
+                satirlar.append(f"Açıklama: {bulunan['aciklama']}")
+
+            satirlar.append("─" * 50)
+            satirlar.append("Sayfa İçeriği:")
+            satirlar.append(sayfa_ozeti)
+
+            # Hiç yapısal veri bulunamadıysa uyar
+            if not any(bulunan.values()):
+                satirlar.insert(3,
+                    "⚠️ Yapısal veri (JSON-LD/meta) bulunamadı — "
+                    "aşağıdaki ham metin üzerinden analiz yapılıyor."
+                )
+
+            return "\n".join(satirlar)
+
+        except Exception as e:
+            return f"URL analizi beklenmedik hata: {e}" + MANUEL_ISTEK
+
+    def _arac_emsal_karsilastir(self, parametreler: dict) -> str:
+        """
+        Emsal analizi için bölge parametrelerini yapılandırır.
+        Gerçek m² fiyatlarını sistem promptundaki bilgisiyle Claude belirler.
+        """
+        il = str(parametreler.get("il", "")).strip()
+        ilce = str(parametreler.get("ilce", "")).strip()
+        mahalle = str(parametreler.get("mahalle", "")).strip()
+        mulk_tipi = str(parametreler.get("mulk_tipi", "Daire")).strip()
+        alan_m2 = float(parametreler.get("alan_m2", 0) or 0)
+
+        # Bölgesel fiyat veritabanı (2025–2026 piyasa ortalama, ₺/m²)
+        BOLGE_FIYATLARI = {
+            "istanbul": {
+                "_default": (40000, 80000),
+                "şişli": (80000, 180000),
+                "beşiktaş": (90000, 220000),
+                "kadıköy": (70000, 140000),
+                "üsküdar": (55000, 110000),
+                "beyoğlu": (60000, 130000),
+                "fatih": (50000, 110000),
+                "bakırköy": (60000, 130000),
+                "avcılar": (35000, 65000),
+                "bağcılar": (30000, 60000),
+                "esenler": (28000, 55000),
+                "ataşehir": (65000, 130000),
+                "maltepe": (50000, 95000),
+                "pendik": (35000, 70000),
+                "kartal": (40000, 75000),
+                "bahçelievler": (45000, 90000),
+                "başakşehir": (40000, 80000),
+                "esenyurt": (25000, 50000),
+                "eyüpsultan": (40000, 75000),
+                "sarıyer": (80000, 200000),
+                "zeytinburnu": (45000, 85000),
+                "sultangazi": (25000, 48000),
+                "gaziosmanpaşa": (30000, 58000),
+                "kağıthane": (50000, 100000),
+                "küçükçekmece": (40000, 75000),
+                "büyükçekmece": (30000, 60000),
+                "silivri": (20000, 45000),
+                "çatalca": (15000, 35000),
+                "arnavutköy": (20000, 45000),
+                "tuzla": (35000, 65000),
+                "çekmeköy": (45000, 85000),
+                "sancaktepe": (35000, 65000),
+                "sultanbeyli": (25000, 48000),
+                "beykoz": (55000, 130000),
+                "şile": (15000, 40000),
+                "adalar": (60000, 150000),
+            },
+            "ankara": {
+                "_default": (18000, 40000),
+                "çankaya": (25000, 65000),
+                "keçiören": (14000, 28000),
+                "mamak": (12000, 25000),
+                "yenimahalle": (16000, 35000),
+                "etimesgut": (18000, 38000),
+                "sincan": (12000, 24000),
+                "altındağ": (10000, 22000),
+                "pursaklar": (13000, 26000),
+                "gölbaşı": (20000, 42000),
+            },
+            "izmir": {
+                "_default": (25000, 60000),
+                "konak": (30000, 75000),
+                "karşıyaka": (35000, 75000),
+                "bornova": (25000, 55000),
+                "buca": (20000, 45000),
+                "çiğli": (22000, 50000),
+                "bayraklı": (28000, 60000),
+                "balçova": (30000, 65000),
+                "narlıdere": (30000, 65000),
+                "gaziemir": (18000, 40000),
+            },
+            "antalya": {
+                "_default": (25000, 55000),
+                "muratpaşa": (30000, 70000),
+                "konyaaltı": (35000, 80000),
+                "kepez": (18000, 38000),
+                "lara": (40000, 90000),
+                "döşemealtı": (20000, 45000),
+            },
+            "bursa": {
+                "_default": (18000, 40000),
+                "osmangazi": (20000, 45000),
+                "nilüfer": (22000, 50000),
+                "yıldırım": (14000, 30000),
+                "görükle": (18000, 40000),
+            },
+        }
+
+        # Tarla ve arsa için ayrı tablo (₺/m²)
+        TARLA_ARSA_FIYAT = {
+            "istanbul": {
+                "arsa_imarlı": (5000, 80000),
+                "tarla": (200, 2000),
+            },
+            "ankara": {
+                "arsa_imarlı": (2000, 25000),
+                "tarla": (100, 800),
+            },
+            "izmir": {
+                "arsa_imarlı": (3000, 40000),
+                "tarla": (150, 1200),
+            },
+            "_default": {
+                "arsa_imarlı": (500, 15000),
+                "tarla": (50, 500),
+            },
+        }
+
+        # Bu araç yapısal parametreleri döndürür.
+        # Gerçek m² fiyatlarını Claude kendi bilgisiyle belirler (sistem promptuna bakılır).
+        konum = il
+        if ilce:
+            konum += f" / {ilce}"
+        if mahalle:
+            konum += f" / {mahalle}"
+
+        satirlar = [
+            "EMSAL ANALİZİ PARAMETRELERİ",
+            "─" * 50,
+            f"  Konum     : {konum}",
+            f"  Mülk Tipi : {mulk_tipi}",
+        ]
+        if alan_m2 > 0:
+            satirlar.append(f"  Alan      : {alan_m2:,.0f} m²")
+
+        satirlar.extend([
+            "─" * 50,
+            "BU BÖLGEDEKİ GERÇEK PİYASA VERİLERİNİ KULLAN:",
+            f"  → {konum} için {mulk_tipi} m² birim fiyat aralığını bildiğin",
+            "    piyasa verilerinden belirle (sistem promptundaki tabloya bak).",
+            "  → Mahalle özelinde bilgin varsa onu kullan.",
+            "  → Benzer özellikteki son ilanlardan m² ortalaması hesapla.",
+            "  → Kira/satış oranını (brüt yield) bu bölge için gerçekçi ver.",
+        ])
+        if alan_m2 > 0:
+            satirlar.extend([
+                "─" * 50,
+                f"  Alan {alan_m2:,.0f} m² için toplam değer hesabını",
+                "  belirleyeceğin m² fiyatı üzerinden gayrimenkul_degerle",
+                "  aracına aktar.",
+            ])
+
+        return "\n".join(satirlar)
+
+    def _arac_gayrimenkul_degerle(self, parametreler: dict) -> str:
+        """Kapsamlı gayrimenkul değerleme raporu üretir."""
+        mulk_tipi = str(parametreler.get("mulk_tipi", "Daire"))
+        il = str(parametreler.get("il", ""))
+        ilce = str(parametreler.get("ilce", ""))
+        mahalle = str(parametreler.get("mahalle", ""))
+        alan_m2 = float(parametreler.get("alan_m2", 0) or 0)
+        oda_sayisi = str(parametreler.get("oda_sayisi", ""))
+        bina_yasi = int(parametreler.get("bina_yasi", 0) or 0)
+        kat = str(parametreler.get("kat", ""))
+        tapu_turu = str(parametreler.get("tapu_turu", "Kat Mülkiyeti"))
+        ilan_fiyati = float(parametreler.get("ilan_fiyati", 0) or 0)
+        ozellikler = str(parametreler.get("ozellikler", ""))
+        imar_durumu = str(parametreler.get("imar_durumu", ""))
+        ticari_kat = str(parametreler.get("ticari_kat", ""))
+        cephe_turu = str(parametreler.get("cephe_turu", ""))
+        mevcut_kira_aylik = float(parametreler.get("mevcut_kira_aylik", 0) or 0)
+        ada_no = str(parametreler.get("ada_no", "")).strip()
+        parsel_no = str(parametreler.get("parsel_no", "")).strip()
+        tahmini_mod = (ilan_fiyati == 0)  # Fiyat girilmemişse tahmini mod
+
+        if alan_m2 <= 0:
+            return "HATA: alan_m2 sıfırdan büyük olmalıdır."
+
+        # Bölge bazlı m² birim fiyatı (emsal karşılaştırma sonucuyla aynı tablo)
+        BOLGE_M2 = {
+            "istanbul": {
+                "_default": (40000, 80000),
+                "şişli": (80000, 180000), "beşiktaş": (90000, 220000),
+                "kadıköy": (70000, 140000), "üsküdar": (55000, 110000),
+                "bakırköy": (60000, 130000), "ataşehir": (65000, 130000),
+                "avcılar": (35000, 65000), "bağcılar": (30000, 60000),
+                "esenyurt": (25000, 50000), "maltepe": (50000, 95000),
+                "sarıyer": (80000, 200000), "başakşehir": (40000, 80000),
+                "kağıthane": (50000, 100000), "pendik": (35000, 70000),
+                "beyoğlu": (60000, 130000), "fatih": (50000, 110000),
+            },
+            "ankara": {
+                "_default": (18000, 40000),
+                "çankaya": (25000, 65000), "keçiören": (14000, 28000),
+                "yenimahalle": (16000, 35000), "etimesgut": (18000, 38000),
+            },
+            "izmir": {
+                "_default": (25000, 60000),
+                "konak": (30000, 75000), "karşıyaka": (35000, 75000),
+                "bornova": (25000, 55000), "buca": (20000, 45000),
+            },
+            "antalya": {"_default": (25000, 55000), "muratpaşa": (30000, 70000)},
+            "bursa": {"_default": (18000, 40000), "nilüfer": (22000, 50000)},
+            "_default": (8000, 20000),
+        }
+
+        # Bölge fiyatını bul
+        il_lower = il.lower()
+        ilce_lower = ilce.lower()
+        mt_lower = mulk_tipi.lower()
+        tarla_mi = any(x in mt_lower for x in ["tarla", "arazi"])
+        arsa_mi = "arsa" in mt_lower
+        dukkan_ofis_mi = any(x in mt_lower for x in ["dükkan", "ofis", "dukkan"])
+
+        if tarla_mi:
+            bolge_fmin, bolge_fmax = 100, 800
+        elif arsa_mi:
+            arsa_carpan = {"istanbul": (5000, 80000), "ankara": (2000, 25000),
+                           "izmir": (3000, 40000)}.get(il_lower, (500, 15000))
+            bolge_fmin, bolge_fmax = arsa_carpan
+        elif dukkan_ofis_mi:
+            # Ticari m² fiyatı konut fiyatının ~1.3-1.8x (cephe/kat düzeltmesi ayrıca uygulanır)
+            bolge = BOLGE_M2.get(il_lower, {})
+            if isinstance(bolge, dict):
+                base_min, base_max = bolge.get(ilce_lower, bolge.get("_default", (8000, 20000)))
+            else:
+                base_min, base_max = BOLGE_M2.get("_default", (8000, 20000))
+            bolge_fmin, bolge_fmax = int(base_min * 1.3), int(base_max * 1.8)
+        else:
+            bolge = BOLGE_M2.get(il_lower, {})
+            if isinstance(bolge, dict):
+                bolge_fmin, bolge_fmax = bolge.get(ilce_lower, bolge.get("_default", (8000, 20000)))
+            else:
+                bolge_fmin, bolge_fmax = BOLGE_M2.get("_default", (8000, 20000))
+
+        # Düzeltme faktörleri
+        duzeltme = 1.0
+
+        # Bina yaşı düzeltmesi
+        if bina_yasi == 0:
+            duzeltme *= 1.15  # Sıfır bina +%15
+        elif bina_yasi <= 5:
+            duzeltme *= 1.10
+        elif bina_yasi <= 15:
+            duzeltme *= 1.00
+        elif bina_yasi <= 25:
+            duzeltme *= 0.90
+        else:
+            duzeltme *= 0.80
+
+        # Kat düzeltmesi
+        kat_lower = kat.lower()
+        if "zemin" in kat_lower or kat_lower.startswith("0"):
+            duzeltme *= 0.90
+        elif "çatı" in kat_lower or "penthouse" in kat_lower:
+            duzeltme *= 0.95
+        elif "son" in kat_lower:
+            duzeltme *= 1.05
+
+        # Tapu türü düzeltmesi
+        if "kat mülkiyeti" in tapu_turu.lower():
+            duzeltme *= 1.00
+        elif "kat irtifakı" in tapu_turu.lower():
+            duzeltme *= 0.92
+        elif "hisseli" in tapu_turu.lower():
+            duzeltme *= 0.80
+        elif "zilyetlik" in tapu_turu.lower():
+            duzeltme *= 0.60
+
+        # Özellik düzeltmeleri
+        ozel_lower = ozellikler.lower()
+        if "deniz manzara" in ozel_lower or "boğaz manzara" in ozel_lower:
+            duzeltme *= 1.20
+        elif "manzara" in ozel_lower:
+            duzeltme *= 1.08
+        if "site" in ozel_lower:
+            duzeltme *= 1.05
+        if "otopark" in ozel_lower:
+            duzeltme *= 1.03
+
+        # Dükkan/Ofis ticari düzeltmeleri
+        if dukkan_ofis_mi:
+            cephe_lower = cephe_turu.lower()
+            if "ana cadde" in cephe_lower:
+                duzeltme *= 1.25
+            elif "sokak" in cephe_lower or "ara yol" in cephe_lower:
+                duzeltme *= 0.85
+            elif "pasaj" in cephe_lower or "çarşı" in cephe_lower or "carsi" in cephe_lower:
+                duzeltme *= 0.75
+            elif "avm" in cephe_lower:
+                duzeltme *= 1.10
+            tkat_lower = ticari_kat.lower()
+            if "asma" in tkat_lower:
+                duzeltme *= 0.80
+            elif "1. kat" in tkat_lower:
+                duzeltme *= 0.70
+            elif "2. kat" in tkat_lower or "üzeri" in tkat_lower or "uzeri" in tkat_lower:
+                duzeltme *= 0.60
+
+        # Hesaplamalar
+        m2_fmin = bolge_fmin * duzeltme
+        m2_fmax = bolge_fmax * duzeltme
+        m2_fiyat_orta = (m2_fmin + m2_fmax) / 2
+
+        deger_min = alan_m2 * m2_fmin
+        deger_max = alan_m2 * m2_fmax
+        deger_orta = alan_m2 * m2_fiyat_orta
+
+        # Kira getirisi — Türkiye brüt kira getirisi %3–5/yıl (2024-2026 gerçeği)
+        # Düşük fiyatlı bölge (m²<30k): %4–5, pahalı bölge (m²>80k): %2.5–3.5
+        if m2_fiyat_orta < 30000:
+            getiri_min, getiri_max = 0.04, 0.05   # %4–5
+        elif m2_fiyat_orta < 60000:
+            getiri_min, getiri_max = 0.035, 0.045  # %3.5–4.5
+        elif m2_fiyat_orta < 100000:
+            getiri_min, getiri_max = 0.03, 0.04    # %3–4
+        else:
+            getiri_min, getiri_max = 0.025, 0.035  # %2.5–3.5
+        kira_aylik_min = deger_min * getiri_min / 12
+        kira_aylik_max = deger_max * getiri_max / 12
+        kira_aylik_orta = (kira_aylik_min + kira_aylik_max) / 2
+        brut_getiri = (kira_aylik_orta * 12) / deger_orta * 100 if deger_orta > 0 else 0
+        geri_odeme_yil = 100 / brut_getiri if brut_getiri > 0 else 0
+
+        # Dükkan/Ofis: mevcut kira biliniyorsa gerçek getiriyi kullan
+        if dukkan_ofis_mi and mevcut_kira_aylik > 0:
+            kira_aylik_orta = mevcut_kira_aylik
+            kira_aylik_min = mevcut_kira_aylik * 0.9
+            kira_aylik_max = mevcut_kira_aylik * 1.1
+            brut_getiri = (mevcut_kira_aylik * 12) / deger_orta * 100 if deger_orta > 0 else 0
+            geri_odeme_yil = 100 / brut_getiri if brut_getiri > 0 else 0
+
+        # İlan fiyatı karşılaştırması
+        ilan_yorum = ""
+        if ilan_fiyati > 0:
+            fark = (ilan_fiyati - deger_orta) / deger_orta * 100
+            if fark > 20:
+                ilan_yorum = f"  ⚠️  İlan fiyatı piyasa ortalamasının %{fark:.0f} ÜSTÜNDE (pahalı)"
+            elif fark < -15:
+                ilan_yorum = f"  ✅ İlan fiyatı piyasa ortalamasının %{abs(fark):.0f} ALTINDA (uygun)"
+            else:
+                ilan_yorum = f"  ✅ İlan fiyatı piyasa değeriyle UYUMLU (%{abs(fark):.0f} {'fazla' if fark > 0 else 'az'})"
+
+        # Yatırım puanı (1–10)
+        yatirim_puani = 5
+        if brut_getiri >= 6:
+            yatirim_puani += 2
+        elif brut_getiri >= 4:
+            yatirim_puani += 1
+        if "kat mülkiyeti" in tapu_turu.lower():
+            yatirim_puani += 1
+        if bina_yasi <= 5:
+            yatirim_puani += 1
+        if "hisseli" in tapu_turu.lower() or "zilyetlik" in tapu_turu.lower():
+            yatirim_puani -= 2
+        yatirim_puani = max(1, min(10, yatirim_puani))
+
+        yatirim_yorum = {
+            1: "Riskli — almayın",
+            2: "Çok riskli",
+            3: "Zayıf yatırım",
+            4: "Ortanın altı",
+            5: "Orta düzey",
+            6: "İyi yatırım",
+            7: "Çok iyi",
+            8: "Mükemmel",
+            9: "Olağanüstü",
+            10: "Kaçırılmaz fırsat",
+        }.get(yatirim_puani, "Orta")
+
+        # Tapu uyarısı
+        tapu_uyari = ""
+        if "hisseli" in tapu_turu.lower():
+            tapu_uyari = "\n  ⚠️  UYARI: Hisseli tapu — mutlaka avukat danışmanı alın!"
+        elif "zilyetlik" in tapu_turu.lower():
+            tapu_uyari = "\n  ⚠️  KRİTİK: Zilyetlik tapusu yüksek risk! Mutlaka hukuki danışmanlık alın."
+
+        rapor_basligi = "  TAHMİNİ DEĞERLEME RAPORU" if tahmini_mod else "  GAYRİMENKUL DEĞERLEME RAPORU"
+        rapor = [
+            "=" * 60,
+            rapor_basligi,
+            "=" * 60,
+            f"  Mülk Tipi  : {mulk_tipi}" + (f" / {oda_sayisi}" if oda_sayisi else ""),
+            f"  Konum      : {il}" + (f" / {ilce}" if ilce else "") + (f" / {mahalle}" if mahalle else ""),
+            f"  Ada/Parsel : {ada_no}/{parsel_no}" if (ada_no and parsel_no) else (
+                f"  Ada No     : {ada_no}" if ada_no else (
+                    f"  Parsel No  : {parsel_no}" if parsel_no else ""
+                )
+            ),
+            f"  Alan       : {alan_m2:,.0f} m²",
+            f"  Bina Yaşı  : {bina_yasi} yıl" if bina_yasi else "  Bina Yaşı  : Sıfır/Belirtilmemiş",
+            f"  Kat        : {kat}" if kat else "",
+            f"  Tapu       : {tapu_turu}" + tapu_uyari,
+            f"  Özellikler : {ozellikler}" if ozellikler else "",
+            f"  İmar       : {imar_durumu}" if imar_durumu else "",
+            f"  Ticari Kat : {ticari_kat}" if ticari_kat else "",
+            f"  Cephe      : {cephe_turu}" if cephe_turu else "",
+            f"  Mevcut Kira: {mevcut_kira_aylik:,.0f} ₺/ay (gerçek)" if mevcut_kira_aylik > 0 else "",
+            "",
+            "── EMSAL KARŞILAŞTIRMA (Ağırlık %60) ──────────────────",
+            f"  Bölge m² Aralığı  : {bolge_fmin:,.0f} — {bolge_fmax:,.0f} ₺/m²",
+            f"  Düzeltme Katsayısı: ×{duzeltme:.2f}",
+            f"  Düzeltilmiş m²    : {m2_fmin:,.0f} — {m2_fmax:,.0f} ₺/m²",
+            "",
+            "── DEĞERLEME SONUCU ────────────────────────────────────",
+            f"  Minimum Değer : {deger_min:,.0f} ₺",
+            f"  Orta Değer    : {deger_orta:,.0f} ₺",
+            f"  Maximum Değer : {deger_max:,.0f} ₺",
+        ]
+
+        if ilan_fiyati > 0:
+            rapor.extend([
+                "",
+                "── İLAN FİYATI KARŞILAŞTIRMASI ─────────────────────────",
+                f"  İlan Fiyatı   : {ilan_fiyati:,.0f} ₺",
+                ilan_yorum,
+            ])
+
+        rapor.extend([
+            "",
+            "── KİRA GETİRİSİ ANALİZİ ──────────────────────────────",
+            f"  Tahmini Aylık Kira : {kira_aylik_min:,.0f} — {kira_aylik_max:,.0f} ₺",
+            f"  Brüt Kira Getirisi : %{brut_getiri:.1f} yıllık",
+            f"  Geri Ödeme Süresi  : {geri_odeme_yil:.0f} yıl",
+            "",
+            "── YATIRIM DEĞERLENDİRMESİ ─────────────────────────────",
+            f"  Yatırım Puanı : {yatirim_puani}/10 — {yatirim_yorum}",
+            "",
+            "── SONUÇ ───────────────────────────────────────────────",
+            f"  Gerçekçi Pazar Değeri: {deger_orta:,.0f} ₺",
+            f"  (Min: {deger_min:,.0f} ₺ — Max: {deger_max:,.0f} ₺)",
+            "",
+            "  Uyarı: Bu değerleme piyasa gözlem ortalamalarına dayalıdır.",
+            "  Veri tabanı: Ağustos 2025 — güncel fiyatlar farklılık gösterebilir." if tahmini_mod else "",
+            "  Kesin değer için SPK lisanslı gayrimenkul değerleme uzmanına",
+            "  danışmanız önerilir.",
+            "=" * 60,
+        ])
+
+        return "\n".join([x for x in rapor if x != "" or True])
+
+    def sorgu_gayrimenkul_thread_olustur(self) -> Optional["ClaudeAracliThread"]:
+        """Gayrimenkul Değerleme Uzmanı thread — uzmanlaşmış sistem promptuyla."""
+        if not self.api_key_gecerli():
+            return None
+        thread = ClaudeAracliThread(
+            api_key=self.api_key,
+            mesajlar=list(self.gecmis),
+            model=self.model,
+            arac_callback=self._arac_calistir,
+            sistem_prompt=GAYRIMENKUL_SISTEM_PROMPT,
+        )
+        self._active_thread = thread
+        return thread

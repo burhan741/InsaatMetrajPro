@@ -35,6 +35,7 @@ class SurdurulebilirlikWindow(QWidget):
 
     def init_ui(self):
         """UI elementlerini oluştur"""
+        self.setStyleSheet("background-color: #1a1a2e; color: #e0e0e0;")
         layout = QVBoxLayout()
 
         # Başlık
@@ -64,21 +65,33 @@ class SurdurulebilirlikWindow(QWidget):
         self.tab_widget = QTabWidget()
         self.tab_widget.setStyleSheet("""
             QTabWidget::pane {
-                border: 1px solid #ccc;
+                border: 1px solid #2d5a3d;
                 border-radius: 5px;
-                background-color: white;
+                background-color: #1a1a2e;
             }
             QTabBar::tab {
-                background-color: #ecf0f1;
+                background-color: #2a2a3a;
+                color: #aaa;
                 padding: 10px 20px;
                 margin-right: 2px;
                 border-top-left-radius: 5px;
                 border-top-right-radius: 5px;
+                border: 1px solid #444;
+                border-bottom: none;
             }
             QTabBar::tab:selected {
                 background-color: #27ae60;
                 color: white;
                 font-weight: bold;
+                border-color: #2d5a3d;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #3a3a4a;
+                color: #ddd;
+            }
+            QWidget {
+                background-color: #1a1a2e;
+                color: #e0e0e0;
             }
         """)
 
