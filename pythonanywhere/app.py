@@ -67,6 +67,12 @@ def init_db():
         birim_fiyat REAL DEFAULT 0,
         aciklama TEXT
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS yemek_odeme (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        miktar REAL DEFAULT 0,
+        tarih DATE DEFAULT CURRENT_DATE,
+        aciklama TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -580,8 +586,20 @@ function loadOzet() {
     }
 
     html += '<div class="ozet-row"><span>Toplam Kalan</span><span class="tutar">' + fmtTL(d.toplam_kalan) + '</span></div>';
-    html += '<div class="ozet-row"><span>Yemek Maliyeti</span><span class="tutar er">' + fmtTL(d.yemek_maliyeti) + '</span></div>';
+    if (d.yemek_maliyeti > 0) {
+      html += '<div class="ozet-row"><span>Yemek Maliyeti</span><span class="tutar ' + (d.yemek_kalan > 0 ? 'er' : 'ok') + '">' + fmtTL(d.yemek_kalan) + '</span></div>';
+    }
     html += '</div>';
+    if (d.yemek_maliyeti > 0) {
+      html += '<div style="display:flex;gap:8px;margin-bottom:10px">';
+      if (d.yemek_kalan > 0) {
+        html += '<button class="ode-btn" style="flex:1" onclick="yemekOde(' + d.yemek_kalan + ')">Yemek Ode (' + fmtTL(d.yemek_kalan) + ')</button>';
+      }
+      if (d.son_yemek_odeme_id) {
+        html += '<button class="geri-btn" style="flex:1" onclick="yemekOdemeGeri(' + d.son_yemek_odeme_id + ',' + d.son_yemek_odeme_miktar + ')">Son Yemek Odemesini Geri Al (' + fmtTL(d.son_yemek_odeme_miktar) + ')</button>';
+      }
+      html += '</div>';
+    }
 
     // İşçi bazlı
     ISCI_AD_MAP = {};
@@ -627,6 +645,26 @@ function odemeGeri(odemeId, miktar) {
   if (!confirm(fmtTL(miktar) + ' tutarindaki odemeyi geri al?')) return;
   apiFetch('/api/odeme/' + odemeId, {method: 'DELETE'})
     .then(function() { toast('Odeme geri alindi'); loadOzet(); })
+    .catch(function(e) { toast('Hata: ' + e.message); });
+}
+
+function yemekOde(kalan) {
+  var miktar = prompt('Yemek odemesi miktari (TL):', Math.round(kalan));
+  if (!miktar) return;
+  miktar = parseFloat(miktar);
+  if (isNaN(miktar) || miktar <= 0) { toast('Gecersiz miktar'); return; }
+  apiFetch('/api/yemek/ode', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({miktar: miktar, aciklama: 'Yemek odemesi'})
+  }).then(function() { toast('Yemek odemesi kaydedildi!'); loadOzet(); })
+    .catch(function(e) { toast('Hata: ' + e.message); });
+}
+
+function yemekOdemeGeri(odemeId, miktar) {
+  if (!confirm(fmtTL(miktar) + ' tutarindaki yemek odemesini geri al?')) return;
+  apiFetch('/api/yemek/odeme/' + odemeId, {method: 'DELETE'})
+    .then(function() { toast('Yemek odemesi geri alindi'); loadOzet(); })
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
@@ -1190,6 +1228,10 @@ def api_haftalik():
     yemek_fiyati = float(yf_row['deger']) if yf_row and yf_row['deger'] else 0
     c.execute("SELECT COUNT(*) as t FROM puantaj WHERE calisma_durumu IN ('tam_gun','bir_bucuk_gun','yarim_gun') AND tarih >= ?", (donem_bas,))
     kisi_gun = c.fetchone()['t'] or 0
+    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM yemek_odeme WHERE tarih >= ?", (donem_bas,))
+    yemek_odenen = float(c.fetchone()['toplam'] or 0)
+    c.execute("SELECT id, miktar FROM yemek_odeme WHERE tarih >= ? ORDER BY id DESC LIMIT 1", (donem_bas,))
+    son_yo = c.fetchone()
     conn.close()
     isciler = []
     toplam_kalan = 0
@@ -1212,12 +1254,17 @@ def api_haftalik():
             'son_odeme_id': son['id'] if son else None,
             'son_odeme_miktar': son['miktar'] if son else 0
         })
+    yemek_maliyeti = round(kisi_gun * yemek_fiyati, 2)
     return jsonify({
         'isciler': isciler,
         'toplam_kalan': round(toplam_kalan, 2),
         'yemek_fiyati': yemek_fiyati,
         'yemek_kisi_gun': kisi_gun,
-        'yemek_maliyeti': round(kisi_gun * yemek_fiyati, 2)
+        'yemek_maliyeti': yemek_maliyeti,
+        'yemek_odenen': round(yemek_odenen, 2),
+        'yemek_kalan': round(max(yemek_maliyeti - yemek_odenen, 0), 2),
+        'son_yemek_odeme_id': son_yo['id'] if son_yo else None,
+        'son_yemek_odeme_miktar': son_yo['miktar'] if son_yo else 0
     })
 
 @app.route('/api/ozet/aylik')
@@ -1316,6 +1363,29 @@ def api_gider_sil(gider_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('DELETE FROM ek_gider WHERE id=?', (gider_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+@app.route('/api/yemek/ode', methods=['POST'])
+def api_yemek_ode():
+    d = request.json
+    miktar = float(d.get('miktar', 0))
+    if miktar <= 0:
+        return jsonify({'error': 'Gecersiz miktar'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO yemek_odeme (miktar, tarih, aciklama) VALUES (?,?,?)',
+              (miktar, date.today().isoformat(), d.get('aciklama', 'Yemek odemesi')))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+@app.route('/api/yemek/odeme/<int:odeme_id>', methods=['DELETE'])
+def api_yemek_odeme_sil(odeme_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM yemek_odeme WHERE id=?', (odeme_id,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
