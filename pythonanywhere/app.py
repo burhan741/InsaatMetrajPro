@@ -73,6 +73,18 @@ def init_db():
         tarih DATE DEFAULT CURRENT_DATE,
         aciklama TEXT
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS civi_gider (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        miktar REAL DEFAULT 0,
+        tarih DATE DEFAULT CURRENT_DATE,
+        aciklama TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS civi_odeme (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        miktar REAL DEFAULT 0,
+        tarih DATE DEFAULT CURRENT_DATE,
+        aciklama TEXT
+    )''')
     conn.commit()
     conn.close()
 
@@ -571,7 +583,10 @@ function puSil(isciId) {
 }
 
 // ====== ÖZET ======
-function loadOzet() {
+var _OZET_SCROLL = 0;
+
+function loadOzet(koruyScroll) {
+  if (koruyScroll) _OZET_SCROLL = window.scrollY;
   document.getElementById('ozetList').innerHTML = '<div class="empty">Yukleniyor...</div>';
   apiFetch('/api/ozet/haftalik').then(function(d) {
     var html = '';
@@ -579,24 +594,41 @@ function loadOzet() {
     // Kümülatif özet kartı
     html += '<div class="ozet-kart">';
     html += '<h3>Donem Ozeti</h3>';
-
-    var toplam = 0;
-    for (var i = 0; i < d.isciler.length; i++) {
-      toplam += d.isciler[i].kalan || 0;
-    }
-
     html += '<div class="ozet-row"><span>Toplam Kalan</span><span class="tutar">' + fmtTL(d.toplam_kalan) + '</span></div>';
     if (d.yemek_maliyeti > 0) {
-      html += '<div class="ozet-row"><span>Yemek Maliyeti</span><span class="tutar ' + (d.yemek_kalan > 0 ? 'er' : 'ok') + '">' + fmtTL(d.yemek_kalan) + '</span></div>';
+      html += '<div class="ozet-row"><span>Yemek Gideri</span><span class="tutar ' + (d.yemek_kalan > 0 ? 'er' : 'ok') + '">' + fmtTL(d.yemek_kalan) + ' kalan</span></div>';
+    }
+    if (d.civi_toplam > 0) {
+      html += '<div class="ozet-row"><span>Civi Alimi</span><span class="tutar ' + (d.civi_kalan > 0 ? 'er' : 'ok') + '">' + fmtTL(d.civi_kalan) + ' kalan / ' + fmtTL(d.civi_toplam) + ' toplam</span></div>';
     }
     html += '</div>';
+
+    // Yemek butonları
     if (d.yemek_maliyeti > 0) {
       html += '<div style="display:flex;gap:8px;margin-bottom:10px">';
       if (d.yemek_kalan > 0) {
         html += '<button class="ode-btn" style="flex:1" onclick="yemekOde(' + d.yemek_kalan + ')">Yemek Ode (' + fmtTL(d.yemek_kalan) + ')</button>';
       }
       if (d.son_yemek_odeme_id) {
-        html += '<button class="geri-btn" style="flex:1" onclick="yemekOdemeGeri(' + d.son_yemek_odeme_id + ',' + d.son_yemek_odeme_miktar + ')">Son Yemek Odemesini Geri Al (' + fmtTL(d.son_yemek_odeme_miktar) + ')</button>';
+        html += '<button class="geri-btn" style="flex:1" onclick="yemekOdemeGeri(' + d.son_yemek_odeme_id + ',' + d.son_yemek_odeme_miktar + ')">Son Yemek Geri Al (' + fmtTL(d.son_yemek_odeme_miktar) + ')</button>';
+      }
+      html += '</div>';
+    }
+
+    // Çivi butonları
+    html += '<div style="display:flex;gap:8px;margin-bottom:10px">';
+    html += '<button class="ode-btn" style="flex:1;background:#3498db" onclick="civiGiderEkle()">+ Civi Gideri Gir</button>';
+    if (d.civi_kalan > 0) {
+      html += '<button class="ode-btn" style="flex:1;background:var(--wr);color:#000" onclick="civiOde(' + d.civi_kalan + ')">Civi Ode (' + fmtTL(d.civi_kalan) + ')</button>';
+    }
+    html += '</div>';
+    if (d.son_civi_odeme_id || d.son_civi_gider_id) {
+      html += '<div style="display:flex;gap:8px;margin-bottom:10px">';
+      if (d.son_civi_odeme_id) {
+        html += '<button class="geri-btn" style="flex:1" onclick="civiOdemeGeri(' + d.son_civi_odeme_id + ',' + d.son_civi_odeme_miktar + ')">Son Civi Odeme Geri Al (' + fmtTL(d.son_civi_odeme_miktar) + ')</button>';
+      }
+      if (d.son_civi_gider_id) {
+        html += '<button class="geri-btn" style="flex:1" onclick="civiGiderSil(' + d.son_civi_gider_id + ',' + d.son_civi_gider_miktar + ')">Son Civi Giderini Sil (' + fmtTL(d.son_civi_gider_miktar) + ')</button>';
       }
       html += '</div>';
     }
@@ -622,6 +654,9 @@ function loadOzet() {
     }
 
     document.getElementById('ozetList').innerHTML = html;
+    if (koruyScroll) {
+      setTimeout(function() { window.scrollTo(0, _OZET_SCROLL); }, 60);
+    }
   }).catch(function(e) {
     document.getElementById('ozetList').innerHTML = '<div class="empty" style="color:var(--er)">Hata: ' + e.message + '</div>';
   });
@@ -637,14 +672,14 @@ function odemeYap(isciId, kalan) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({isci_id: isciId, miktar: miktar, aciklama: 'Manuel odeme'})
-  }).then(function() { toast('Odeme kaydedildi!'); loadOzet(); })
+  }).then(function() { toast('Odeme kaydedildi!'); loadOzet(true); })
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
 function odemeGeri(odemeId, miktar) {
   if (!confirm(fmtTL(miktar) + ' tutarindaki odemeyi geri al?')) return;
   apiFetch('/api/odeme/' + odemeId, {method: 'DELETE'})
-    .then(function() { toast('Odeme geri alindi'); loadOzet(); })
+    .then(function() { toast('Odeme geri alindi'); loadOzet(true); })
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
@@ -657,14 +692,54 @@ function yemekOde(kalan) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({miktar: miktar, aciklama: 'Yemek odemesi'})
-  }).then(function() { toast('Yemek odemesi kaydedildi!'); loadOzet(); })
+  }).then(function() { toast('Yemek odemesi kaydedildi!'); loadOzet(true); })
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
 function yemekOdemeGeri(odemeId, miktar) {
   if (!confirm(fmtTL(miktar) + ' tutarindaki yemek odemesini geri al?')) return;
   apiFetch('/api/yemek/odeme/' + odemeId, {method: 'DELETE'})
-    .then(function() { toast('Yemek odemesi geri alindi'); loadOzet(); })
+    .then(function() { toast('Yemek odemesi geri alindi'); loadOzet(true); })
+    .catch(function(e) { toast('Hata: ' + e.message); });
+}
+
+function civiGiderEkle() {
+  var miktar = prompt('Bu haftaki civi alimi miktari (TL):', '');
+  if (!miktar) return;
+  miktar = parseFloat(miktar);
+  if (isNaN(miktar) || miktar <= 0) { toast('Gecersiz miktar'); return; }
+  apiFetch('/api/civi/gider', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({miktar: miktar, aciklama: 'Civi alimi'})
+  }).then(function() { toast('Civi gideri eklendi!'); loadOzet(true); })
+    .catch(function(e) { toast('Hata: ' + e.message); });
+}
+
+function civiOde(kalan) {
+  var miktar = prompt('Civi odemesi miktari (TL):', Math.round(kalan));
+  if (!miktar) return;
+  miktar = parseFloat(miktar);
+  if (isNaN(miktar) || miktar <= 0) { toast('Gecersiz miktar'); return; }
+  apiFetch('/api/civi/ode', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({miktar: miktar, aciklama: 'Civi odemesi'})
+  }).then(function() { toast('Civi odemesi kaydedildi!'); loadOzet(true); })
+    .catch(function(e) { toast('Hata: ' + e.message); });
+}
+
+function civiOdemeGeri(odemeId, miktar) {
+  if (!confirm(fmtTL(miktar) + ' tutarindaki civi odemesini geri al?')) return;
+  apiFetch('/api/civi/odeme/' + odemeId, {method: 'DELETE'})
+    .then(function() { toast('Civi odemesi geri alindi'); loadOzet(true); })
+    .catch(function(e) { toast('Hata: ' + e.message); });
+}
+
+function civiGiderSil(giderId, miktar) {
+  if (!confirm(fmtTL(miktar) + ' tutarindaki civi giderini sil?')) return;
+  apiFetch('/api/civi/gider/' + giderId, {method: 'DELETE'})
+    .then(function() { toast('Civi gideri silindi'); loadOzet(true); })
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
@@ -683,6 +758,9 @@ function loadAylik() {
     html += '<div class="ozet-row"><span>Toplam Hakedis</span><span class="tutar">' + fmtTL(d.toplam_hakedis) + '</span></div>';
     if (d.yemek_maliyeti > 0) {
       html += '<div class="ozet-row"><span>Yemek Maliyeti</span><span class="tutar er">' + fmtTL(d.yemek_maliyeti) + '</span></div>';
+    }
+    if (d.civi_maliyeti > 0) {
+      html += '<div class="ozet-row"><span>Civi Alimi</span><span class="tutar er">' + fmtTL(d.civi_maliyeti) + '</span></div>';
     }
     html += '</div>';
     var ayPar = ay.split('-');
@@ -1232,6 +1310,14 @@ def api_haftalik():
     yemek_odenen = float(c.fetchone()['toplam'] or 0)
     c.execute("SELECT id, miktar FROM yemek_odeme WHERE tarih >= ? ORDER BY id DESC LIMIT 1", (donem_bas,))
     son_yo = c.fetchone()
+    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM civi_gider WHERE tarih >= ?", (donem_bas,))
+    civi_toplam = float(c.fetchone()['toplam'] or 0)
+    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM civi_odeme WHERE tarih >= ?", (donem_bas,))
+    civi_odenen = float(c.fetchone()['toplam'] or 0)
+    c.execute("SELECT id, miktar FROM civi_odeme WHERE tarih >= ? ORDER BY id DESC LIMIT 1", (donem_bas,))
+    son_co = c.fetchone()
+    c.execute("SELECT id, miktar FROM civi_gider WHERE tarih >= ? ORDER BY id DESC LIMIT 1", (donem_bas,))
+    son_cg = c.fetchone()
     conn.close()
     isciler = []
     toplam_kalan = 0
@@ -1264,7 +1350,14 @@ def api_haftalik():
         'yemek_odenen': round(yemek_odenen, 2),
         'yemek_kalan': round(max(yemek_maliyeti - yemek_odenen, 0), 2),
         'son_yemek_odeme_id': son_yo['id'] if son_yo else None,
-        'son_yemek_odeme_miktar': son_yo['miktar'] if son_yo else 0
+        'son_yemek_odeme_miktar': son_yo['miktar'] if son_yo else 0,
+        'civi_toplam': round(civi_toplam, 2),
+        'civi_odenen': round(civi_odenen, 2),
+        'civi_kalan': round(max(civi_toplam - civi_odenen, 0), 2),
+        'son_civi_odeme_id': son_co['id'] if son_co else None,
+        'son_civi_odeme_miktar': son_co['miktar'] if son_co else 0,
+        'son_civi_gider_id': son_cg['id'] if son_cg else None,
+        'son_civi_gider_miktar': son_cg['miktar'] if son_cg else 0
     })
 
 @app.route('/api/ozet/aylik')
@@ -1303,6 +1396,8 @@ def api_aylik():
                  WHERE calisma_durumu IN ('tam_gun','bir_bucuk_gun','yarim_gun')
                  AND strftime('%Y-%m', tarih)=?""", (ay,))
     aylik_kisi_gun = c.fetchone()['t'] or 0
+    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM civi_gider WHERE strftime('%Y-%m', tarih)=?", (ay,))
+    aylik_civi = float(c.fetchone()['toplam'] or 0)
     conn.close()
 
     isci_list = []
@@ -1333,7 +1428,8 @@ def api_aylik():
         'toplam_hakedis': round(toplam_hakedis, 2),
         'yemek_fiyati': yemek_fiyati,
         'yemek_kisi_gun': aylik_kisi_gun,
-        'yemek_maliyeti': round(aylik_kisi_gun * yemek_fiyati, 2)
+        'yemek_maliyeti': round(aylik_kisi_gun * yemek_fiyati, 2),
+        'civi_maliyeti': round(aylik_civi, 2)
     })
 
 @app.route('/api/gider', methods=['GET', 'POST'])
@@ -1386,6 +1482,60 @@ def api_yemek_odeme_sil(odeme_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('DELETE FROM yemek_odeme WHERE id=?', (odeme_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+@app.route('/api/civi/gider', methods=['GET', 'POST'])
+def api_civi_gider():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    if request.method == 'POST':
+        d = request.json
+        miktar = float(d.get('miktar', 0))
+        if miktar <= 0:
+            conn.close()
+            return jsonify({'error': 'Gecersiz miktar'}), 400
+        c.execute('INSERT INTO civi_gider (miktar, tarih, aciklama) VALUES (?,?,?)',
+                  (miktar, date.today().isoformat(), d.get('aciklama', 'Civi alimi')))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    ay = request.args.get('ay', date.today().strftime('%Y-%m'))
+    c.execute("SELECT * FROM civi_gider WHERE strftime('%Y-%m', tarih)=? ORDER BY tarih DESC", (ay,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+@app.route('/api/civi/gider/<int:gider_id>', methods=['DELETE'])
+def api_civi_gider_sil(gider_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM civi_gider WHERE id=?', (gider_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+@app.route('/api/civi/ode', methods=['POST'])
+def api_civi_ode():
+    d = request.json
+    miktar = float(d.get('miktar', 0))
+    if miktar <= 0:
+        return jsonify({'error': 'Gecersiz miktar'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO civi_odeme (miktar, tarih, aciklama) VALUES (?,?,?)',
+              (miktar, date.today().isoformat(), d.get('aciklama', 'Civi odemesi')))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+@app.route('/api/civi/odeme/<int:odeme_id>', methods=['DELETE'])
+def api_civi_odeme_sil(odeme_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM civi_odeme WHERE id=?', (odeme_id,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
