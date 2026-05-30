@@ -85,6 +85,17 @@ def init_db():
         tarih DATE DEFAULT CURRENT_DATE,
         aciklama TEXT
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS odeme_hatirlatma (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ad TEXT NOT NULL,
+        tarih DATE NOT NULL,
+        aciklama TEXT DEFAULT ''
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS yemek_fiyat_gecmisi (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fiyat REAL NOT NULL,
+        gecerli_tarih DATE NOT NULL UNIQUE
+    )''')
     conn.commit()
     conn.close()
 
@@ -176,6 +187,10 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
 .gun-kare.g-wr{background:var(--wr);color:#000}
 .gun-kare.g-bl{background:#3498db;color:#fff}
 .gun-kare.g-er{background:var(--er);color:#fff}
+.hatbanner{background:#ff980018;border-left:4px solid #ff9800;padding:10px 14px;margin:8px 8px 0;border-radius:8px}
+.hatbanner-hdr{display:flex;justify-content:space-between;align-items:center;font-weight:700;color:#ff9800;font-size:14px;margin-bottom:4px}
+.hatbanner-satir{font-size:13px;padding:2px 0;color:var(--tx)}
+.hatbanner-gizli{display:none}
 </style>
 </head>
 <body>
@@ -189,6 +204,8 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
     <button onclick="bugun()">&#128197;</button>
   </div>
 </div>
+
+<div id="hat-banner" class="hatbanner-gizli"></div>
 
 <div class="stats">
   <div class="stat ok"><div class="num" id="s-gelen">-</div><div class="lbl">Gelen</div></div>
@@ -246,6 +263,12 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
       <input type="number" id="ay-yemek" placeholder="0" step="1">
     </div>
     <button class="btn btn-ok" onclick="ayarKaydet()">Kaydet</button>
+  </div>
+  <div class="ozet-kart" style="margin-top:10px">
+    <h3>Odeme Hatirlatmalari</h3>
+    <p style="font-size:12px;color:#a0a0a0;margin-bottom:10px">Odeme tarihine 7 gun kalinca uygulama aciliginda uyari gosterilir.</p>
+    <button class="btn btn-pr" onclick="hatirlatmaEkleModal()" style="margin-bottom:10px">+ Hatirlatma Ekle</button>
+    <div id="hatirlatma-list"></div>
   </div>
   <div class="ozet-kart" style="margin-top:10px">
     <h3>Donem Yonetimi</h3>
@@ -595,19 +618,28 @@ function loadOzet(koruyScroll) {
     html += '<div class="ozet-kart">';
     html += '<h3>Donem Ozeti</h3>';
     html += '<div class="ozet-row"><span>Toplam Kalan</span><span class="tutar">' + fmtTL(d.toplam_kalan) + '</span></div>';
-    if (d.yemek_maliyeti > 0) {
-      html += '<div class="ozet-row"><span>Yemek Gideri</span><span class="tutar ' + (d.yemek_kalan > 0 ? 'er' : 'ok') + '">' + fmtTL(d.yemek_kalan) + ' kalan</span></div>';
+    var yNet = d.yemek_fiyati > 0 ? Math.round((d.yemek_maliyeti - d.yemek_odenen) * 100) / 100 : 0;
+    if (d.yemek_fiyati > 0) {
+      if (yNet > 0) {
+        html += '<div class="ozet-row"><span>Yemek Kalan</span><span class="tutar er">' + fmtTL(yNet) + '</span></div>';
+      } else if (yNet < 0) {
+        html += '<div class="ozet-row"><span>Yemek Fazla Odendi</span><span class="tutar ok">' + fmtTL(-yNet) + '</span></div>';
+      } else {
+        html += '<div class="ozet-row"><span>Yemek</span><span class="tutar ok">Odendi</span></div>';
+      }
     }
     if (d.civi_toplam > 0) {
       html += '<div class="ozet-row"><span>Civi Alimi</span><span class="tutar ' + (d.civi_kalan > 0 ? 'er' : 'ok') + '">' + fmtTL(d.civi_kalan) + ' kalan / ' + fmtTL(d.civi_toplam) + ' toplam</span></div>';
     }
+    var buHaftaToplam = (d.toplam_kalan || 0) + Math.max(yNet, 0) + (d.civi_kalan || 0);
+    html += '<div class="ozet-row" style="border-top:2px solid #ffffff25;margin-top:6px;padding-top:8px"><span><strong>Bu Haftaki Toplam</strong></span><span style="color:var(--pr);font-weight:700;font-size:16px">' + fmtTL(buHaftaToplam) + '</span></div>';
     html += '</div>';
 
     // Yemek butonları
-    if (d.yemek_maliyeti > 0) {
+    if (d.yemek_fiyati > 0) {
       html += '<div style="display:flex;gap:8px;margin-bottom:10px">';
-      if (d.yemek_kalan > 0) {
-        html += '<button class="ode-btn" style="flex:1" onclick="yemekOde(' + d.yemek_kalan + ')">Yemek Ode (' + fmtTL(d.yemek_kalan) + ')</button>';
+      if (yNet > 0) {
+        html += '<button class="ode-btn" style="flex:1" onclick="yemekOde(' + yNet + ')">Yemek Ode (' + fmtTL(yNet) + ')</button>';
       }
       if (d.son_yemek_odeme_id) {
         html += '<button class="geri-btn" style="flex:1" onclick="yemekOdemeGeri(' + d.son_yemek_odeme_id + ',' + d.son_yemek_odeme_miktar + ')">Son Yemek Geri Al (' + fmtTL(d.son_yemek_odeme_miktar) + ')</button>';
@@ -992,6 +1024,105 @@ function loadAyarlar() {
   apiFetch('/api/ayarlar').then(function(d) {
     document.getElementById('ay-yemek').value = d.yemek_fiyati || '';
   }).catch(function(e) { toast('Hata: ' + e.message); });
+  loadHatirlatmalar();
+}
+
+// ====== HATIRLATMA ======
+function kapatBanner() {
+  var b = document.getElementById('hat-banner');
+  if (b) b.className = 'hatbanner-gizli';
+}
+
+function checkReminders() {
+  apiFetch('/api/hatirlatma').then(function(list) {
+    var bugun = new Date(); bugun.setHours(0,0,0,0);
+    var yakin = [];
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i].tarih.split('-');
+      var dt = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
+      var fark = Math.ceil((dt - bugun) / 86400000);
+      if (fark >= 0 && fark <= 7) {
+        yakin.push({ad: list[i].ad, fark: fark, aciklama: list[i].aciklama || ''});
+      }
+    }
+    var banner = document.getElementById('hat-banner');
+    if (yakin.length) {
+      var bhtml = '<div class="hatbanner-hdr">&#9888; Odeme Hatirlatmasi <button onclick="kapatBanner()" style="background:none;border:none;color:#ff9800;font-size:18px;cursor:pointer;padding:0">&#10005;</button></div>';
+      for (var j = 0; j < yakin.length; j++) {
+        var msg = yakin[j].fark === 0 ? 'BUGUN - ' : yakin[j].fark + ' gun kaldi: ';
+        bhtml += '<div class="hatbanner-satir">' + msg + '<strong>' + yakin[j].ad + '</strong>' + (yakin[j].aciklama ? ' (' + yakin[j].aciklama + ')' : '') + '</div>';
+      }
+      banner.innerHTML = bhtml;
+      banner.className = 'hatbanner';
+    } else {
+      banner.className = 'hatbanner-gizli';
+    }
+  }).catch(function() {});
+}
+
+function loadHatirlatmalar() {
+  var el = document.getElementById('hatirlatma-list');
+  if (!el) return;
+  apiFetch('/api/hatirlatma').then(function(list) {
+    if (!list.length) {
+      el.innerHTML = '<div style="font-size:13px;color:#a0a0a0;text-align:center;padding:8px">Hatirlatma eklenmemis</div>';
+      return;
+    }
+    var bugun = new Date(); bugun.setHours(0,0,0,0);
+    var html = '';
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i].tarih.split('-');
+      var dt = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
+      var fark = Math.ceil((dt - bugun) / 86400000);
+      var renk = fark < 0 ? 'var(--er)' : fark <= 7 ? 'var(--wr)' : 'var(--ok)';
+      var etiket = fark < 0 ? 'Gecti' : fark === 0 ? 'Bugun' : fark + ' gun kaldi';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #ffffff0a">';
+      html += '<div><div style="font-size:14px;font-weight:600">' + list[i].ad + '</div>';
+      html += '<div style="font-size:12px;color:#a0a0a0">' + list[i].tarih + (list[i].aciklama ? ' - ' + list[i].aciklama : '') + '</div></div>';
+      html += '<div style="display:flex;align-items:center;gap:8px">';
+      html += '<span style="font-size:12px;font-weight:700;color:' + renk + '">' + etiket + '</span>';
+      html += '<button onclick="hatirlatmaSil(' + list[i].id + ')" style="background:none;border:none;color:var(--er);font-size:16px;cursor:pointer">&#128465;</button>';
+      html += '</div></div>';
+    }
+    el.innerHTML = html;
+  }).catch(function(e) {
+    if (el) el.innerHTML = '<div style="color:var(--er);font-size:13px">Yuklenemedi: ' + e.message + '</div>';
+  });
+}
+
+function hatirlatmaEkleModal() {
+  var t = new Date().toISOString().substring(0, 10);
+  document.getElementById('modal-ici').innerHTML =
+    '<button class="kapanis-btn" onclick="modalKapat()">&#10005;</button>' +
+    '<h2>Hatirlatma Ekle</h2>' +
+    '<div class="form-row"><label>Hatirlatma Adi</label><input type="text" id="hr-ad" placeholder="Isci Maasi, Kira, vb."></div>' +
+    '<div class="form-row"><label>Odeme Tarihi</label><input type="date" id="hr-tarih" value="' + t + '" style="width:100%;padding:10px;border:none;border-radius:10px;background:var(--inp);color:var(--tx);font-size:15px"></div>' +
+    '<div class="form-row"><label>Aciklama (Opsiyonel)</label><textarea id="hr-acik" placeholder="Notlar..."></textarea></div>' +
+    '<button class="btn btn-ok" onclick="hatirlatmaKaydet()">Kaydet</button>';
+  document.getElementById('modal-arka').className = 'modal-arka';
+}
+
+function hatirlatmaKaydet() {
+  var ad = document.getElementById('hr-ad').value.trim();
+  var tarih = document.getElementById('hr-tarih').value;
+  if (!ad || !tarih) { toast('Ad ve tarih gerekli'); return; }
+  apiFetch('/api/hatirlatma', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ad: ad, tarih: tarih, aciklama: document.getElementById('hr-acik').value})
+  }).then(function() {
+    modalKapat();
+    toast('Hatirlatma eklendi!');
+    loadHatirlatmalar();
+    checkReminders();
+  }).catch(function(e) { toast('Hata: ' + e.message); });
+}
+
+function hatirlatmaSil(id) {
+  if (!confirm('Bu hatirlatmayi sil?')) return;
+  apiFetch('/api/hatirlatma/' + id, {method: 'DELETE'})
+    .then(function() { toast('Silindi'); loadHatirlatmalar(); checkReminders(); })
+    .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
 function ayarKaydet() {
@@ -1105,6 +1236,7 @@ function hakedisSil(id) {
 
 // ====== BASLANGIC ======
 bugun();
+checkReminders();
 var simdi = new Date();
 var yil = simdi.getFullYear();
 var ay = simdi.getMonth() + 1;
@@ -1259,6 +1391,15 @@ def api_ayarlar():
         d = request.json
         for k, v in d.items():
             c.execute('INSERT OR REPLACE INTO ayarlar (anahtar, deger) VALUES (?,?)', (k, str(v)))
+            if k == 'yemek_fiyati':
+                try:
+                    fiyat = float(v)
+                    if fiyat > 0:
+                        today = date.today().isoformat()
+                        c.execute('INSERT OR REPLACE INTO yemek_fiyat_gecmisi (fiyat, gecerli_tarih) VALUES (?,?)',
+                                  (fiyat, today))
+                except (ValueError, TypeError):
+                    pass
         conn.commit()
         conn.close()
         return jsonify({'success': True})
@@ -1304,8 +1445,18 @@ def api_haftalik():
     c.execute("SELECT deger FROM ayarlar WHERE anahtar='yemek_fiyati'")
     yf_row = c.fetchone()
     yemek_fiyati = float(yf_row['deger']) if yf_row and yf_row['deger'] else 0
-    c.execute("SELECT COUNT(*) as t FROM puantaj WHERE calisma_durumu IN ('tam_gun','bir_bucuk_gun','yarim_gun') AND tarih >= ?", (donem_bas,))
-    kisi_gun = c.fetchone()['t'] or 0
+    c.execute("""
+        SELECT p.tarih,
+               (SELECT fiyat FROM yemek_fiyat_gecmisi
+                WHERE gecerli_tarih <= p.tarih
+                ORDER BY gecerli_tarih DESC LIMIT 1) as gun_fiyati
+        FROM puantaj p
+        WHERE p.calisma_durumu IN ('tam_gun','bir_bucuk_gun','yarim_gun')
+        AND p.tarih >= ?
+    """, (donem_bas,))
+    gun_rows = c.fetchall()
+    kisi_gun = len(gun_rows)
+    yemek_maliyeti_detay = round(sum((r['gun_fiyati'] or yemek_fiyati) for r in gun_rows), 2)
     c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM yemek_odeme WHERE tarih >= ?", (donem_bas,))
     yemek_odenen = float(c.fetchone()['toplam'] or 0)
     c.execute("SELECT id, miktar FROM yemek_odeme WHERE tarih >= ? ORDER BY id DESC LIMIT 1", (donem_bas,))
@@ -1340,7 +1491,7 @@ def api_haftalik():
             'son_odeme_id': son['id'] if son else None,
             'son_odeme_miktar': son['miktar'] if son else 0
         })
-    yemek_maliyeti = round(kisi_gun * yemek_fiyati, 2)
+    yemek_maliyeti = yemek_maliyeti_detay
     return jsonify({
         'isciler': isciler,
         'toplam_kalan': round(toplam_kalan, 2),
@@ -1653,6 +1804,39 @@ def api_hakedis_sil(hakedis_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('DELETE FROM beton_hakedis WHERE id=?', (hakedis_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+@app.route('/api/hatirlatma', methods=['GET', 'POST'])
+def api_hatirlatma():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    if request.method == 'POST':
+        d = request.json
+        ad = d.get('ad', '').strip()
+        tarih = d.get('tarih', '')
+        if not ad or not tarih:
+            conn.close()
+            return jsonify({'error': 'Ad ve tarih gerekli'}), 400
+        c.execute('INSERT INTO odeme_hatirlatma (ad, tarih, aciklama) VALUES (?,?,?)',
+                  (ad, tarih, d.get('aciklama', '')))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    c.execute('SELECT * FROM odeme_hatirlatma ORDER BY tarih ASC')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route('/api/hatirlatma/<int:hat_id>', methods=['DELETE'])
+def api_hatirlatma_sil(hat_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM odeme_hatirlatma WHERE id=?', (hat_id,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
