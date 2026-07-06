@@ -60,13 +60,6 @@ def init_db():
         anahtar TEXT PRIMARY KEY,
         deger TEXT
     )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS beton_hakedis (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        tarih DATE DEFAULT CURRENT_DATE,
-        miktar_m3 REAL DEFAULT 0,
-        birim_fiyat REAL DEFAULT 0,
-        aciklama TEXT
-    )''')
     c.execute('''CREATE TABLE IF NOT EXISTS yemek_odeme (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         miktar REAL DEFAULT 0,
@@ -220,7 +213,6 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   <button class="tab" onclick="sekme('gider',this)">Giderler</button>
   <button class="tab" onclick="sekme('isciler',this)">Isciler</button>
   <button class="tab" onclick="sekme('ayarlar',this)">Ayarlar</button>
-  <button class="tab" onclick="sekme('hakedis',this)">Hakedis</button>
 </div>
 
 <!-- PUANTAJ PANELİ -->
@@ -266,27 +258,12 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   </div>
   <div class="ozet-kart" style="margin-top:10px">
     <h3>Odeme Hatirlatmalari</h3>
-    <p style="font-size:12px;color:#a0a0a0;margin-bottom:10px">Odeme tarihine 7 gun kalinca uygulama aciliginda uyari gosterilir.</p>
+    <p style="font-size:12px;color:#a0a0a0;margin-bottom:10px">Odeme tarihi gelene kadar uygulama her acilista kac gun kaldigini gosterir.</p>
     <button class="btn btn-pr" onclick="hatirlatmaEkleModal()" style="margin-bottom:10px">+ Hatirlatma Ekle</button>
     <div id="hatirlatma-list"></div>
   </div>
-  <div class="ozet-kart" style="margin-top:10px">
-    <h3>Donem Yonetimi</h3>
-    <p style="font-size:13px;color:#a0a0a0;margin-bottom:12px">Yeni donem baslatmak tum odemeler listesini sifirlar. Puantaj ve hakedis verileri silinmez.</p>
-    <button class="btn btn-er" onclick="yeniDonem()">Yeni Donem Baslat</button>
-  </div>
 </div>
 
-<!-- HAKEDİŞ PANELİ -->
-<div id="panel-hakedis" class="panel">
-  <div style="padding:0 0 10px;display:flex;gap:8px;align-items:center">
-    <input type="month" id="hakedisAy" style="flex:1;padding:10px;border:none;border-radius:10px;background:var(--inp);color:var(--tx);font-size:15px">
-    <button class="btn btn-pr" style="width:auto;padding:10px 16px;margin:0" onclick="loadHakedis()">Goster</button>
-  </div>
-  <button class="btn btn-pr" onclick="hakedisEkleModal()">+ Dokum Ekle</button>
-  <div id="hakedisOzet" style="margin-top:10px"></div>
-  <div id="hakedisList" style="margin-top:10px"><div class="empty">Ay secin</div></div>
-</div>
 
 <!-- NAVİGASYON -->
 <div class="nav">
@@ -304,9 +281,6 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   </button>
   <button class="nav-btn" onclick="sekme('isciler',this)" id="nav-isciler">
     <span class="ico">&#128104;</span><span>Isciler</span>
-  </button>
-  <button class="nav-btn" onclick="sekme('hakedis',this)" id="nav-hakedis">
-    <span class="ico">&#128220;</span><span>Hakedis</span>
   </button>
 </div>
 
@@ -399,7 +373,6 @@ function sekme(id, btn) {
   if (id === 'gider') loadGider();
   if (id === 'isciler') loadIsciler();
   if (id === 'ayarlar') loadAyarlar();
-  if (id === 'hakedis') loadHakedis();
 }
 
 // ====== API ======
@@ -527,14 +500,15 @@ function anindaKaydet(isciId, durumKod) {
   if (!tarih) { toast('Lutfen tarih secin'); return; }
   var girEl = document.getElementById('gir-' + isciId);
   var cikEl = document.getElementById('cik-' + isciId);
+  var mevcut = PU_MAP[isciId] || {};
   var veri = {
     isci_id: isciId,
     tarih: tarih,
     calisma_durumu: durum,
-    giris_saati: girEl ? girEl.value : '08:00',
-    cikis_saati: cikEl ? cikEl.value : '17:00',
-    mesai_saat: 0,
-    yapilan_is: ''
+    giris_saati: girEl ? girEl.value : (mevcut.giris_saati || '08:00'),
+    cikis_saati: cikEl ? cikEl.value : (mevcut.cikis_saati || '17:00'),
+    mesai_saat: mevcut.mesai_saat || 0,
+    yapilan_is: mevcut.yapilan_is || ''
   };
   apiFetch('/api/puantaj', {
     method: 'POST',
@@ -609,14 +583,13 @@ function puSil(isciId) {
 var _OZET_SCROLL = 0;
 
 function loadOzet(koruyScroll) {
-  if (koruyScroll) _OZET_SCROLL = window.scrollY;
   document.getElementById('ozetList').innerHTML = '<div class="empty">Yukleniyor...</div>';
   apiFetch('/api/ozet/haftalik').then(function(d) {
     var html = '';
 
     // Kümülatif özet kartı
     html += '<div class="ozet-kart">';
-    html += '<h3>Donem Ozeti</h3>';
+    html += '<h3>Haftalik Ozet</h3>';
     html += '<div class="ozet-row"><span>Toplam Kalan</span><span class="tutar">' + fmtTL(d.toplam_kalan) + '</span></div>';
     var yNet = d.yemek_fiyati > 0 ? Math.round((d.yemek_maliyeti - d.yemek_odenen) * 100) / 100 : 0;
     if (d.yemek_fiyati > 0) {
@@ -673,8 +646,9 @@ function loadOzet(koruyScroll) {
       html += '<div class="isci-ozet-kart">';
       html += '<div class="ad">' + isc.ad_soyad + '</div>';
       html += '<div class="satirlar">';
-      html += '<span>Kalan Yevmiye</span><strong>' + (isc.kalan_yevmiye || 0) + ' gun</strong>';
-      html += '<span>Kalan Odeme</span><strong>' + fmtTL(isc.kalan) + '</strong>';
+      html += '<span>Bu Hafta Gelen Gun</span><strong>' + (isc.bu_hafta_gun || 0) + ' gun</strong>';
+      html += '<span>Kalan Yevmiye (Toplam Borc)</span><strong>' + (isc.yevmiye || 0) + ' gun</strong>';
+      html += '<span>Odenecek Para (Toplam Borc)</span><strong>' + fmtTL(isc.kalan) + '</strong>';
       html += '</div>';
       if (isc.kalan > 0) {
         html += '<button class="ode-btn" onclick="odemeYap(' + isc.id + ',' + isc.kalan + ')">Odeme Yap</button>';
@@ -682,6 +656,7 @@ function loadOzet(koruyScroll) {
       if (isc.son_odeme_id) {
         html += '<button class="geri-btn" onclick="odemeGeri(' + isc.son_odeme_id + ',' + isc.son_odeme_miktar + ')">Son Odemeyi Geri Al (' + fmtTL(isc.son_odeme_miktar) + ')</button>';
       }
+      html += '<button class="geri-btn" onclick="isciDetay(' + isc.id + ')">Hesap Dokumunu Goster</button>';
       html += '</div>';
     }
 
@@ -695,6 +670,7 @@ function loadOzet(koruyScroll) {
 }
 
 function odemeYap(isciId, kalan) {
+  _OZET_SCROLL = window.scrollY;
   var ad = ISCI_AD_MAP[isciId] || 'Isci';
   var miktar = prompt(ad + ' icin odeme miktari (TL):', Math.round(kalan));
   if (!miktar) return;
@@ -709,13 +685,49 @@ function odemeYap(isciId, kalan) {
 }
 
 function odemeGeri(odemeId, miktar) {
+  _OZET_SCROLL = window.scrollY;
   if (!confirm(fmtTL(miktar) + ' tutarindaki odemeyi geri al?')) return;
   apiFetch('/api/odeme/' + odemeId, {method: 'DELETE'})
     .then(function() { toast('Odeme geri alindi'); loadOzet(true); })
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
+function isciDetay(isciId) {
+  apiFetch('/api/isci/' + isciId + '/detay').then(function(d) {
+    var ayGun = {};
+    for (var i = 0; i < d.puantaj.length; i++) {
+      var p = d.puantaj[i];
+      var ay = p.tarih.slice(0, 7);
+      if (!ayGun[ay]) ayGun[ay] = 0;
+      var g = p.calisma_durumu === 'bir_bucuk_gun' ? 1.5 : (p.calisma_durumu === 'tam_gun' ? 1 : (p.calisma_durumu === 'yarim_gun' ? 0.5 : 0));
+      ayGun[ay] += g;
+    }
+    var metin = d.ad_soyad + ' - Gunluk Ucret: ' + fmtTL(d.gunluk_ucret) + '\\n\\n';
+    metin += 'AYLIK CALISMA (gun):\\n';
+    var aylar = Object.keys(ayGun).sort();
+    for (var k = 0; k < aylar.length; k++) {
+      metin += '  ' + aylar[k] + ': ' + ayGun[aylar[k]] + ' gun\\n';
+    }
+    metin += '\\nODEMELER:\\n';
+    if (d.odemeler.length === 0) {
+      metin += '  (hic odeme yok)\\n';
+    }
+    for (var m = 0; m < d.odemeler.length; m++) {
+      var o = d.odemeler[m];
+      metin += '  ' + o.tarih + ': ' + fmtTL(o.miktar) + (o.aciklama ? ' (' + o.aciklama + ')' : '') + '\\n';
+    }
+    metin += '\\nOZET:\\n';
+    metin += '  Toplam Calisilan Gun: ' + d.toplam_gun + '\\n';
+    metin += '  Toplam Mesai Saati: ' + d.toplam_mesai_saat + '\\n';
+    metin += '  Toplam Hakedis: ' + fmtTL(d.hakedis) + '\\n';
+    metin += '  Toplam Odenen: ' + fmtTL(d.odenen) + '\\n';
+    metin += '  Kalan Borc: ' + fmtTL(d.kalan) + ' (' + d.kalan_gun + ' gun)';
+    alert(metin);
+  }).catch(function(e) { toast('Hata: ' + e.message); });
+}
+
 function yemekOde(kalan) {
+  _OZET_SCROLL = window.scrollY;
   var miktar = prompt('Yemek odemesi miktari (TL):', Math.round(kalan));
   if (!miktar) return;
   miktar = parseFloat(miktar);
@@ -729,6 +741,7 @@ function yemekOde(kalan) {
 }
 
 function yemekOdemeGeri(odemeId, miktar) {
+  _OZET_SCROLL = window.scrollY;
   if (!confirm(fmtTL(miktar) + ' tutarindaki yemek odemesini geri al?')) return;
   apiFetch('/api/yemek/odeme/' + odemeId, {method: 'DELETE'})
     .then(function() { toast('Yemek odemesi geri alindi'); loadOzet(true); })
@@ -736,6 +749,7 @@ function yemekOdemeGeri(odemeId, miktar) {
 }
 
 function civiGiderEkle() {
+  _OZET_SCROLL = window.scrollY;
   var miktar = prompt('Bu haftaki civi alimi miktari (TL):', '');
   if (!miktar) return;
   miktar = parseFloat(miktar);
@@ -749,6 +763,7 @@ function civiGiderEkle() {
 }
 
 function civiOde(kalan) {
+  _OZET_SCROLL = window.scrollY;
   var miktar = prompt('Civi odemesi miktari (TL):', Math.round(kalan));
   if (!miktar) return;
   miktar = parseFloat(miktar);
@@ -762,6 +777,7 @@ function civiOde(kalan) {
 }
 
 function civiOdemeGeri(odemeId, miktar) {
+  _OZET_SCROLL = window.scrollY;
   if (!confirm(fmtTL(miktar) + ' tutarindaki civi odemesini geri al?')) return;
   apiFetch('/api/civi/odeme/' + odemeId, {method: 'DELETE'})
     .then(function() { toast('Civi odemesi geri alindi'); loadOzet(true); })
@@ -769,6 +785,7 @@ function civiOdemeGeri(odemeId, miktar) {
 }
 
 function civiGiderSil(giderId, miktar) {
+  _OZET_SCROLL = window.scrollY;
   if (!confirm(fmtTL(miktar) + ' tutarindaki civi giderini sil?')) return;
   apiFetch('/api/civi/gider/' + giderId, {method: 'DELETE'})
     .then(function() { toast('Civi gideri silindi'); loadOzet(true); })
@@ -1041,7 +1058,7 @@ function checkReminders() {
       var p = list[i].tarih.split('-');
       var dt = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
       var fark = Math.ceil((dt - bugun) / 86400000);
-      if (fark >= 0 && fark <= 7) {
+      if (fark >= 0) {
         yakin.push({ad: list[i].ad, fark: fark, aciklama: list[i].aciklama || ''});
       }
     }
@@ -1135,103 +1152,10 @@ function ayarKaydet() {
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
-function yeniDonem() {
-  if (!confirm('Tum odemeler sifirlanacak ve yeni donem baslatilacak. Emin misiniz?')) return;
-  apiFetch('/api/odeme/tumunu-sil', {method: 'DELETE'})
-    .then(function() { toast('Yeni donem baslatildi!'); })
-    .catch(function(e) { toast('Hata: ' + e.message); });
-}
-
 // ====== MODAL ======
 function modalKapat(e) {
   if (e && e.target !== document.getElementById('modal-arka')) return;
   document.getElementById('modal-arka').className = 'modal-arka gizli';
-}
-
-// ====== HAKEDİŞ ======
-function loadHakedis() {
-  var ay = document.getElementById('hakedisAy').value;
-  if (!ay) { toast('Ay secin'); return; }
-  document.getElementById('hakedisList').innerHTML = '<div class="empty">Yukleniyor...</div>';
-  document.getElementById('hakedisOzet').innerHTML = '';
-  apiFetch('/api/hakedis?ay=' + ay).then(function(d) {
-    if (!d.kayitlar.length) {
-      document.getElementById('hakedisList').innerHTML = '<div class="empty">Bu ay dokum kaydi bulunamadi.</div>';
-      return;
-    }
-    var ozHtml = '<div class="ozet-kart">';
-    ozHtml += '<h3>' + ay + ' Beton Ozeti</h3>';
-    ozHtml += '<div class="ozet-row"><span>Toplam Beton</span><span class="tutar">' + fmt(d.toplam_m3) + ' m³</span></div>';
-    ozHtml += '<div class="ozet-row"><span>Toplam Tutar</span><span class="tutar">' + fmtTL(d.toplam_tutar) + '</span></div>';
-    ozHtml += '</div>';
-    document.getElementById('hakedisOzet').innerHTML = ozHtml;
-    var html = '';
-    for (var i = 0; i < d.kayitlar.length; i++) {
-      var k = d.kayitlar[i];
-      var toplam = k.miktar_m3 * k.birim_fiyat;
-      html += '<div class="kart" style="padding:12px 14px;margin-bottom:8px">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<div style="flex:1">';
-      html += '<div style="font-size:12px;color:#a0a0a0;margin-bottom:6px">' + k.tarih + (k.aciklama ? ' &bull; ' + k.aciklama : '') + '</div>';
-      html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15px">';
-      html += '<strong style="color:var(--ok)">' + fmt(k.miktar_m3) + ' m³</strong>';
-      html += '<span style="color:#a0a0a0">&times;</span>';
-      html += '<strong>' + fmtTL(k.birim_fiyat) + '/m³</strong>';
-      html += '<span style="color:#a0a0a0">=</span>';
-      html += '<strong style="color:var(--pr);font-size:16px">' + fmtTL(toplam) + '</strong>';
-      html += '</div></div>';
-      html += '<button onclick="hakedisSil(' + k.id + ')" style="background:none;border:none;color:var(--er);font-size:20px;cursor:pointer;padding:4px;flex-shrink:0">&#128465;</button>';
-      html += '</div></div>';
-    }
-    document.getElementById('hakedisList').innerHTML = html;
-  }).catch(function(e) {
-    document.getElementById('hakedisList').innerHTML = '<div class="empty" style="color:var(--er)">Hata: ' + e.message + '</div>';
-  });
-}
-
-function hakedisEkleModal() {
-  var t = document.getElementById('tarih').value || new Date().toISOString().substring(0, 10);
-  document.getElementById('modal-ici').innerHTML =
-    '<button class="kapanis-btn" onclick="modalKapat()">&#10005;</button>' +
-    '<h2>Beton Dokumu Ekle</h2>' +
-    '<div class="form-row"><label>Tarih</label><input type="text" id="hk-tarih" value="' + t + '" placeholder="YYYY-MM-DD"></div>' +
-    '<div class="form-row"><label>Miktar (m³)</label><input type="number" id="hk-m3" placeholder="0.00" step="0.5" min="0"></div>' +
-    '<div class="form-row"><label>Birim Fiyat (TL/m³)</label><input type="number" id="hk-fiyat" placeholder="0" step="50"></div>' +
-    '<div class="form-row"><label>Aciklama (Opsiyonel)</label><textarea id="hk-acik" placeholder="Notlar..."></textarea></div>' +
-    '<button class="btn btn-ok" onclick="hakedisKaydet()">Kaydet</button>';
-  document.getElementById('modal-arka').className = 'modal-arka';
-}
-
-function hakedisKaydet() {
-  var tarih = document.getElementById('hk-tarih').value;
-  var m3 = parseFloat(document.getElementById('hk-m3').value);
-  var fiyat = parseFloat(document.getElementById('hk-fiyat').value);
-  if (!tarih || isNaN(m3) || m3 <= 0 || isNaN(fiyat) || fiyat <= 0) {
-    toast('Tarih, miktar ve birim fiyat gerekli');
-    return;
-  }
-  apiFetch('/api/hakedis', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      tarih: tarih,
-      miktar_m3: m3,
-      birim_fiyat: fiyat,
-      aciklama: document.getElementById('hk-acik').value
-    })
-  }).then(function() {
-    modalKapat();
-    toast('Kaydedildi!');
-    document.getElementById('hakedisAy').value = tarih.substring(0, 7);
-    loadHakedis();
-  }).catch(function(e) { toast('Hata: ' + e.message); });
-}
-
-function hakedisSil(id) {
-  if (!confirm('Bu kaydi sil?')) return;
-  apiFetch('/api/hakedis/' + id, {method: 'DELETE'})
-    .then(function() { toast('Silindi'); loadHakedis(); })
-    .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
 // ====== BASLANGIC ======
@@ -1301,6 +1225,104 @@ def delete_isci(isci_id):
     conn.close()
     return jsonify({'success': True, 'message': 'Isci silindi'})
 
+# NEYI COZUYORUZ: Kullanici 05.07.2026'yi "milat" kabul edip bu tarihten
+# ONCEKI tum puantaj+odeme+yemek_odeme+civi_gider+civi_odeme kayitlarini
+# silmek istiyor - eski/karisik gecmis, kalan_gun gibi kumulatif bakiye
+# hesaplarini anlasilmaz hale getiriyordu, temiz bir sayfa acmak istiyor.
+# YEMEK/CIVI DAHIL EDILME SEBEBI: yemek_kalan = yemek_maliyeti (artik
+# temiz puantajdan hesaplaniyor) - yemek_odenen (TARIH FILTRESIZ, TUM
+# ZAMANLAR toplam odeme) farkidir. puantaj temizlenip yemek_odeme
+# temizlenmezse pay/payda tutarsiz kalir (kucuk maliyet - buyuk eski
+# odeme = yanlis "0 kalan" veya negatif gorunum). Ayni mantik civi icin
+# de gecerli (civi_toplam/civi_odenen de tarih filtresiz TUM ZAMANLAR).
+# BU GERI ALINAMAZ BIR ISLEM OLDUGU ICIN: (1) silmeden ONCE tum ilgili
+# satirlar arsiv tablosuna kopyalanir (puantaj_arsiv_milat_oncesi,
+# odeme_arsiv_milat_oncesi, yemek_odeme_arsiv_milat_oncesi,
+# civi_gider_arsiv_milat_oncesi, civi_odeme_arsiv_milat_oncesi) - is
+# kanunu/ihtilaf durumunda gecmis veri tamamen kaybolmaz, sadece aktif
+# hesaplardan cikar. (2) yanlislikla tetiklenmeyi onlemek icin
+# ?onay=EVET-SIL parametresi zorunlu. Endpoint IDEMPOTENT'tir - daha once
+# temizlenmis bir tabloyu tekrar cagirmak 0 satir siler, hata vermez.
+# NASIL TEST EDERIZ: scratchpad/test_milat_temizle.py - milat oncesi/
+# sonrasi karisik tarihli kayitlarla (5 tablonun hepsi icin), sadece milat
+# oncesinin arsive tasinip silindigi, milat sonrasinin DOKUNULMADIGI
+# dogrulanir.
+MILAT_TARIHI = '2026-07-05'
+_MILAT_TABLOLARI = ['puantaj', 'odeme', 'yemek_odeme', 'civi_gider', 'civi_odeme']
+
+
+@app.route('/api/admin/milat-temizle', methods=['POST'])
+def admin_milat_temizle():
+    if request.args.get('onay') != 'EVET-SIL':
+        return jsonify({'error': "Guvenlik icin ?onay=EVET-SIL parametresi gerekli"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    silinenler = {}
+    for tablo in _MILAT_TABLOLARI:
+        arsiv = tablo + '_arsiv_milat_oncesi'
+        c.execute('CREATE TABLE IF NOT EXISTS ' + arsiv + ' AS SELECT * FROM ' + tablo + ' WHERE 0')
+        c.execute('INSERT INTO ' + arsiv + ' SELECT * FROM ' + tablo + ' WHERE tarih < ?', (MILAT_TARIHI,))
+        c.execute('SELECT COUNT(*) FROM ' + tablo + ' WHERE tarih < ?', (MILAT_TARIHI,))
+        silinenler[tablo] = c.fetchone()[0]
+        c.execute('DELETE FROM ' + tablo + ' WHERE tarih < ?', (MILAT_TARIHI,))
+    conn.commit()
+    conn.close()
+    return jsonify({
+        'success': True,
+        'milat_tarihi': MILAT_TARIHI,
+        'silinen_puantaj': silinenler['puantaj'],
+        'silinen_odeme': silinenler['odeme'],
+        'silinen_yemek_odeme': silinenler['yemek_odeme'],
+        'silinen_civi_gider': silinenler['civi_gider'],
+        'silinen_civi_odeme': silinenler['civi_odeme'],
+        'mesaj': 'Tum tablolar arsivlendi (*_arsiv_milat_oncesi) ve aktiften silindi'
+    })
+
+# NEYI COZUYORUZ: "Kalan Yevmiye" (kalan_gun) tum zamanlar kumulatif
+# bakiyedir ve /api/odeme ile /api/ozet/aylik gibi endpoint'ler LIMIT'li
+# veya tek-aya ozel oldugu icin kullanici (veya biz) bir iscinin tam
+# hesabini gozle dogrulayamiyor - "0.9 gun olamaz" itirazinda tam ledger
+# olmadan kanitla cevap veremiyoruz. Bu endpoint HICBIR sey hesaplamiyor/
+# degistirmiyor, sadece isci_bakiye_hesapla ile AYNI ham kayitlari
+# (tum puantaj + tum odeme satirlari) ve ayni ozet sayilari doner - boylece
+# herhangi bir isci icin "neden bu rakam cikti" sorusu tek istekle
+# kanitlanabilir.
+# NASIL TEST EDERIZ: bir isciye 2 gun puantaj + 1 kismi odeme girilip
+# donen puantaj/odeme listelerinin satir satir dogru oldugu ve
+# toplam_gun/hakedis/odenen/kalan/kalan_gun degerlerinin
+# isci_bakiye_hesapla ile birebir aynı çıktığı doğrulanır.
+@app.route('/api/isci/<int:isci_id>/detay')
+def isci_detay(isci_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('SELECT ad_soyad, gunluk_ucret FROM isci WHERE id=?', (isci_id,))
+    isc = c.fetchone()
+    if not isc:
+        conn.close()
+        return jsonify({'error': 'Isci bulunamadi'}), 404
+    ucret = isc['gunluk_ucret'] or 0
+    c.execute('''SELECT tarih, calisma_durumu, COALESCE(mesai_saat,0) as mesai_saat
+                 FROM puantaj WHERE isci_id=? ORDER BY tarih''', (isci_id,))
+    puantaj = [dict(r) for r in c.fetchall()]
+    c.execute('''SELECT tarih, miktar, aciklama FROM odeme
+                 WHERE isci_id=? ORDER BY tarih''', (isci_id,))
+    odemeler = [dict(r) for r in c.fetchall()]
+    bakiye = isci_bakiye_hesapla(c, isci_id, ucret)
+    conn.close()
+    return jsonify({
+        'ad_soyad': isc['ad_soyad'],
+        'gunluk_ucret': ucret,
+        'puantaj': puantaj,
+        'odemeler': odemeler,
+        'toplam_gun': bakiye['toplam_gun'],
+        'toplam_mesai_saat': bakiye['toplam_mesai_saat'],
+        'hakedis': bakiye['hakedis'],
+        'odenen': bakiye['odenen'],
+        'kalan': bakiye['kalan'],
+        'kalan_gun': bakiye['kalan_gun'],
+    })
+
 @app.route('/api/odeme', methods=['GET', 'POST'])
 def api_odeme():
     conn = sqlite3.connect(DB_PATH)
@@ -1332,17 +1354,6 @@ def delete_odeme(odeme_id):
     conn.commit()
     conn.close()
     return jsonify({'success': True, 'message': 'Odeme silindi'})
-
-@app.route('/api/odeme/tumunu-sil', methods=['DELETE'])
-def delete_all_odemeler():
-    today = date.today().isoformat()
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO ayarlar (anahtar, deger) VALUES (?,?)',
-              ('donem_baslangici', today))
-    conn.commit()
-    conn.close()
-    return jsonify({'success': True, 'message': 'Yeni donem baslatildi'})
 
 @app.route('/api/puantaj', methods=['GET', 'POST'])
 def api_puantaj():
@@ -1422,26 +1433,110 @@ def api_gunluk():
     conn.close()
     return jsonify({'gelen_isci': gelen, 'gelmeyen_isci': toplam-gelen, 'toplam_mesai_saat': mesai})
 
+
+# ====================================================================
+# HESAPLAMA MOTORU (Rev-98) — bagimsiz, test edilebilir bakiye motoru
+# ====================================================================
+# NEYI COZUYORUZ: Bir iscinin ne kadar alacagi kaldigini (kalan bakiye)
+# dogru hesaplamak. Kural (kullanici onayli, degistirilemez):
+#   1) Bakiye ASLA haftalik/donemsel sifirlanmaz — sadece gercek bir
+#      odeme kaydi girilince duser (tarih filtresi YOK, tum zamanlar).
+#   2) "1 yevmiye" secilirse tam olarak 1 x gunluk_ucret hakedise eklenir.
+#   3) Mesai ucreti DUZ ORAN: (gunluk_ucret / 8) * mesai_saat — 1.5x
+#      yasal carpan KULLANILMAZ (bkz. CLAUDE.md Rev-91).
+# NASIL TEST EDERIZ: scratchpad/test_hesap_motoru.py — 4 senaryo ile
+# (yeni isci tek gun, coklu gun+mesai, kismi odeme, haftalik reset yok)
+# dogrulandi, hepsi PASS.
+def isci_bakiye_hesapla(c, isci_id, gunluk_ucret):
+    c.execute('''SELECT
+                 SUM(CASE WHEN calisma_durumu='bir_bucuk_gun' THEN 1.5
+                          WHEN calisma_durumu='tam_gun' THEN 1
+                          WHEN calisma_durumu='yarim_gun' THEN 0.5
+                          ELSE 0 END) as gun,
+                 SUM(COALESCE(mesai_saat, 0)) as saat
+                 FROM puantaj WHERE isci_id=?''', (isci_id,))
+    row = c.fetchone()
+    gun = row['gun'] or 0
+    saat = row['saat'] or 0
+    mesai_ucret = (gunluk_ucret / 8.0) * saat if gunluk_ucret > 0 else 0
+    hakedis = (gun * gunluk_ucret) + mesai_ucret
+    c.execute('SELECT COALESCE(SUM(miktar), 0) as toplam FROM odeme WHERE isci_id=?', (isci_id,))
+    odenen = c.fetchone()['toplam'] or 0
+    kalan = hakedis - odenen
+    if kalan < 0:
+        kalan = 0
+    kalan_gun = round(kalan / gunluk_ucret, 1) if gunluk_ucret > 0 and kalan > 0 else 0
+    return {
+        'toplam_gun': round(gun, 2),
+        'toplam_mesai_saat': round(saat, 2),
+        'hakedis': round(hakedis, 2),
+        'odenen': round(odenen, 2),
+        'kalan': round(kalan, 2),
+        'kalan_gun': kalan_gun,
+    }
+
+
+# NEYI COZUYORUZ: "Kalan/Yevmiye" (isci_bakiye_hesapla) TUM ZAMANLAR
+# kumulatif borc bakiyesidir, odeme yapilmadikca dusmez. Bunun disinda
+# ayrica "bu hafta kac gun geldi" (saf yoklama, odeme durumundan bagimsiz,
+# BAKIYEYE KARISMAZ) metrigi gerekiyor.
+# Rev-99/100/101/102'de "Yevmiye" adi bununla karistirilip 3 kez yanlis
+# anlasildigi icin BILEREK FARKLI ISIMLE donduruluyor: 'bu_hafta_gun'.
+# HAFTA TANIMI (Rev-104): santiye haftasi PAZAR gunu baslar, CUMARTESI
+# biter (rolling son-7-gun DEGIL, sabit ama Pazartesi-Pazar da DEGIL).
+# Yani Pazar=1. gun, Pazartesi=2. gun, ... Cumartesi=7. gun; her Pazar
+# sifirdan baslar. Python date.weekday(): Pazartesi=0..Pazar=6.
+# En son gecmis Pazar = bugun - ((bugun.weekday()+1) % 7) gun.
+# NASIL TEST EDERIZ: bugun Pazartesi ise hafta_bas=dun (Pazar) olmali;
+# bugun Pazar ise hafta_bas=bugunun kendisi olmali (scratchpad/test_bu_hafta.py).
+def isci_bu_hafta_hesapla(c, isci_id, hafta_bas, hafta_son):
+    c.execute('''SELECT SUM(CASE WHEN calisma_durumu='bir_bucuk_gun' THEN 1.5
+                          WHEN calisma_durumu='tam_gun' THEN 1
+                          WHEN calisma_durumu='yarim_gun' THEN 0.5
+                          ELSE 0 END) as gun
+                 FROM puantaj WHERE isci_id=? AND tarih BETWEEN ? AND ?''',
+              (isci_id, hafta_bas, hafta_son))
+    gun = c.fetchone()['gun'] or 0
+    return {'bu_hafta_gun': round(gun, 2)}
+
+
 @app.route('/api/ozet/haftalik')
 def api_haftalik():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT deger FROM ayarlar WHERE anahtar='donem_baslangici'")
-    db_row = c.fetchone()
-    donem_bas = db_row['deger'] if db_row and db_row['deger'] else '2000-01-01'
-    c.execute('''SELECT i.id, i.ad_soyad, i.gunluk_ucret,
-                 SUM(CASE WHEN p.calisma_durumu='bir_bucuk_gun' THEN 1.5 WHEN p.calisma_durumu='tam_gun' THEN 1 WHEN p.calisma_durumu='yarim_gun' THEN 0.5 ELSE 0 END) as tum_yevmiye,
-                 SUM(COALESCE(p.mesai_saat, 0)) as tum_mesai
-                 FROM isci i LEFT JOIN puantaj p ON i.id=p.isci_id AND p.tarih >= ?
-                 WHERE i.aktif=1 GROUP BY i.id ORDER BY i.gunluk_ucret DESC''', (donem_bas,))
-    rows = c.fetchall()
-    c.execute('''SELECT isci_id, SUM(miktar) as toplam_odeme FROM odeme WHERE tarih >= ? GROUP BY isci_id''', (donem_bas,))
-    odeme_map = {r['isci_id']: r['toplam_odeme'] for r in c.fetchall()}
+    c.execute('SELECT id, ad_soyad, gunluk_ucret FROM isci WHERE aktif=1 ORDER BY gunluk_ucret DESC')
+    isci_list = c.fetchall()
     c.execute('''SELECT o1.id, o1.isci_id, o1.miktar FROM odeme o1
-                 INNER JOIN (SELECT isci_id, MAX(id) as max_id FROM odeme WHERE tarih >= ? GROUP BY isci_id) o2
-                 ON o1.id = o2.max_id''', (donem_bas,))
+                 INNER JOIN (SELECT isci_id, MAX(id) as max_id FROM odeme GROUP BY isci_id) o2
+                 ON o1.id = o2.max_id''')
     son_odeme_map = {r['isci_id']: {'id': r['id'], 'miktar': r['miktar']} for r in c.fetchall()}
+    bugun = date.today()
+    hafta_bas = (bugun - timedelta(days=(bugun.weekday() + 1) % 7)).isoformat()
+    hafta_son = bugun.isoformat()
+    isciler = []
+    toplam_kalan = 0
+    for isc in isci_list:
+        ucret = isc['gunluk_ucret'] or 0
+        # 'Yevmiye' ve 'Odenecek Para' AYNI bakiyenin iki birimidir (gun / TL).
+        # Takvim haftasi/rolling pencere KULLANILMAZ - odeme yapildikca bu sayi
+        # duser, gun gectikce degil. Cumartesi odenen bir isci Pazartesi'de
+        # sadece Pazar+Pazartesi'nin (2 gun) karsiligini gostermeli.
+        bakiye = isci_bakiye_hesapla(c, isc['id'], ucret)
+        toplam_kalan += bakiye['kalan']
+        son = son_odeme_map.get(isc['id'])
+        # bu_hafta_gun SADECE goruntuleme amaclidir, 'kalan' bakiyeyi hic
+        # etkilemez — bkz. isci_bu_hafta_hesapla yorumu.
+        hafta = isci_bu_hafta_hesapla(c, isc['id'], hafta_bas, hafta_son)
+        isciler.append({
+            'id': isc['id'],
+            'ad_soyad': isc['ad_soyad'],
+            'yevmiye': bakiye['kalan_gun'],
+            'kalan': bakiye['kalan'],
+            'bu_hafta_gun': hafta['bu_hafta_gun'],
+            'son_odeme_id': son['id'] if son else None,
+            'son_odeme_miktar': son['miktar'] if son else 0
+        })
     c.execute("SELECT deger FROM ayarlar WHERE anahtar='yemek_fiyati'")
     yf_row = c.fetchone()
     yemek_fiyati = float(yf_row['deger']) if yf_row and yf_row['deger'] else 0
@@ -1452,45 +1547,23 @@ def api_haftalik():
                 ORDER BY gecerli_tarih DESC LIMIT 1) as gun_fiyati
         FROM puantaj p
         WHERE p.calisma_durumu IN ('tam_gun','bir_bucuk_gun','yarim_gun')
-        AND p.tarih >= ?
-    """, (donem_bas,))
+    """)
     gun_rows = c.fetchall()
     kisi_gun = len(gun_rows)
     yemek_maliyeti_detay = round(sum((r['gun_fiyati'] or yemek_fiyati) for r in gun_rows), 2)
-    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM yemek_odeme WHERE tarih >= ?", (donem_bas,))
+    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM yemek_odeme")
     yemek_odenen = float(c.fetchone()['toplam'] or 0)
-    c.execute("SELECT id, miktar FROM yemek_odeme WHERE tarih >= ? ORDER BY id DESC LIMIT 1", (donem_bas,))
+    c.execute("SELECT id, miktar FROM yemek_odeme ORDER BY id DESC LIMIT 1")
     son_yo = c.fetchone()
-    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM civi_gider WHERE tarih >= ?", (donem_bas,))
+    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM civi_gider")
     civi_toplam = float(c.fetchone()['toplam'] or 0)
-    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM civi_odeme WHERE tarih >= ?", (donem_bas,))
+    c.execute("SELECT COALESCE(SUM(miktar),0) as toplam FROM civi_odeme")
     civi_odenen = float(c.fetchone()['toplam'] or 0)
-    c.execute("SELECT id, miktar FROM civi_odeme WHERE tarih >= ? ORDER BY id DESC LIMIT 1", (donem_bas,))
+    c.execute("SELECT id, miktar FROM civi_odeme ORDER BY id DESC LIMIT 1")
     son_co = c.fetchone()
-    c.execute("SELECT id, miktar FROM civi_gider WHERE tarih >= ? ORDER BY id DESC LIMIT 1", (donem_bas,))
+    c.execute("SELECT id, miktar FROM civi_gider ORDER BY id DESC LIMIT 1")
     son_cg = c.fetchone()
     conn.close()
-    isciler = []
-    toplam_kalan = 0
-    for r in rows:
-        ucret = r['gunluk_ucret'] or 0
-        yev = r['tum_yevmiye'] or 0
-        mes = r['tum_mesai'] or 0
-        mesai_ucret = (ucret / 8 * 1.5) * mes if ucret > 0 else 0
-        hakedis = (yev * ucret) + mesai_ucret
-        odenen = odeme_map.get(r['id'], 0) or 0
-        kalan = max(round(hakedis - odenen, 2), 0)
-        toplam_kalan += kalan
-        son = son_odeme_map.get(r['id'])
-        kalan_yevmiye = round(kalan / ucret, 1) if ucret > 0 and kalan > 0 else 0
-        isciler.append({
-            'id': r['id'],
-            'ad_soyad': r['ad_soyad'],
-            'kalan_yevmiye': kalan_yevmiye,
-            'kalan': kalan,
-            'son_odeme_id': son['id'] if son else None,
-            'son_odeme_miktar': son['miktar'] if son else 0
-        })
     yemek_maliyeti = yemek_maliyeti_detay
     return jsonify({
         'isciler': isciler,
@@ -1560,7 +1633,7 @@ def api_aylik():
         p = puantaj_map.get(isci_id, {'yevmiye': 0, 'mesai': 0})
         yev = p['yevmiye']
         mes = p['mesai']
-        mesai_ucret = (ucret / 8 * 1.5) * mes if ucret > 0 else 0
+        mesai_ucret = (ucret / 8) * mes if ucret > 0 else 0
         hakedis = round((yev * ucret) + mesai_ucret, 2)
         toplam_hakedis += hakedis
         isci_list.append({
@@ -1740,7 +1813,7 @@ def api_rapor_haftalik():
             for d in gun_durumlari if d
         )
         hk = hakedis_map.get(isci_id, {'yevmiye': 0, 'mesai': 0})
-        mesai_ucret = (ucret / 8 * 1.5) * hk['mesai'] if ucret > 0 else 0
+        mesai_ucret = (ucret / 8) * hk['mesai'] if ucret > 0 else 0
         toplam_hakedis = (hk['yevmiye'] * ucret) + mesai_ucret
         odenen = odeme_map.get(isci_id, 0)
         kalan = max(round(toplam_hakedis - odenen, 2), 0)
@@ -1764,49 +1837,6 @@ def api_rapor_haftalik():
         'haftalik_giderler': giderler,
         'toplam_gider': toplam_gider
     })
-
-
-@app.route('/api/hakedis', methods=['GET', 'POST'])
-def api_hakedis():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    if request.method == 'POST':
-        d = request.json
-        c.execute(
-            'INSERT INTO beton_hakedis (tarih, miktar_m3, birim_fiyat, aciklama) VALUES (?,?,?,?)',
-            (d.get('tarih', date.today().isoformat()), d.get('miktar_m3', 0),
-             d.get('birim_fiyat', 0), d.get('aciklama', ''))
-        )
-        conn.commit()
-        conn.close()
-        return jsonify({'success': True})
-
-    ay = request.args.get('ay', date.today().strftime('%Y-%m'))
-    c.execute("SELECT * FROM beton_hakedis WHERE strftime('%Y-%m', tarih)=? ORDER BY tarih", (ay,))
-    kayitlar = [dict(r) for r in c.fetchall()]
-    conn.close()
-
-    toplam_m3 = round(sum(k['miktar_m3'] for k in kayitlar), 2)
-    toplam_tutar = round(sum(k['miktar_m3'] * k['birim_fiyat'] for k in kayitlar), 2)
-
-    return jsonify({
-        'ay': ay,
-        'kayitlar': kayitlar,
-        'toplam_m3': toplam_m3,
-        'toplam_tutar': toplam_tutar
-    })
-
-
-@app.route('/api/hakedis/<int:hakedis_id>', methods=['DELETE'])
-def api_hakedis_sil(hakedis_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM beton_hakedis WHERE id=?', (hakedis_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({'success': True})
 
 
 @app.route('/api/hatirlatma', methods=['GET', 'POST'])
