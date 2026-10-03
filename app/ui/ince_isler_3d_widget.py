@@ -323,7 +323,7 @@ class OdaSatiri(QWidget):
 
         # ── Oda adı ──────────────────────────────────────────────────
         isim_lbl = QLabel(oda_adi)
-        isim_lbl.setFixedWidth(100)
+        isim_lbl.setMinimumWidth(100)
         isim_lbl.setStyleSheet(
             "font-weight: bold; color: #e0e0e0; font-size: 9pt;"
         )
@@ -485,13 +485,13 @@ class InceIsler3DPanel(QWidget):
         baslik_row.addStretch()
 
         self.btn_yenile = QPushButton(" Yenile")
-        self.btn_yenile.setFixedWidth(80)
+        self.btn_yenile.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.btn_yenile.setToolTip("Malzeme seçimlerini 3D'ye uygula")
         self.btn_yenile.clicked.connect(self._yenile)
         baslik_row.addWidget(self.btn_yenile)
 
         self.btn_temizle = QPushButton(" Temizle")
-        self.btn_temizle.setFixedWidth(80)
+        self.btn_temizle.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.btn_temizle.clicked.connect(self._temizle)
         baslik_row.addWidget(self.btn_temizle)
 

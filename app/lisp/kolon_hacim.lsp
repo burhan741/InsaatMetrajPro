@@ -17,7 +17,7 @@
 (defun c:KOLON-HACIM ( / ss_kolon i ent alan
                          kat_yuk kolon_sayisi brut_hacim
                          dosya sonuc_str sonuc_yolu
-                         girdilen_yuk)
+                         girdilen_yuk atlanan gcSonuc vlaSonuc alanSonuc)
 
   ;; Katman ve parametre değişkenleri (Python override edilebilir)
   (if (not (boundp '*IMP_KATMAN_KOLON*))    (setq *IMP_KATMAN_KOLON*    "KOLON"))
@@ -77,15 +77,36 @@
 
   (prompt (strcat "\n  Kat Yüksekliği: " (rtos kat_yuk 2 2) " m"))
 
-  ;; ── 3. Her kolon için enkesit alanı hesapla ───────────────
+  ;; ── 3. Her kolon için enkesit alanı hesapla (Rev-133: çift yöntem) ─
+  ;; vlax-curve-getArea SADECE tam KAPALI (Closed=Yes) eğrilerde güvenilir
+  ;; çalışır; sahada çizilen polyline'lar bazen görsel olarak kapalı
+  ;; görünür ama "Closed" bayrağı set edilmemiştir (son nokta üstüne
+  ;; çizilmiş ama Kapat/Close komutu kullanılmamış) — bu durumda sessizce
+  ;; hata verip alan=0 döner. vla-get-Area (COM Area özelliği) bazı
+  ;; LWPOLYLINE durumlarında bunun yerine çalışabildiği için 2. yöntem
+  ;; olarak deneniyor. İkisi de başarısızsa obje NEDEN atlandığı bilgisiyle
+  ;; birlikte kullanıcıya bildiriliyor (önceden sessizce 0 sayılıyordu).
   (setq i 0)
+  (setq atlanan 0)
   (while (< i (sslength ss_kolon))
     (setq ent (ssname ss_kolon i))
-    (setq alan
-      (if (vl-catch-all-error-p
-            (vl-catch-all-apply 'vlax-curve-getArea (list ent)))
-        0.0
-        (abs (vlax-curve-getArea ent))))
+    (setq alan 0.0)
+
+    ;; 1. yöntem: vlax-curve-getArea
+    (setq gcSonuc (vl-catch-all-apply 'vlax-curve-getArea (list ent)))
+    (if (not (vl-catch-all-error-p gcSonuc))
+      (setq alan (abs gcSonuc)))
+
+    ;; 2. yöntem (fallback): vla-get-Area COM özelliği
+    (if (<= alan 0)
+      (progn
+        (setq vlaSonuc (vl-catch-all-apply 'vlax-ename->vla-object (list ent)))
+        (if (not (vl-catch-all-error-p vlaSonuc))
+          (progn
+            (setq alanSonuc (vl-catch-all-apply 'vla-get-Area (list vlaSonuc)))
+            (if (not (vl-catch-all-error-p alanSonuc))
+              (setq alan (abs alanSonuc)))))))
+
     (if (> alan 0)
       (progn
         (setq brut_hacim (+ brut_hacim (* alan kat_yuk)))
@@ -93,8 +114,16 @@
         (prompt (strcat "\n  Kolon " (itoa kolon_sayisi)
                         " : " (rtos alan 2 4) " m² × "
                         (rtos kat_yuk 2 2) " m = "
-                        (rtos (* alan kat_yuk) 2 4) " m³"))))
+                        (rtos (* alan kat_yuk) 2 4) " m³")))
+      (progn
+        (setq atlanan (1+ atlanan))
+        (prompt (strcat "\n  ATLANDI (alan=0): " (cdr (assoc 0 (entget ent)))
+                        " — KAPALI (Closed=Yes) olmayabilir, Properties'ten kontrol edin"))))
     (setq i (1+ i)))
+
+  (if (> atlanan 0)
+    (prompt (strcat "\n⚠ UYARI: " (itoa atlanan)
+                    " obje alan=0 nedeniyle atlandı (toplama dahil edilmedi).")))
 
   ;; ── 4. Konsol çıktısı ────────────────────────────────────
   (prompt "\n┌─────────────────────────────────────")
@@ -110,6 +139,7 @@
     (strcat "{"
       "\"tur\":\"kolon_hacim\","
       "\"kolon_sayisi\":" (itoa kolon_sayisi) ","
+      "\"atlanan_sayisi\":" (itoa atlanan) ","
       "\"kat_yuksekligi\":" (rtos kat_yuk 2 4) ","
       "\"toplam_hacim\":" (rtos brut_hacim 2 4) ","
       "\"birim\":\"m3\","

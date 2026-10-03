@@ -11,11 +11,16 @@ logger = logging.getLogger(__name__)
 
 
 def check_pozlar_loaded(db: DatabaseManager) -> bool:
-    """Check if positions are loaded (minimal)"""
+    """CŞB poz tablosunun dolu olup olmadigini kontrol et."""
+    try:
+        from app.core.csb_poz_engine import CSBPozEngine
+        return len(CSBPozEngine().tum_pozlar()) > 0
+    except Exception:
+        pass
     try:
         pozlar = db.execute("SELECT COUNT(*) as count FROM pozlar")
         return (pozlar[0]['count'] if pozlar else 0) > 0
-    except:
+    except Exception:
         return False
 
 
@@ -38,12 +43,25 @@ def check_formuller_loaded(db: DatabaseManager) -> bool:
 
 
 def initialize_database_data(db: DatabaseManager, force_reload: bool = False) -> Dict[str, Any]:
-    """Initialize database data (minimal - dummy)"""
-    return {
-        'pozlar': {'success': 0, 'failed': 0},
-        'malzemeler': {'success': 0, 'failed': 0},
-        'formuller': {'success': 0, 'failed': 0}
-    }
+    """Initialize database data — CŞB poz seed'ini csb_poz_engine uzerinden calistirir."""
+    try:
+        from app.core.csb_poz_engine import CSBPozEngine
+        engine = CSBPozEngine()
+        count = len(engine.tum_pozlar())
+        return {
+            'pozlar': {'success': count, 'failed': 0},
+            'malzemeler': {'success': 0, 'failed': 0},
+            'formuller': {'success': 0, 'failed': 0},
+            'message': f'CŞB poz veritabanı hazır ({count} poz)',
+        }
+    except Exception as e:
+        logger.warning("CŞB poz seed hatası: %s", e)
+        return {
+            'pozlar': {'success': 0, 'failed': 0},
+            'malzemeler': {'success': 0, 'failed': 0},
+            'formuller': {'success': 0, 'failed': 0},
+            'message': 'Poz veritabanı hazırlanamadı',
+        }
 
 
 def initialize_material_data(db: DatabaseManager, force_reload: bool = False) -> Dict[str, Any]:

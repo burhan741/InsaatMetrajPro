@@ -25,6 +25,7 @@ venv/
 env/
 ENV/
 .venv
+.venv_test/
 
 # IDE
 # VS Code - tüm klasörü ignore et, ama önemli dosyaları commit et
@@ -64,3 +65,14 @@ error_log.txt
 
 # Git push script
 git_push.bat
+
+# Rev-166: yedek kopyalar, program çıktıları, geçici dosyalar
+*.bak
+*.bak[0-9]
+*.bak_*
+*.xlsx
+*_result.txt
+test_out.txt
+anthropic_check.txt
+*pip_list.txt
+pythonanywhere/app - Kopya.py

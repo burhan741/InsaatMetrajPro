@@ -168,15 +168,37 @@ class MaterialCalculator:
                 }])
                 continue
             poz = self.db.get_poz(poz_no)
-            if not poz:
-                continue
-            poz_id = poz['id']
-            fire_orani = (
-                fire_orani_override if fire_orani_override is not None
-                else poz.get('fire_orani', 0.05)
-            )
-            formuller = self.db.get_poz_formulleri(poz_id)
+            fire_orani = fire_orani_override if fire_orani_override is not None else 0.05
+            formuller = []
+            if poz:
+                poz_id = poz['id']
+                fire_orani = (
+                    fire_orani_override if fire_orani_override is not None
+                    else poz.get('fire_orani', 0.05)
+                )
+                formuller = self.db.get_poz_formulleri(poz_id) or []
+
             if not formuller:
+                # Formül tanımlı değil → kalemi doğrudan malzeme olarak aktar
+                birim_fiyat = float(kalem.get('birim_fiyat', 0) or 0)
+                tanim = kalem.get('tanim', '') or poz_no
+                kategori = kalem.get('kategori', '') or 'Diğer'
+                miktar_fire = round(miktar * (1.0 + fire_orani), 2)
+                sp_fiyat_tablosu[tanim] = birim_fiyat
+                all_materials.append([{
+                    'malzeme_id': None,
+                    'malzeme_adi': tanim,
+                    'miktar': miktar_fire,
+                    'birim': kalem.get('birim', 'adet'),
+                    'birim_fiyat': birim_fiyat,
+                    'formul_tipi': 'dogrudan',
+                    'poz_no': poz_no,
+                    'poz_tanim': tanim,
+                    'poz_miktar': miktar,
+                    'poz_birim': kalem.get('birim', ''),
+                    'poz_fire_orani': fire_orani,
+                    'malzeme_kategori': kategori,
+                }])
                 continue
             materials = self.calculator.calculate_materials_for_poz(miktar, formuller, fire_orani)
             for material in materials:

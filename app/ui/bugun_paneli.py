@@ -87,7 +87,7 @@ class GorevSatiri(QFrame):
         }.get(seviye, RENK_YAPILACAK)
 
         chip = QLabel(seviye)
-        chip.setFixedWidth(72)
+        chip.setMinimumWidth(72)
         chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         chip.setStyleSheet(f"""
             QLabel {{
@@ -112,7 +112,6 @@ class GorevSatiri(QFrame):
         if kaynak:
             kaynak_label = QLabel(f"👷 {kaynak}")
             kaynak_label.setStyleSheet("color: #6c757d; font-size: 9pt;")
-            kaynak_label.setMaximumWidth(140)
             layout.addWidget(kaynak_label)
 
         # Süre

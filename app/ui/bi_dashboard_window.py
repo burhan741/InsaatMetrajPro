@@ -231,7 +231,7 @@ class BIDashboardWindow(QWidget):
         layout.addWidget(self.proje_combo)
 
         btn = QPushButton(" Yenile")
-        btn.setFixedWidth(90)
+        btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         btn.clicked.connect(self.load_dashboard)
         layout.addWidget(btn)
 

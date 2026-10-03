@@ -15,3 +15,6 @@ PyOpenGL>=3.1.6
 PyOpenGL-accelerate>=3.1.6
 numpy>=1.24.0
 cryptography>=41.0.0
+curl_cffi>=0.7.0
+nodriver>=0.37.0
+nodriver-cf-bypass>=0.1.0

@@ -20,6 +20,10 @@ hiddenimports = [
     'openpyxl', 'openpyxl.styles', 'openpyxl.chart', 'openpyxl.drawing',
     'reportlab', 'reportlab.platypus', 'reportlab.pdfgen',
     'ezdxf', 'pdfplumber',
+    'fitz', 'pymupdf',
+    'cryptography', 'cryptography.hazmat.primitives.ciphers',
+    'cryptography.hazmat.primitives.padding',
+    'cryptography.hazmat.backends',
     'matplotlib', 'matplotlib.backends.backend_qt5agg',
     'matplotlib.backends.backend_agg',
     'numpy',
@@ -66,8 +70,13 @@ hiddenimports = [
     'app.core.gecikme_ceza_engine', 'app.core.hakedis_kesinti_engine',
     'app.core.sgk_iscilik_engine', 'app.core.teklif_engine',
     'app.core.teminat_engine', 'app.core.yaklasik_maliyet_engine',
-    'app.core.kaynak_dengeleme_engine', 'app.core.ekap_engine',
+    'app.core.kaynak_dengeleme_engine',
     'app.core.claude_engine',
+    # --- Rev-67~83 Yeni Core Modulleri ---
+    'app.core.csb_poz_engine', 'app.core.pdf_metraj_engine',
+    'app.core.bfa_engine', 'app.core.atasaman_engine',
+    'app.core.santiye_gunluk_engine', 'app.core.nakit_akis_engine',
+    'app.core.ince_isler_hizli_engine',
     # --- UI Modulleri ---
     'app.ui.main_window', 'app.ui.dialogs', 'app.ui.dialogs_minimal',
     'app.ui.startup_dialog', 'app.ui.taseron_window', 'app.ui.styles',
@@ -92,11 +101,16 @@ hiddenimports = [
     'app.ui.yaklasik_maliyet_window', 'app.ui.devlet_ihalesi_widget',
     'app.ui.fatura_window', 'app.ui.teklif_window', 'app.ui.teminat_window',
     'app.ui.saha_demiri_window', 'app.ui.asistan_pencere', 'app.ui.asistan_panel',
-    'app.ui.ekap_window', 'app.ui.demir_hesaplama_window',
+    'app.ui.demir_hesaplama_window',
+    # --- Rev-67~83 Yeni UI Modulleri ---
+    'app.ui.pdf_metraj_window', 'app.ui.bfa_window',
+    'app.ui.atasaman_window', 'app.ui.santiye_gunluk_window',
+    'app.ui.nakit_akis_window', 'app.ui.ince_isler_hizli_window',
+    'app.ui.hakedis_window', 'app.ui.yaklasik_maliyet_window',
     # --- Utils ---
     'app.utils.data_loader', 'app.utils.export_manager',
     'app.utils.helpers', 'app.utils.pdf_importer', 'app.utils.excel_importer',
-    'app.utils.data_loader_minimal',
+    'app.utils.data_loader_minimal', 'app.utils.font_utils',
     # --- Data ---
     'app.data.konut_is_kalemleri', 'app.data.malzeme_formulleri',
     'app.data.fire_oranlari', 'app.data.gantt_templates',
@@ -127,6 +141,15 @@ hiddenimports += collect_submodules('app')
 
 # reportlab data dosyalari (fontlar vb.)
 datas += collect_data_files('reportlab')
+
+# PyMuPDF (fitz) — DLL ve kaynak dosyalari
+try:
+    tmp_ret = collect_all('fitz')
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
+except Exception:
+    pass  # PyMuPDF kurulu degilse atla
 
 # certifi SSL sertifikalari (requests/anthropic icin)
 datas += collect_data_files('certifi')

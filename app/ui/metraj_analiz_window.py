@@ -2,6 +2,8 @@
 Akıllı Metraj Analizi Penceresi
 """
 
+import copy
+import dataclasses
 import logging
 import math
 import re
@@ -15,11 +17,14 @@ from PyQt6.QtWidgets import (
     QDialog, QListWidget, QListWidgetItem, QCheckBox, QDialogButtonBox,
     QTabWidget, QRadioButton, QButtonGroup, QScrollArea, QInputDialog
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QColor, QFont
 
 import webbrowser
 import tempfile
+
+from app.core.kesim_besleme import demirlerden_kesim_parcalari_uret
+from app.ui.demir_hesaplama_window import DEMIR_BIRIM_AGIRLIK as _KESIM_DESTEKLENEN_CAPLAR
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -63,10 +68,28 @@ except ImportError:
     PANDAS_AVAILABLE = False
     pd = None
 
+try:
+    from app.core.excel_bicim import beton_kalip_sutunlari_tek_hane  # Rev-166
+except Exception:
+    def beton_kalip_sutunlari_tek_hane(ws, ara_satir=40):
+        return []
+
 # AutoCAD canlı bağlantı (COM Automation)
 try:
     from app.core.autocad_connector import (
-        AutoCADConnector, MetrajObjesi, DemirBilgisi, AcadColor
+        AutoCADConnector, MetrajObjesi, DemirBilgisi, AcadColor,
+        aralikli_donati_hesapla,
+        temel_kirisi_hesapla, temel_kirisi_secim_degerlendir, temel_kirisi_secimi_ayir,
+        radye_hesapla, cizim_uzunlugu_metreye_cevir, perde_hesapla,
+        perde_secimi_degerlendir, perde_alan_supheli_mi, KatYukseklikAyari, BETON_ESASLARI,
+        perde_zincir_uc_dus,
+        doseme_hesapla, doseme_poligon_degerlendir, dikdortgen_koseleri, nokta_poligon_icinde_mi,
+        bosluk_degerlendir, kiris_hesapla, KIRIS_TIPLERI,
+        kiris_secim_degerlendir, kiris_mukerrer_bul, KIRIS_RENKLERI, kenar_eksik_secim_uyarisi,
+        kolon_perde_hesapla, eleman_tipi_belirle, eleman_ad_normalize,
+        ELEMAN_TIPLERI, ELEMAN_RENKLERI, OKUNAMAYAN_RENK, hakim_doseme_kalinligi_cm,
+        SACAK_TIPI, SACAK_HALKA, SACAK_SERIT, SACAK_RENK, sacak_mi, sacak_halka_degerlendir,
+        sacak_serit_degerlendir, sacak_mukerrer_bul,
     )
     AUTOCAD_AVAILABLE = True
 except Exception:
@@ -74,8 +97,110 @@ except Exception:
     AutoCADConnector = None
     MetrajObjesi = None
     DemirBilgisi = None
+    aralikli_donati_hesapla = None
+    temel_kirisi_hesapla = None
+    temel_kirisi_secim_degerlendir = None
+    temel_kirisi_secimi_ayir = None
+    radye_hesapla = None
+    cizim_uzunlugu_metreye_cevir = None
+    perde_hesapla = None
+    perde_secimi_degerlendir = None
+    perde_alan_supheli_mi = None
+    perde_zincir_uc_dus = None
+    KatYukseklikAyari = None
+    doseme_hesapla = None
+    doseme_poligon_degerlendir = None
+    dikdortgen_koseleri = None
+    nokta_poligon_icinde_mi = None
+    bosluk_degerlendir = None
+    kiris_hesapla = None
+    KIRIS_TIPLERI = ("İç", "Kenar")
+    kiris_secim_degerlendir = None
+    kiris_mukerrer_bul = None
+    kenar_eksik_secim_uyarisi = None
+    KIRIS_RENKLERI = {}
+    BETON_ESASLARI = {"tam": "Tam kat", "net": "Net (kat − döşeme)"}
+    kolon_perde_hesapla = None
+    eleman_tipi_belirle = None
+    ELEMAN_TIPLERI = ("Kolon", "Perde")
+    ELEMAN_RENKLERI = {"Kolon": 3, "Perde": 4}
+    OKUNAMAYAN_RENK = 1
+    hakim_doseme_kalinligi_cm = None
+    SACAK_TIPI, SACAK_HALKA, SACAK_SERIT, SACAK_RENK = "Saçak", "Halka", "Şerit", 40
+    sacak_halka_degerlendir = sacak_serit_degerlendir = sacak_mukerrer_bul = None
+
+    def sacak_mi(satir):
+        return (satir or {}).get("tip") == "Saçak"
+
+    def eleman_ad_normalize(ad):
+        return "".join(str(ad or "").split()).upper()
+
+# Kat bazlı beton + kalıp özeti (saf, bağımlılıksız)
+try:
+    from app.core.kat_ozeti import kat_ozeti_olustur, ozet_tablo_satirlari, TEMEL_KAT
+except Exception:
+    kat_ozeti_olustur = None
+    ozet_tablo_satirlari = None
+    TEMEL_KAT = "Temel"
+
+# Rev-152: Merdiven (plak merdiven) beton + kalıp (saf, bağımlılıksız)
+try:
+    from app.core.merdiven_hesap import (
+        merdiven_kol_hesapla, merdiven_sahanlik_hesapla, merdiven_toplam_kalip, kalip_esas_metni,
+        MERDIVEN_TIP_KOL, MERDIVEN_TIP_SAHANLIK,
+    )
+except Exception:
+    merdiven_kol_hesapla = None
+    merdiven_sahanlik_hesapla = None
+    merdiven_toplam_kalip = None
+    kalip_esas_metni = None
+    MERDIVEN_TIP_KOL, MERDIVEN_TIP_SAHANLIK = "Kol", "Sahanlık"
+
+# Rev-153: Temel kirişi (SBH) demir — filiz + tevzi (tip bazlı parametre)
+try:
+    from app.core.temel_kirisi_demir import (
+        temel_kirisi_demir_hesapla, temel_kirisi_kesim_parcalari, cap_bazli_topla,
+        sbh_parametre_tamamla, sbh_parametre_dogrula, SBH_DEMIR_ALANLARI,
+    )
+except Exception:
+    temel_kirisi_demir_hesapla = None
+    temel_kirisi_kesim_parcalari = None
+    cap_bazli_topla = None
+    sbh_parametre_tamamla = None
+    sbh_parametre_dogrula = None
+    SBH_DEMIR_ALANLARI = []
+
+# Rev-157: Radye kayıt listesi + Excel "Radye" sayfası (saf)
+try:
+    from app.core.radye_rapor import radye_kaydi_hesapla, radye_toplamlari, radye_sayfasi_yaz
+except Exception:
+    radye_kaydi_hesapla = None
+    radye_toplamlari = None
+    radye_sayfasi_yaz = None
+
+# Kalıcı ayar dosyası (data/autocad_ayarlari.json) — merdiven kalıp esası burada saklanır
+try:
+    from app.core.autocad_connector import autocad_ayari_oku, autocad_ayari_yaz
+except Exception:
+    def autocad_ayari_oku(anahtar, varsayilan=None):
+        return varsayilan
+
+    def autocad_ayari_yaz(anahtar, deger):
+        return None
 
 logger = logging.getLogger(__name__)
+
+def tek_hane(deger, binlik: bool = False) -> str:
+    """Rev-165: beton / kalıp / sipariş GÖRÜNTÜSÜ tek ondalık, YARIM YUKARI (1.25 -> 1.3).
+    Python'un format'ı yarımı çifte yuvarlar (1.25 -> 1.2) — sahada / Excel'de beklenen bu değil.
+    Hesap ve kayıt tam hassasiyette kalır; sadece metin."""
+    from decimal import Decimal, ROUND_HALF_UP
+    try:
+        d = Decimal(repr(float(deger))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    except (TypeError, ValueError, ArithmeticError):
+        return str(deger)
+    return f"{d:,}" if binlik else f"{d}"
+
 
 
 class SimplePolygon:
@@ -456,8 +581,2278 @@ class SarfiyatAyarlariDialog(QDialog):
             QMessageBox.information(self, "Sıfırlandı", "Fabrika değerleri yüklendi.")
 
 
+class CapBazliTonajDialog(QDialog):
+    """Toplanan demirleri çapa (mm) göre gruplayıp toplam boy/ağırlık/tonaj gösterir.
+
+    Neyi çözüyoruz: Sahada demir siparişi verirken "kaç ton Ø12, kaç ton Ø16
+    lazım" sorusuna tek bakışta yanıt — tüm katlardaki demirler çapa göre
+    tek tabloda toplanır, TS 708 birim ağırlıklarıyla (DEMIR_BIRIM_AGIRLIK)
+    kg ve tona çevrilir.
+    Nasıl test ederiz: scratchpad/test_cap_bazli_tonaj.py — bilinen adet/boy
+    değerleriyle sahte DemirBilgisi listesi üretilip toplamların elle
+    hesaplanan değerlerle (adet, boy_m, agirlik_kg, ton, yüzde) eşleştiği
+    doğrulanır; ayrıca boş liste ve tek-çap liste uç durumları kontrol edilir.
+    """
+
+    def __init__(self, demirler, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Çap Bazlı Demir Tonajı")
+        self.setMinimumSize(560, 420)
+        self.setStyleSheet(
+        "QDialog { background: #252535; color: white; }"
+        "QTableWidget { background: #1e1e2e; color: white; gridline-color: #444; }"
+        "QHeaderView::section { background: #333345; color: white; font-weight: bold; padding: 4px; border: 1px solid #555; }"
+        "QPushButton { background: #444; color: white; padding: 6px 14px; border: 1px solid #666; border-radius: 4px; }"
+        "QPushButton:hover { background: #555; }"
+        )
+        self._ozet = self._hesapla(demirler)
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        lbl = QLabel(f" Toplam {len(demirler)} demir kalemi, çapa göre gruplandı:")
+        lbl.setStyleSheet("color: #aaa; font-size: 9pt;")
+        lay.addWidget(lbl)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(
+        ["Çap (mm)", "Adet", "Toplam Boy (m)", "Birim Ağ. (kg/m)",
+         "Toplam Ağırlık (kg)", "Toplam Ağırlık (ton)"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table)
+
+        genel_lbl = QLabel()
+        genel_lbl.setStyleSheet("color: #2ecc71; font-size: 11pt; font-weight: bold; padding: 6px;")
+        g = self._ozet["genel"]
+        genel_lbl.setText(
+        f" GENEL TOPLAM: {g['adet']:,} adet | {g['boy_m']:,.2f} m | "
+        f"{g['agirlik_kg']:,.1f} kg | {g['agirlik_kg']/1000:,.3f} ton"
+        )
+        lay.addWidget(genel_lbl)
+        self._doldur()
+
+        btn_bar = QHBoxLayout()
+        btn_excel = QPushButton(" Excel'e Aktar")
+        btn_excel.setStyleSheet(
+        "QPushButton { background: #27ae60; color: white; font-weight: bold; padding: 6px 16px; border: 1px solid #2ecc71; border-radius: 4px; }"
+        "QPushButton:hover { background: #2ecc71; }"
+        )
+        btn_excel.clicked.connect(self._excele_aktar)
+        btn_bar.addWidget(btn_excel)
+        btn_kapat = QPushButton("Kapat")
+        btn_kapat.clicked.connect(self.accept)
+        btn_bar.addWidget(btn_kapat)
+        lay.addLayout(btn_bar)
+
+    @staticmethod
+    def _hesapla(demirler):
+        """Demir listesini çapa göre gruplar. Dönen sözlük: {cap: {...}, "genel": {...}}"""
+        cap_ozeti = {}
+        for d in demirler:
+            cap = d.cap
+            if cap not in cap_ozeti:
+                cap_ozeti[cap] = {"adet": 0, "boy_m": 0.0, "agirlik_kg": 0.0,
+                                   "birim_agirlik": getattr(d, "agirlik_birim", 0.0)}
+            cap_ozeti[cap]["adet"] += d.adet
+            cap_ozeti[cap]["boy_m"] += d.toplam_boy
+            cap_ozeti[cap]["agirlik_kg"] += d.toplam_agirlik
+        genel = {
+            "adet": sum(v["adet"] for v in cap_ozeti.values()),
+            "boy_m": sum(v["boy_m"] for v in cap_ozeti.values()),
+            "agirlik_kg": sum(v["agirlik_kg"] for v in cap_ozeti.values()),
+        }
+        return {"caplar": cap_ozeti, "genel": genel}
+
+    def _doldur(self):
+        caplar = sorted(self._ozet["caplar"].keys())
+        genel_kg = self._ozet["genel"]["agirlik_kg"] or 1.0
+        self.table.setRowCount(len(caplar))
+        for row, cap in enumerate(caplar):
+            v = self._ozet["caplar"][cap]
+            degerler = [
+                f"Ø{cap}", f"{v['adet']:,}", f"{v['boy_m']:,.2f}",
+                f"{v['birim_agirlik']:.3f}", f"{v['agirlik_kg']:,.2f}",
+                f"{v['agirlik_kg']/1000:,.4f}",
+            ]
+            for col, metin in enumerate(degerler):
+                item = QTableWidgetItem(metin)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, col, item)
+
+    def _excele_aktar(self):
+        if not PANDAS_AVAILABLE:
+            QMessageBox.warning(self, "Uyarı", "Excel export için pandas gerekli!")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Çap Bazlı Tonaj Kaydet", "Cap_Bazli_Tonaj.xlsx", "Excel Dosyası (*.xlsx)"
+        )
+        if not file_path:
+            return
+        try:
+            caplar = sorted(self._ozet["caplar"].keys())
+            rows = []
+            for cap in caplar:
+                v = self._ozet["caplar"][cap]
+                rows.append({
+                    "Çap (mm)": cap, "Adet": v["adet"],
+                    "Toplam Boy (m)": round(v["boy_m"], 2),
+                    "Birim Ağırlık (kg/m)": v["birim_agirlik"],
+                    "Toplam Ağırlık (kg)": round(v["agirlik_kg"], 2),
+                    "Toplam Ağırlık (ton)": round(v["agirlik_kg"] / 1000, 4),
+                })
+            g = self._ozet["genel"]
+            rows.append({"Çap (mm)": "TOPLAM", "Adet": g["adet"],
+                         "Toplam Boy (m)": round(g["boy_m"], 2),
+                         "Toplam Ağırlık (kg)": round(g["agirlik_kg"], 2),
+                         "Toplam Ağırlık (ton)": round(g["agirlik_kg"] / 1000, 4)})
+            pd.DataFrame(rows).to_excel(file_path, index=False)
+            QMessageBox.information(self, "Başarılı", f"Excel'e aktarıldı!\n\n{file_path}")
+        except Exception as e:
+            logger.error(f"Çap bazlı tonaj Excel export hatası: {e}")
+            QMessageBox.critical(self, "Hata", f"Hata:\n{e}")
+
+
+def _kapatma_sorusu(parent, adet: int, birim: str, hedef: str) -> str:
+    """Rev-166: döngü paneli Esc / X ile kapatılırken toplanan veri varsa sorar.
+    Dönüş: "evet" (ekle) | "hayir" (ekleme, renkleri geri al) | "vazgec" (pencere açık kalsın)."""
+    S = QMessageBox.StandardButton
+    cevap = QMessageBox.question(
+        parent, "Henüz Eklenmedi",
+        f"Toplanan {adet} {birim} henüz {hedef} EKLENMEDİ.\n\n"
+        f"Evet: {hedef} ekle\n"
+        "Hayır: ekleme, AutoCAD'deki renkleri geri al\n"
+        "Vazgeç: pencere açık kalsın",
+        S.Yes | S.No | S.Cancel, S.Yes)
+    return {S.Yes: "evet", S.No: "hayir"}.get(cevap, "vazgec")
+
+
+class AralikliDonatiDonguPaneli(QDialog):
+    """Ø/aralık formatlı ("Ø14/20 L=500") donatıları TEK TEK, döngüsel
+    seçimle toplayan panel — İhale Demir Metrajı, Aşama 3 güncelleme
+    (bkz. CLAUDE.md Rev-136, "radye gibi dağınık donatı" senaryosu).
+
+    Neyi çözüyoruz? Kutu seçimiyle toplu okuma, radye gibi dağınık
+    donatıda "aynı demiri iki kez sayma / bir demiri atlama" riski
+    taşıyor. Bu panel her turda kullanıcıya TEK bir AutoCAD yazısı
+    seçtirir ("Demir Seç"), hemen mesafe sorar, objeyi YEŞİLE boyar ve
+    listeye ekler — döngü "Bitti" ile kapanana kadar sürer. Aynı yazı
+    (aynı handle) tekrar seçilirse UYARIR (mükerrer koruma — bkz. CLAUDE.md
+    Rev-134 dersi). "Son Ekleneni Geri Al" son satırı siler ve rengi geri
+    alır. "İptal" ile çıkılırsa bu oturumda boyanan TÜM renkler geri alınır
+    (hiçbir şey kata eklenmediği için yeşil iz yanıltıcı olmasın).
+    Nasıl test ederiz: sahte bir connector (aralikli_donati_tek_obje_sec
+    her çağrıda önceden hazırlanmış bir sonuç döndürür) ile "Demir Seç" +
+    mesafe girişi + "Son Ekleneni Geri Al" + mükerrer uyarısı senaryoları
+    headless PyQt'de doğrulanır (bkz. scratchpad/test_aralikli_donati_ui.py).
+    """
+
+    # Bu değer ve üstü girilen mesafe (m) "cm mi girildi?" diye teyit edilir
+    MESAFE_CM_SUPHE_M = 50.0
+    KOLONLAR = ["Metin", "Çap (mm)", "Aralık (cm)", "Boy (cm)", "Mesafe (m)",
+                "Adet", "Toplam Boy (m)", "Toplam Ağırlık (kg)", "Mesafe Kaynağı"]
+    # Rev-142: dağılım mesafesi kaynağı
+    MOD_OLCU = "AutoCAD ölçüsünden (DIMENSION)"
+    MOD_ELLE = "Elle giriş"
+    BIRIM_OTOMATIK = "Otomatik (INSUNITS)"
+    _COMBO_STIL = (
+        "QComboBox { background:#2a2a3a; color:white; border:1px solid #666; padding:4px; }"
+        "QComboBox QAbstractItemView { background:#2a2a3a; color:white; }"
+    )
+
+    def __init__(self, connector, mevcut_handleler=None, parent=None):
+        super().__init__(parent)
+        self.connector = connector
+        # Bu katta registry'de ZATEN kayıtlı handle'lar (önceki oturumlardan) —
+        # kullanıcı bunları tekrar seçerse de mükerrer uyarısı göstermek için.
+        self._mevcut_handleler = set(mevcut_handleler or ())
+        self._satirlar: List[Dict] = []       # bu oturumda eklenen satırlar
+        self._eklenen_handleler: set = set()  # bu oturumda boyanan handle'lar
+        self._olcu_birimi: Optional[str] = None  # ölçü döngüsünde seçilen birim
+        self._olcu_birim_teyitli = False         # ilk ölçü okuması teyit edildi mi
+
+        self.setWindowTitle("İhale Demir Metrajı — Aralıklı Donatı (Tek Tek Seçim)")
+        self.setMinimumSize(840, 460)
+        self.setStyleSheet(
+        "QDialog { background: #252535; color: white; }"
+        "QTableWidget { background: #1e1e2e; color: white; gridline-color: #444; }"
+        "QHeaderView::section { background: #333345; color: white; font-weight: bold; padding: 4px; border: 1px solid #555; }"
+        "QPushButton { background: #444; color: white; padding: 6px 14px; border: 1px solid #666; border-radius: 4px; }"
+        "QPushButton:hover { background: #555; }"
+        )
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        bilgi = QLabel(
+        " ÖLÇÜDEN modu: 'Demir Seç'e basın; AutoCAD'de donatı yazısını (Ø14/20 l=300) seçip "
+        "ENTER, sonra dağılım ölçüsüne (DIMENSION) tıklayıp ENTER. Adet = ölçü ÷ aralık + 1. "
+        "Döngü kendiliğinden devam eder; yazı seçiminde boş ENTER ile biter. Ölçü seçiminde "
+        "boş ENTER = o demir için mesafeyi elle girersiniz.\n"
+        " ELLE modu: her 'Demir Seç'te tek yazı seçilir, mesafe (m) sorulur."
+        )
+        bilgi.setStyleSheet("color: #d4a017; font-size: 9pt;")
+        bilgi.setWordWrap(True)
+        lay.addWidget(bilgi)
+
+        mod_bar = QHBoxLayout()
+        mod_bar.addWidget(QLabel("Mesafe:"))
+        self.mod_combo = QComboBox()
+        self.mod_combo.addItems([self.MOD_OLCU, self.MOD_ELLE])
+        self.mod_combo.setToolTip(
+            "Dağılım mesafesinin nereden alınacağı. Ölçü okunamazsa elle girişe düşülür."
+        )
+        self.mod_combo.setStyleSheet(self._COMBO_STIL)
+        mod_bar.addWidget(self.mod_combo)
+        mod_bar.addSpacing(12)
+        mod_bar.addWidget(QLabel("Ölçü birimi:"))
+        self.birim_combo = QComboBox()
+        self.birim_combo.addItems([self.BIRIM_OTOMATIK, "cm", "mm", "m"])
+        self.birim_combo.setToolTip(
+            "Ölçü değeri bu birimde okunur ve metreye çevrilir (400 cm → 4 m). "
+            "Otomatik = AutoCAD INSUNITS, tanımsızsa cm. Oturumdaki ilk ölçü ayrıca teyit edilir."
+        )
+        self.birim_combo.setStyleSheet(self._COMBO_STIL)
+        mod_bar.addWidget(self.birim_combo)
+        mod_bar.addStretch()
+        self.mod_combo.currentTextChanged.connect(
+            lambda t: self.birim_combo.setEnabled(t == self.MOD_OLCU))
+        lay.addLayout(mod_bar)
+
+        ust_btn_bar = QHBoxLayout()
+        self.btn_sec = QPushButton(" Demir Seç (AutoCAD'e Geç)")
+        self.btn_sec.setStyleSheet(
+        "QPushButton { background: #b7950b; color: white; font-weight: bold; padding: 6px 16px; border: 1px solid #d4ac0d; border-radius: 4px; }"
+        "QPushButton:hover { background: #d4ac0d; }"
+        )
+        self.btn_sec.clicked.connect(self._demir_sec)
+        ust_btn_bar.addWidget(self.btn_sec)
+
+        self.btn_geri_al = QPushButton(" Son Ekleneni Geri Al")
+        self.btn_geri_al.clicked.connect(self._son_ekleneni_geri_al)
+        self.btn_geri_al.setEnabled(False)
+        ust_btn_bar.addWidget(self.btn_geri_al)
+        lay.addLayout(ust_btn_bar)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(len(self.KOLONLAR))
+        self.table.setHorizontalHeaderLabels(self.KOLONLAR)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table)
+
+        self.genel_lbl = QLabel()
+        self.genel_lbl.setStyleSheet("color: #2ecc71; font-size: 11pt; font-weight: bold; padding: 6px;")
+        lay.addWidget(self.genel_lbl)
+        self._genel_toplam_guncelle()
+
+        alt_btn_bar = QHBoxLayout()
+        btn_bitti = QPushButton(" Bitti — Aktif Kata Ekle")
+        btn_bitti.setStyleSheet(
+        "QPushButton { background: #27ae60; color: white; font-weight: bold; padding: 6px 16px; border: 1px solid #2ecc71; border-radius: 4px; }"
+        "QPushButton:hover { background: #2ecc71; }"
+        )
+        btn_bitti.clicked.connect(self._bitti)
+        alt_btn_bar.addWidget(btn_bitti)
+        btn_iptal = QPushButton("İptal")
+        btn_iptal.clicked.connect(self._iptal)
+        alt_btn_bar.addWidget(btn_iptal)
+        lay.addLayout(alt_btn_bar)
+
+    def _olcu_modu(self) -> bool:
+        return self.mod_combo.currentText() == self.MOD_OLCU
+
+    def _komut(self, metin: str) -> None:
+        """Ölçü döngüsünde geri bildirim AutoCAD komut satırına (kullanıcı orada)."""
+        yaz = getattr(self.connector, "komut_satiri_mesaj", None)
+        if yaz is not None:
+            try:
+                yaz(metin)
+            except Exception as e:
+                logger.error(f"Aralıklı donatı komut satırı mesajı: {e}", exc_info=True)
+
+    def _demir_sec(self):
+        """'Demir Seç' butonu: ölçü modunda döngü (boş ENTER'a kadar), elle modda tek tur."""
+        if not self._olcu_modu():
+            self._tek_tur(olcu_modu=False)
+            return
+        birim = self._olcu_birimi_belirle()
+        if birim is None:
+            return
+        self._olcu_birimi = birim
+        self._komut("ARALIKLI DONATI: yazı seç + ENTER, sonra ölçü seç + ENTER. Bitirmek için boş ENTER.")
+        while True:
+            if self._tek_tur(olcu_modu=True) == "bitti":
+                break
+        self._komut(f"ARALIKLI DONATI: döngü bitti — {len(self._satirlar)} donatı listede.")
+
+    def _olcu_birimi_belirle(self) -> Optional[str]:
+        """Ölçü birimini bir kez sorar (varsayılan: combo / INSUNITS / cm)."""
+        secim = self.birim_combo.currentText()
+        varsayilan = secim
+        if secim == self.BIRIM_OTOMATIK:
+            varsayilan = None
+            oku = getattr(self.connector, "cizim_birimi_oku", None)
+            if oku is not None:
+                try:
+                    varsayilan = oku()
+                except Exception as e:
+                    logger.error(f"Aralıklı donatı INSUNITS okunamadı: {e}", exc_info=True)
+            varsayilan = varsayilan or "cm"
+        secenekler = ["cm", "mm", "m"]
+        birim, tamam = QInputDialog.getItem(
+            self, "Ölçü Birimi",
+            "Dağılım ölçüleri (DIMENSION) hangi birimde?\n"
+            "(Yanlışsa adetler 10/100 kat hatalı çıkar — ilk ölçüde ayrıca teyit edilir.)",
+            secenekler, secenekler.index(varsayilan), False,
+        )
+        if not tamam:
+            return None
+        if birim != self._olcu_birimi:
+            self._olcu_birim_teyitli = False
+        return birim
+
+    def _tek_tur(self, olcu_modu: bool) -> str:
+        """Bir donatı: yazı seç -> mesafe (ölçü/elle) -> hesap -> satır + yeşil.
+
+        Returns: "eklendi" | "atlandi" | "bitti" (yazı seçiminde boş ENTER).
+        """
+        try:
+            sonuc = self.connector.aralikli_donati_tek_obje_sec()
+        except Exception as e:
+            logger.error(f"Aralıklı donatı yazı seçimi hatası: {e}", exc_info=True)
+            QMessageBox.critical(self, "Hata", f"Seçim sırasında hata:\n{e}")
+            return "bitti"
+
+        durum = sonuc.get("durum")
+        if durum == "bos_secim":
+            if not olcu_modu:
+                QMessageBox.information(
+                self, "Bilgi",
+                "Hiçbir şey seçilmedi. Tekrar deneyin veya bitirdiyseniz "
+                "'Bitti — Aktif Kata Ekle'ye basın."
+                )
+            return "bitti"
+        if durum in ("ilgisiz", "gecersiz"):
+            mesaj = (sonuc.get("mesaj", "Geçersiz.") if durum == "gecersiz" else
+                     "Seçilen yazı 'Ø.../aralık L=...' formatında değil. "
+                     "Lütfen aralıklı donatı yazısını seçin.")
+            if olcu_modu:
+                self._komut(f"ATLANDI: {mesaj}")
+            else:
+                QMessageBox.warning(self, "Uyarı", mesaj)
+            return "atlandi"
+
+        d = sonuc["ayrisim"]
+        handle = d["handle"]
+
+        if handle in self._eklenen_handleler or handle in self._mevcut_handleler:
+            tekrar = QMessageBox.question(
+            self, "Bu Demir Zaten Eklendi",
+            f"'{d.get('temiz_metin', '')}' bu oturumda (veya bu katta) "
+            f"zaten eklenmiş. Mesafesini güncellemek için tekrar girmek "
+            f"ister misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+            )
+            if tekrar != QMessageBox.StandardButton.Yes:
+                return "atlandi"
+            # Aynı handle'ın satırı aşağıda GÜNCELLENİR, ayrı satır eklenmez.
+
+        olcu_handle = None
+        kaynak = "elle"
+        mesafe_m = None
+        if olcu_modu:
+            olcu = self._olcu_ile_mesafe(d)
+            if olcu is not None:
+                mesafe_m, olcu_handle = olcu
+                kaynak = "ölçü"
+        if mesafe_m is None:
+            mesafe_m = self._elle_mesafe(d)
+            if mesafe_m is None:
+                return "atlandi"  # iptal - obje boyanmadı, tekrar denenebilir
+
+        # Rev-141 yedek güvenlik: çizimdeki cm değeri metre sanılırsa adet 100 kat şişer
+        if mesafe_m >= self.MESAFE_CM_SUPHE_M:
+            cevap = QMessageBox.question(
+                self, "Mesafe Birimi",
+                f"{mesafe_m:g} m — çok büyük.\n"
+                f"Değer cm ise doğrusu {mesafe_m / 100:g} m olmalı.\n\n"
+                f"{mesafe_m / 100:g} m kullanılsın mı?\n"
+                f"(Hayır: {mesafe_m:g} m olarak kalır)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if cevap == QMessageBox.StandardButton.Yes:
+                mesafe_m = mesafe_m / 100.0
+
+        hesap = aralikli_donati_hesapla(
+        cap=d["cap"], aralik_cm=d["aralik_cm"], boy_cm=d["boy_cm"], mesafe_m=mesafe_m
+        )
+        if hesap["hata"]:
+            if olcu_modu:
+                self._komut(f"HATA: {hesap['hata']}")
+            else:
+                QMessageBox.warning(self, "Hesap Hatası", hesap["hata"])
+            return "atlandi"
+
+        satir = dict(d)
+        satir["mesafe_m"] = mesafe_m
+        satir["mesafe_kaynagi"] = kaynak
+        satir["olcu_handle"] = olcu_handle
+        satir["adet"] = hesap["adet"]
+        satir["boy_m"] = hesap["boy_m"]
+        satir["toplam_boy_m"] = hesap["toplam_boy_m"]
+        satir["agirlik_birim"] = hesap["agirlik_birim"]
+        satir["toplam_agirlik_kg"] = hesap["toplam_agirlik_kg"]
+
+        mevcut_index = next(
+        (i for i, s in enumerate(self._satirlar) if s["handle"] == handle), None
+        )
+        if mevcut_index is not None:
+            eski_olcu = self._satirlar[mevcut_index].get("olcu_handle")
+            self._satirlar[mevcut_index] = satir
+            self._tabloyu_yeniden_doldur()
+            if eski_olcu and eski_olcu != olcu_handle:
+                self._olcu_rengi_geri_al_kullanilmiyorsa(eski_olcu)
+            durum_metni = "GÜNCELLENDİ"
+        else:
+            self._satirlar.append(satir)
+            self._satir_ekle_tabloya(satir)
+            self._eklenen_handleler.add(handle)
+            self._isaretle(handle, hizli=olcu_modu)
+            durum_metni = "EKLENDİ"
+        if olcu_handle:
+            self._isaretle(olcu_handle, hizli=True)
+
+        self.btn_geri_al.setEnabled(bool(self._satirlar))
+        self._genel_toplam_guncelle()
+        if olcu_modu:
+            self._komut(
+                f"{d.get('temiz_metin', '')} {durum_metni}: mesafe {mesafe_m:.2f} m ({kaynak}) -> "
+                f"{hesap['adet']} adet, {hesap['toplam_agirlik_kg']:.2f} kg"
+            )
+        return "eklendi"
+
+    def _isaretle(self, handle: str, hizli: bool) -> None:
+        """Yeşil boyama. Ölçü döngüsünde Regen'siz hızlı sürüm (takılma dersi, Rev-137)."""
+        try:
+            hizli_f = getattr(self.connector, "obje_isaretle_hizli", None) if hizli else None
+            if hizli_f is not None:
+                hizli_f(handle)
+            else:
+                self.connector.aralikli_donati_isaretle(handle)
+        except Exception as e:
+            logger.error(f"Aralıklı donatı işaretleme hatası ({handle}): {e}", exc_info=True)
+
+    def _elle_mesafe(self, d: Dict) -> Optional[float]:
+        mesafe_m, tamam = QInputDialog.getDouble(
+        self, "Dağılım Mesafesi",
+        f"{d.get('temiz_metin', '')}\nDağılım mesafesi (m):",
+        4.0, 0.01, 500.0, 2,
+        )
+        return mesafe_m if tamam else None
+
+    def _olcu_ile_mesafe(self, d: Dict):
+        """Ölçü (DIMENSION) seçtirip metre cinsinden mesafe döner.
+
+        Returns: (mesafe_m, olcu_handle) veya None (boş ENTER / okunamadı ->
+        çağıran elle girişe düşer).
+        """
+        r = None
+        for _ in range(3):
+            self._komut(f"{d.get('temiz_metin', '')}: dağılım ÖLÇÜSÜNÜ seçin + ENTER "
+                        f"(boş ENTER = elle gir)")
+            try:
+                r = self.connector.aralikli_donati_olcu_sec()
+            except Exception as e:
+                logger.error(f"Ölçü seçimi hatası: {e}", exc_info=True)
+                self._komut(f"Ölçü seçilemedi ({e}) — mesafeyi elle girin.")
+                return None
+            if r["durum"] == "bulundu":
+                break
+            if r["durum"] == "bos_secim":
+                return None
+            self._komut(f"UYARI: {r.get('mesaj', '')} Tekrar seçin.")
+        else:
+            self._komut("3 denemede ölçü alınamadı — mesafeyi elle girin.")
+            return None
+
+        olcu = r["olcu"]
+        deger = olcu["deger"]
+        if olcu.get("override_farkli"):
+            cevap = QMessageBox.question(
+                self, "Ölçü Yazısı Değiştirilmiş",
+                f"Ölçünün yazısı elle değiştirilmiş: yazıda {olcu['override_deger']:g}, "
+                f"gerçek ölçü {deger:g}.\n\nYazıdaki {olcu['override_deger']:g} kullanılsın mı?\n"
+                f"(Hayır: gerçek ölçü {deger:g})",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if cevap == QMessageBox.StandardButton.Yes:
+                deger = olcu["override_deger"]
+
+        birim = self._olcu_birimi or "cm"
+        mesafe_m = cizim_uzunlugu_metreye_cevir(deger, birim)
+        if not self._olcu_birim_teyitli:
+            cevap = QMessageBox.question(
+                self, "İlk Ölçü — Birim Teyidi",
+                f"Ölçü {deger:g} {birim} okundu → {mesafe_m:.2f} m.\n"
+                f"Aralık {d['aralik_cm']:g} cm ile "
+                f"{aralikli_donati_hesapla(d['cap'], d['aralik_cm'], d['boy_cm'], mesafe_m)['adet']} "
+                f"adet çıkacak.\n\nDoğru mu?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if cevap != QMessageBox.StandardButton.Yes:
+                secenekler = ["cm", "mm", "m"]
+                birim, tamam = QInputDialog.getItem(
+                    self, "Ölçü Birimi", f"Ölçü değeri {deger:g} hangi birimde?",
+                    secenekler, secenekler.index(birim), False,
+                )
+                if not tamam:
+                    return None
+                self._olcu_birimi = birim
+                mesafe_m = cizim_uzunlugu_metreye_cevir(deger, birim)
+            self._olcu_birim_teyitli = True
+        return mesafe_m, r["handle"]
+
+    def _olcu_rengi_geri_al_kullanilmiyorsa(self, olcu_handle: Optional[str]) -> None:
+        """Aynı ölçü birden fazla ilavede kullanılabilir — rengi sadece hiçbir
+        satır onu kullanmıyorsa geri al."""
+        if not olcu_handle:
+            return
+        if any(s.get("olcu_handle") == olcu_handle for s in self._satirlar):
+            return
+        try:
+            self.connector.aralikli_donati_isaret_geri_al(olcu_handle)
+        except Exception as e:
+            logger.error(f"Ölçü rengi geri alınamadı ({olcu_handle}): {e}", exc_info=True)
+
+    def _satir_ekle_tabloya(self, satir: Dict):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        degerler = [
+        satir.get("temiz_metin") or satir.get("ham_metin") or "",
+        f"Ø{satir['cap']}", f"{satir['aralik_cm']:.0f}", f"{satir['boy_cm']:.0f}",
+        f"{satir['mesafe_m']:.2f}", f"{satir['adet']}",
+        f"{satir['toplam_boy_m']:.2f}", f"{satir['toplam_agirlik_kg']:.2f}",
+        satir.get("mesafe_kaynagi", "elle"),
+        ]
+        for col, deger in enumerate(degerler):
+            item = QTableWidgetItem(deger)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, col, item)
+
+    def _tabloyu_yeniden_doldur(self):
+        self.table.setRowCount(0)
+        for satir in self._satirlar:
+            self._satir_ekle_tabloya(satir)
+
+    def _son_ekleneni_geri_al(self):
+        if not self._satirlar:
+            QMessageBox.warning(self, "Uyarı", "Geri alınacak bir satır yok.")
+            return
+        satir = self._satirlar.pop()
+        handle = satir["handle"]
+        self._eklenen_handleler.discard(handle)
+        try:
+            self.connector.aralikli_donati_isaret_geri_al(handle)
+        except Exception as e:
+            logger.debug(f"Aralıklı donatı geri alma hatası: {e}")
+        self._olcu_rengi_geri_al_kullanilmiyorsa(satir.get("olcu_handle"))
+        self._tabloyu_yeniden_doldur()
+        self.btn_geri_al.setEnabled(bool(self._satirlar))
+        self._genel_toplam_guncelle()
+
+    def _genel_toplam_guncelle(self):
+        toplam_kg = sum(s["toplam_agirlik_kg"] for s in self._satirlar)
+        toplam_boy = sum(s["toplam_boy_m"] for s in self._satirlar)
+        self.genel_lbl.setText(
+        f" TOPLANAN: {len(self._satirlar)} donatı | "
+        f"Toplam Boy: {toplam_boy:,.2f} m | Toplam Ağırlık: {toplam_kg:,.2f} kg"
+        )
+
+    def _bitti(self):
+        if not self._satirlar:
+            iptal_et = QMessageBox.question(
+            self, "Hiç Donatı Eklenmedi",
+            "Hiç donatı eklenmedi. Kapatılsın mı?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+            )
+            if iptal_et != QMessageBox.StandardButton.Yes:
+                return
+            super().reject()
+            return
+        self.accept()
+
+    def reject(self):
+        """Rev-166: Esc / pencere X'i toplanan donatıları SESSİZCE atıyordu (Rev-162 perde dersi)."""
+        if not self._satirlar:
+            super().reject()
+            return
+        cevap = _kapatma_sorusu(self, len(self._satirlar), "donatı", "aktif kata")
+        if cevap == "evet":
+            self.accept()
+        elif cevap == "hayir":
+            self._renkleri_geri_al_ve_kapat()
+
+    def _iptal(self):
+        if self._satirlar:
+            devam = QMessageBox.question(
+            self, "İptal Edilsin Mi?",
+            f"Toplanan {len(self._satirlar)} donatı aktif kata EKLENMEYECEK "
+            f"ve bu oturumda boyanan renkler geri alınacak. İptal edilsin mi?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+            )
+            if devam != QMessageBox.StandardButton.Yes:
+                return
+        self._renkleri_geri_al_ve_kapat()
+
+    def _renkleri_geri_al_ve_kapat(self):
+        # Hiçbir şey kata eklenmeyecek - yanıltıcı yeşil iz kalmasın diye
+        # bu oturumda boyanan TÜM renkleri geri al.
+        for handle in list(self._eklenen_handleler):
+            try:
+                self.connector.aralikli_donati_isaret_geri_al(handle)
+            except Exception as e:
+                logger.debug(f"Aralıklı donatı iptal-geri-alma hatası: {e}")
+        for olcu_handle in {s.get("olcu_handle") for s in self._satirlar} - {None}:
+            try:
+                self.connector.aralikli_donati_isaret_geri_al(olcu_handle)
+            except Exception as e:
+                logger.error(f"Ölçü iptal-geri-alma hatası: {e}", exc_info=True)
+        super().reject()
+
+    def sonuclar(self) -> List[Dict]:
+        """Toplanan (mesafesi girilmiş, hesaplanmış) tüm satırları döner."""
+        return list(self._satirlar)
+
+
+class TemelKirisiDonguPaneli(QDialog):
+    """Temel kirişi (SBH) beton+kalıp — TOPLU MOD seçim paneli
+    (Rev-137 Aşama 3b).
+
+    Neyi çözüyoruz? Eski iki adımlı akış her yazı/çizgi seçiminde AutoCAD <->
+    program arasında gidip geliyordu (takılma şikayeti). Toplu modda
+    kullanıcı AutoCAD'de KALIR: her kiriş için SBH yazısı + 2 kenar çizgisi
+    + ENTER; boş ENTER ile biter. Uzunluk = 2 çizginin ortalaması. Tüm geri
+    bildirim (eklendi/güncellendi/hata/uyarı) AutoCAD komut satırına
+    yazılır, çizgi okunamazsa uzunluk yine komut satırından (GetReal)
+    istenir — döngü boyunca hiç Qt penceresi açılmaz.
+    Mükerrer: aynı SBH yazısı (handle; oturumda veya tabloda) tekrar
+    seçilirse kayıt GÜNCELLENİR (ayrı satır yok), komut satırında
+    bildirilir. Undo/İptal panelde (döngü bittikten sonra).
+
+    Nasıl test ederiz? scratchpad/test_temel_kirisi_ui.py — sahte connector
+    (kiris_oku kuyruktan döner, mesajlar listeye yazılır) ile headless.
+    """
+
+    KOLONLAR = ["Ad", "Genişlik (cm)", "Yükseklik (cm)", "Uzunluk (m)",
+                "Beton (m³)", "Kalıp (m²)", "Uzunluk Kaynağı"]
+
+    def __init__(self, connector, birim: str, mevcut_kayitlar=None, parent=None):
+        super().__init__(parent)
+        self.connector = connector
+        self.birim = birim
+        # Önceki oturumlardan kayıtlı kirişler: yazi_handle -> satır
+        self._mevcut = dict(mevcut_kayitlar or {})
+        self._satirlar: List[Dict] = []
+        self.son_hata = ""
+
+        self.setWindowTitle("Temel Kirişi (SBH) — Toplu Seçim")
+        self.setMinimumSize(860, 480)
+        self.setStyleSheet(
+            "QDialog { background: #252535; color: white; }"
+            "QLabel { color: white; }"
+            "QTableWidget { background: #1e1e2e; color: white; gridline-color: #444; }"
+            "QHeaderView::section { background: #333345; color: white; font-weight: bold;"
+            " padding: 4px; border: 1px solid #555; }"
+            "QPushButton { background: #444; color: white; padding: 6px 14px;"
+            " border: 1px solid #666; border-radius: 4px; }"
+            "QPushButton:hover { background: #555; }"
+        )
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        bilgi = QLabel(
+            f"AutoCAD'de her kiriş için: SBH yazısı → 2 kenar çizgisi (üst+alt) → ENTER. "
+            f"Sonraki kirişe aynı şekilde devam edin; bitirmek için hiçbir şey seçmeden "
+            f"ENTER. Uyarılar AutoCAD komut satırında görünür. Çizim birimi: {birim}."
+        )
+        bilgi.setStyleSheet("color: #d4a017; font-size: 9pt;")
+        bilgi.setWordWrap(True)
+        lay.addWidget(bilgi)
+
+        self.durum_lbl = QLabel("Hazır.")
+        self.durum_lbl.setStyleSheet(
+            "color: #5dade2; font-size: 10pt; font-weight: bold; padding: 4px;"
+        )
+        self.durum_lbl.setWordWrap(True)
+        lay.addWidget(self.durum_lbl)
+
+        ust = QHBoxLayout()
+        self.btn_basla = QPushButton(" Seçime Devam Et (AutoCAD)")
+        self.btn_basla.setToolTip(
+            "AutoCAD'e geçer ve toplu seçime kaldığı yerden devam eder. "
+            "Boş ENTER ile buraya döner."
+        )
+        self.btn_basla.setStyleSheet(
+            "QPushButton { background: #8e44ad; color: white; font-weight: bold;"
+            " padding: 6px 16px; border: 1px solid #a569bd; border-radius: 4px; }"
+            "QPushButton:hover { background: #a569bd; }"
+        )
+        self.btn_basla.clicked.connect(self._dongu)
+        ust.addWidget(self.btn_basla)
+
+        self.btn_geri_al = QPushButton(" Son Ekleneni Geri Al")
+        self.btn_geri_al.setToolTip("Son kirişi listeden çıkarır, yazı+çizgi rengini geri alır.")
+        self.btn_geri_al.clicked.connect(self._son_ekleneni_geri_al)
+        self.btn_geri_al.setEnabled(False)
+        ust.addWidget(self.btn_geri_al)
+        lay.addLayout(ust)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(len(self.KOLONLAR))
+        self.table.setHorizontalHeaderLabels(self.KOLONLAR)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table)
+
+        self.uyari_lbl = QLabel()
+        self.uyari_lbl.setStyleSheet("color: #f5b041; font-size: 9pt;")
+        self.uyari_lbl.setWordWrap(True)
+        lay.addWidget(self.uyari_lbl)
+
+        self.toplam_lbl = QLabel()
+        self.toplam_lbl.setStyleSheet(
+            "color: #2ecc71; font-size: 11pt; font-weight: bold; padding: 6px;"
+        )
+        lay.addWidget(self.toplam_lbl)
+        self._toplam_guncelle()
+
+        alt = QHBoxLayout()
+        btn_bitti = QPushButton(" TAMAMLANDI — Tabloya Ekle")
+        btn_bitti.setStyleSheet(
+            "QPushButton { background: #27ae60; color: white; font-weight: bold;"
+            " padding: 6px 16px; border: 1px solid #2ecc71; border-radius: 4px; }"
+            "QPushButton:hover { background: #2ecc71; }"
+        )
+        btn_bitti.clicked.connect(self._bitti)
+        alt.addWidget(btn_bitti)
+        btn_iptal = QPushButton("İptal")
+        btn_iptal.clicked.connect(self._iptal)
+        alt.addWidget(btn_iptal)
+        lay.addLayout(alt)
+
+    # ── yardımcılar ──
+    def _soru(self, baslik: str, metin: str) -> bool:
+        cevap = QMessageBox.question(
+            self, baslik, metin,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return cevap == QMessageBox.StandardButton.Yes
+
+    def _onceden_boyali(self) -> set:
+        hs = set()
+        for s in list(self._mevcut.values()) + self._satirlar:
+            hs.add(s.get("yazi_handle"))
+            hs.update(s.get("cizgi_handleler") or [])
+        hs.discard(None)
+        return hs
+
+    def _boya(self, handle) -> bool:
+        """Yeşile boyar; True -> bu oturumda YENİ boyandı (undo/iptal geri alır)."""
+        if not handle or handle in self._onceden_boyali():
+            return False
+        try:
+            self.connector.obje_isaretle_hizli(handle)
+        except Exception as e:
+            logger.error(f"[TEMEL KIRISI] TemelKirisiDonguPaneli._boya hata: {e}", exc_info=True)
+        return True
+
+    def _geri_boya(self, handle):
+        try:
+            self.connector.obje_isaret_geri_al(handle)
+        except Exception as e:
+            logger.error(f"[TEMEL KIRISI] TemelKirisiDonguPaneli._geri_boya hata: {e}", exc_info=True)
+
+    def _cizgi_kullanan(self, cizgi_handle, yazi_handle):
+        for s in list(self._mevcut.values()) + self._satirlar:
+            if cizgi_handle in (s.get("cizgi_handleler") or []) and s.get("yazi_handle") != yazi_handle:
+                return s.get("ad")
+        return None
+
+    # ── toplu döngü (kullanıcı AutoCAD'de) ──
+    def _dongu(self):
+        logger.info("[TEMEL KIRISI] toplu döngü BAŞLADI (Qt arayüzü bu sürede yanıt vermez)")
+        self.son_hata = ""
+        mesaj = self.connector.temel_kirisi_mesaj
+        try:
+            self.connector.temel_kirisi_toplu_baslat()
+            mesaj(f"TEMEL KİRİŞİ TOPLU SEÇİM (birim: {self.birim}) — her kiriş: SBH yazısı + "
+                  "iki kenarın TÜM çizgileri (kesişen kirişle bölünen kenarın bütün parçaları) "
+                  "+ ENTER. Bitirmek için boş ENTER.")
+            while True:
+                okuma = self.connector.temel_kirisi_kiris_oku()
+                if okuma.get("durum") == "bos_secim":
+                    break
+                # Tek ENTER'da birden fazla kiriş / üst üste çift obje olabilir
+                ayrim = temel_kirisi_secimi_ayir(okuma)
+                if ayrim["hata"]:
+                    mesaj(f"HATA: {ayrim['hata']} — bu seçim ATLANDI, tekrar seçin.")
+                    continue
+                if len(ayrim["gruplar"]) > 1:
+                    mesaj(f"Tek seçimde {len(ayrim['gruplar'])} kiriş bulundu — her yazı en "
+                          "yakın 2 kenar çizgisiyle eşleştirildi.")
+                for grup in ayrim["gruplar"]:
+                    self._kirisi_isle(grup, mesaj)
+            mesaj(f"TEMEL KİRİŞİ: seçim bitti — {len(self._satirlar)} kiriş. Programa dönün.")
+        except Exception as e:
+            logger.error(f"[TEMEL KIRISI] toplu döngü hata: {e}", exc_info=True)
+            self.son_hata = str(e)
+            QMessageBox.critical(self, "Hata", f"AutoCAD seçimi sırasında hata:\n{e}")
+        logger.info(f"[TEMEL KIRISI] toplu döngü BİTTİ, toplanan: {len(self._satirlar)}")
+        self.durum_lbl.setText(
+            f"Seçim durdu — {len(self._satirlar)} kiriş. Devam için 'Seçime Devam Et', "
+            "bitirmek için TAMAMLANDI."
+        )
+        try:
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    def _kirisi_isle(self, okuma: Dict, mesaj) -> None:
+        d = temel_kirisi_secim_degerlendir(okuma, self.birim)
+        if not d["gecerli"]:
+            mesaj(f"HATA: {d['hata']} — bu kiriş ATLANDI, tekrar seçin.")
+            return
+        ad = d["ad"]
+        uzunluk_m = d["uzunluk_m"]
+        kaynak = d["kaynak"]
+        if d["elle_gerekli"]:
+            uzunluk_m = self.connector.temel_kirisi_uzunluk_sor(
+                f"{ad}: kenar çizgisi okunamadı/seçilmedi. Net (yüzden yüze) uzunluk (m) "
+                "girin, vazgeçmek için ESC:"
+            )
+            if uzunluk_m is None:
+                mesaj(f"{ad} ATLANDI (uzunluk girilmedi).")
+                return
+
+        yan_dolu = None if d["elle_gerekli"] else (list(d.get("yan_dolu_m") or []) or None)
+        hesap = temel_kirisi_hesapla(d["genislik_cm"], d["yukseklik_cm"], uzunluk_m, yan_dolu)
+        if hesap["hata"]:
+            mesaj(f"HATA: {ad} — {hesap['hata']} — ATLANDI.")
+            return
+        uyarilar = list(d["uyarilar"])
+        # Rev-158: kenar kapsamları 2b'den fazla farklı -> eksik parça şüphesi, kullanıcı karar verir
+        yazi_handle = d["yazi_handle"]
+        # Boyama soru ÖNCESİ (eksik parça çizimde görünsün) ve TEK sefer — tekrar
+        # boyamak kayıtlı orijinal rengi yeşille ezer (Rev-143 tuzağı)
+        yeni_boyanan = [h for h in [yazi_handle] + d["cizgi_handleler"] if self._boya(h)]
+        if d.get("eksik_uyari"):
+            if not self.connector.komut_satiri_evet_hayir(
+                    f"{ad}: {d['eksik_uyari']}. Yine de alınsın mı?", varsayilan=False):
+                for h in yeni_boyanan:
+                    if not any(h in s.get("yeni_boyanan", []) for s in self._satirlar):
+                        self._geri_boya(h)
+                mesaj(f"{ad} ATLANDI (eksik parça şüphesi) — eksik kenar parçalarıyla tekrar seçin.")
+                return
+            uyarilar.append(d["eksik_uyari"])
+        if hesap["uyari"] and hesap["uyari"] not in uyarilar and d["elle_gerekli"]:
+            uyarilar.append(hesap["uyari"])
+
+        for ch in d["cizgi_handleler"]:
+            kullanan = self._cizgi_kullanan(ch, yazi_handle)
+            if kullanan:
+                uyarilar.append(f"çizgi {kullanan} kirişinde de kullanıldı")
+
+        guncelleme = yazi_handle in self._mevcut or any(
+            s["yazi_handle"] == yazi_handle for s in self._satirlar
+        )
+
+        satir = {
+            "ad": ad,
+            "genislik_cm": d["genislik_cm"],
+            "yukseklik_cm": d["yukseklik_cm"],
+            "uzunluk_m": hesap["uzunluk_m"],
+            "beton_m3": hesap["beton_m3"],
+            "kalip_m2": hesap["kalip_m2"],
+            "kaynak": kaynak,
+            "yazi_handle": yazi_handle,
+            "cizgi_handleler": list(d["cizgi_handleler"]),
+            "uyarilar": uyarilar,
+            "yeni_boyanan": yeni_boyanan,
+        }
+        if yan_dolu:
+            satir["yan_dolu_m"] = yan_dolu
+            satir["kenar_kapsam_m"] = list(d.get("kenar_kapsam_m") or [])
+        idx = next((i for i, s in enumerate(self._satirlar) if s["yazi_handle"] == yazi_handle), None)
+        if idx is not None:
+            eski = self._satirlar.pop(idx)
+            # Güncellemede artık kullanılmayan eski (bu oturumda boyanmış) çizgiler
+            for h in eski.get("yeni_boyanan", []):
+                if h not in satir["cizgi_handleler"] and h != yazi_handle:
+                    self._geri_boya(h)
+                elif h not in yeni_boyanan:
+                    satir["yeni_boyanan"].append(h)
+        self._satirlar.append(satir)
+        self._tabloyu_doldur()
+
+        durum = "GÜNCELLENDİ" if guncelleme else "EKLENDİ"
+        dolu_metni = (f", yan dolu {yan_dolu[0]:.2f}/{yan_dolu[1]:.2f} m" if yan_dolu else "")
+        mesaj(f"{ad} {durum}: L={hesap['uzunluk_m']:.2f} m{dolu_metni}, beton={tek_hane(hesap['beton_m3'])} m3, "
+              f"kalıp={tek_hane(hesap['kalip_m2'])} m2, {len(d['cizgi_handleler'])} çizgi "
+              f"(toplam {len(self._satirlar)} kiriş)")
+        for u in uyarilar:
+            mesaj(f"  UYARI {ad}: {u}")
+
+    def _tabloyu_doldur(self):
+        self.table.setRowCount(0)
+        for s in self._satirlar:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            degerler = [
+                s["ad"], f"{s['genislik_cm']:g}", f"{s['yukseklik_cm']:g}",
+                f"{s['uzunluk_m']:.2f}", f"{tek_hane(s['beton_m3'])}", f"{tek_hane(s['kalip_m2'])}",
+                s["kaynak"],
+            ]
+            for col, deger in enumerate(degerler):
+                item = QTableWidgetItem(deger)
+                if s.get("uyarilar"):
+                    item.setToolTip("\n".join(s["uyarilar"]))
+                    item.setForeground(QColor("#f5b041"))
+                self.table.setItem(row, col, item)
+        uyarili = [f"{s['ad']}: {'; '.join(s['uyarilar'])}" for s in self._satirlar if s.get("uyarilar")]
+        self.uyari_lbl.setText(("Uyarılar — " + " | ".join(uyarili)) if uyarili else "")
+        self.btn_geri_al.setEnabled(bool(self._satirlar))
+        self._toplam_guncelle()
+
+    def _toplam_guncelle(self):
+        beton = sum(s["beton_m3"] for s in self._satirlar)
+        kalip = sum(s["kalip_m2"] for s in self._satirlar)
+        self.toplam_lbl.setText(
+            f" TOPLANAN: {len(self._satirlar)} kiriş | Beton: {tek_hane(beton, True)} m³ | "
+            f"Kalıp: {tek_hane(kalip, True)} m²"
+        )
+
+    def _son_ekleneni_geri_al(self):
+        if not self._satirlar:
+            return
+        satir = self._satirlar.pop()
+        for h in satir.get("yeni_boyanan", []):
+            self._geri_boya(h)
+        self._tabloyu_doldur()
+
+    def _bitti(self):
+        if not self._satirlar:
+            if self._soru("Hiç Kiriş Eklenmedi", "Hiç temel kirişi eklenmedi. Kapatılsın mı?"):
+                super().reject()
+            return
+        self.accept()
+
+    def reject(self):
+        """Rev-166: Esc / pencere X'i toplanan temel kirişlerini SESSİZCE atıyordu (Rev-162 perde dersi)."""
+        if not self._satirlar:
+            super().reject()
+            return
+        cevap = _kapatma_sorusu(self, len(self._satirlar), "temel kirişi", "tabloya")
+        if cevap == "evet":
+            self.accept()
+        elif cevap == "hayir":
+            self._renkleri_geri_al_ve_kapat()
+
+    def _iptal(self):
+        if self._satirlar and not self._soru(
+            "İptal Edilsin Mi?",
+            f"Toplanan {len(self._satirlar)} kiriş tabloya EKLENMEYECEK ve bu "
+            "oturumda boyanan renkler geri alınacak. İptal edilsin mi?"
+        ):
+            return
+        self._renkleri_geri_al_ve_kapat()
+
+    def _renkleri_geri_al_ve_kapat(self):
+        satirlar, self._satirlar = self._satirlar, []
+        for s in satirlar:
+            for h in s.get("yeni_boyanan", []):
+                self._geri_boya(h)
+        super().reject()
+
+    def sonuclar(self) -> List[Dict]:
+        return list(self._satirlar)
+
+
+class PerdeDonguPaneli(QDialog):
+    """Perde beton+kalıp — TOPLU MOD seçim paneli (Rev-143 Aşama 3).
+
+    Neyi çözüyoruz? Kullanıcı AutoCAD'de KALIR: her perde için kesit
+    poligonu + (varsa) kolona/perdeye bitişen uç çizgileri + (varsa) ad
+    yazısı + ENTER; boş ENTER ile biter. Alan/çevre poligondan, düşüm uç
+    çizgilerinden (çevre üzerinde doğrulanmış). İlk perdede ve şüpheli
+    alanda teyit komut satırından (Evet/Hayır) — ilk teyit reddedilirse
+    döngü durur (birim/ölçek yanlış demektir). Mükerrer: aynı poligon
+    (handle) tekrar seçilirse satır GÜNCELLENİR. Undo/İptal döngü sonrası.
+
+    Nasıl test ederiz? scratchpad/test_perde_secim.py — sahte connector ile headless.
+    """
+
+    KOLONLAR = ["Ad", "Alan (m²)", "Çevre (m)", "Düşülen (m)", "Beton (m³)", "Kalıp (m²)"]
+
+    def __init__(self, connector, birim: str, olcek_adi: str, olcek: float,
+                 ayar: "KatYukseklikAyari", alan_teyitli: bool = False,
+                 mevcut_kayitlar=None, parent=None, ad_kayitli=None, okunamayanlar=None):
+        super().__init__(parent)
+        self.connector = connector
+        self.birim = birim
+        self.olcek_adi = olcek_adi
+        self.olcek = olcek
+        self.ayar = ayar
+        self.alan_teyitli = alan_teyitli
+        # Önceki oturumlardan kayıtlı perdeler: poligon_handle -> satır
+        self._mevcut = dict(mevcut_kayitlar or {})
+        self._satirlar: List[Dict] = []
+        self.son_hata = ""
+        # Rev-160: ortak ad havuzu — kolon aracında bu katta kayıtlı ad mı? (callable(ad) -> bool)
+        self._ad_kayitli = ad_kayitli
+        okunamayanlar = list(okunamayanlar or [])
+
+        self.setWindowTitle("Perde — Toplu Seçim")
+        self.setMinimumSize(860, 480)
+        self.setStyleSheet(
+            "QDialog { background: #252535; color: white; }"
+            "QLabel { color: white; }"
+            "QTableWidget { background: #1e1e2e; color: white; gridline-color: #444; }"
+            "QHeaderView::section { background: #333345; color: white; font-weight: bold;"
+            " padding: 4px; border: 1px solid #555; }"
+            "QPushButton { background: #444; color: white; padding: 6px 14px;"
+            " border: 1px solid #666; border-radius: 4px; }"
+            "QPushButton:hover { background: #555; }"
+        )
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        bilgi = QLabel(
+            "AutoCAD'de her perde için: kesit (kapalı polyline) + kolona / başka perdeye "
+            "bitişen uç çizgileri (varsa) + perde adı yazısı (varsa) → ENTER. Bitirmek için "
+            "hiçbir şey seçmeden ENTER. ideCAD: perde BLOĞU ya da patlatılmış kontur (her kenar ayrı "
+            "çizgi) de seçilebilir — kontur kurulunca uç kenarlar ayrıca sorulur. "
+            f"Birim: {birim}, ölçek: {olcek_adi}. "
+            f"{ayar.esas_etiketi()} Alınan perde (kesit + ad yazısı) CAMGÖBEĞİ boyanır."
+            + (f"\nKolon aracında okunamayanlar (bu araçla alın): {', '.join(okunamayanlar)}"
+               if okunamayanlar else "")
+        )
+        bilgi.setStyleSheet("color: #d4a017; font-size: 9pt;")
+        bilgi.setWordWrap(True)
+        lay.addWidget(bilgi)
+
+        self.durum_lbl = QLabel("Hazır.")
+        self.durum_lbl.setStyleSheet("color: #5dade2; font-size: 10pt; font-weight: bold; padding: 4px;")
+        self.durum_lbl.setWordWrap(True)
+        lay.addWidget(self.durum_lbl)
+
+        ust = QHBoxLayout()
+        self.btn_basla = QPushButton(" Seçime Devam Et (AutoCAD)")
+        self.btn_basla.setToolTip("AutoCAD'e geçer ve seçime kaldığı yerden devam eder. "
+                                  "Boş ENTER ile buraya döner.")
+        self.btn_basla.setStyleSheet(
+            "QPushButton { background: #8e44ad; color: white; font-weight: bold;"
+            " padding: 6px 16px; border: 1px solid #a569bd; border-radius: 4px; }"
+            "QPushButton:hover { background: #a569bd; }"
+        )
+        self.btn_basla.clicked.connect(self._dongu)
+        ust.addWidget(self.btn_basla)
+        self.btn_geri_al = QPushButton(" Son Ekleneni Geri Al")
+        self.btn_geri_al.setToolTip("Son perdeyi listeden çıkarır, çizimdeki yeşil rengi geri alır.")
+        self.btn_geri_al.clicked.connect(self._son_ekleneni_geri_al)
+        self.btn_geri_al.setEnabled(False)
+        ust.addWidget(self.btn_geri_al)
+        lay.addLayout(ust)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(len(self.KOLONLAR))
+        self.table.setHorizontalHeaderLabels(self.KOLONLAR)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table)
+
+        self.uyari_lbl = QLabel()
+        self.uyari_lbl.setStyleSheet("color: #f5b041; font-size: 9pt;")
+        self.uyari_lbl.setWordWrap(True)
+        lay.addWidget(self.uyari_lbl)
+        self.toplam_lbl = QLabel()
+        self.toplam_lbl.setStyleSheet("color: #2ecc71; font-size: 11pt; font-weight: bold; padding: 6px;")
+        lay.addWidget(self.toplam_lbl)
+        self._toplam_guncelle()
+
+        alt = QHBoxLayout()
+        btn_bitti = QPushButton(" TAMAMLANDI — Tabloya Ekle")
+        btn_bitti.setStyleSheet(
+            "QPushButton { background: #27ae60; color: white; font-weight: bold;"
+            " padding: 6px 16px; border: 1px solid #2ecc71; border-radius: 4px; }"
+            "QPushButton:hover { background: #2ecc71; }"
+        )
+        btn_bitti.clicked.connect(self._bitti)
+        alt.addWidget(btn_bitti)
+        btn_iptal = QPushButton("İptal")
+        btn_iptal.clicked.connect(self._iptal)
+        alt.addWidget(btn_iptal)
+        lay.addLayout(alt)
+
+    # ── yardımcılar ──
+    def _soru(self, baslik: str, metin: str) -> bool:
+        cevap = QMessageBox.question(
+            self, baslik, metin,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return cevap == QMessageBox.StandardButton.Yes
+
+    def _kullanilan(self, haric_satir=None) -> set:
+        """Kayıtlı/oturumdaki satırların kullandığı handle'lar (haric_satir hariç)."""
+        hs = set()
+        for s in list(self._mevcut.values()) + self._satirlar:
+            if s is not haric_satir:
+                hs.update(s.get("handleler") or [])
+        hs.discard(None)
+        return hs
+
+    def _boya(self, handle, onceki_renkler: Dict) -> bool:
+        """Perde rengine (CAMGÖBEĞİ, Rev-160) boyar; önceki program rengini
+        (kolon aracının kırmızısı vb. ya da None=orijinal) onceki_renkler'e
+        yazar. True -> bu oturumda YENİ boyandı (undo/iptal geri alır)."""
+        if not handle or handle in self._kullanilan():
+            return False
+        try:
+            onceki_renkler[handle] = self.connector.obje_rengi_ayarla(handle, ELEMAN_RENKLERI["Perde"])
+        except Exception as e:
+            logger.error(f"[PERDE] _boya hata: {e}", exc_info=True)
+        return True
+
+    def _geri_boya(self, handle, haric_satir=None, onceki=None):
+        """Rengi bir önceki hâline döndürür (kırmızıysa kırmızı, orijinalse orijinal).
+        Perde-perde birleşim çizgisi iki perdede kullanılabilir — başka satır
+        hâlâ kullanıyorsa rengi geri alma."""
+        if handle in self._kullanilan(haric_satir):
+            return
+        try:
+            self.connector.obje_rengi_ayarla(handle, onceki)
+        except Exception as e:
+            logger.error(f"[PERDE] _geri_boya hata: {e}", exc_info=True)
+
+    @staticmethod
+    def _satir_renk_geri(satir: Dict, geri_boya) -> None:
+        onceki = satir.get("onceki_renkler") or {}
+        for h in reversed(satir.get("yeni_boyanan", [])):
+            geri_boya(h, onceki=onceki.get(h))
+
+    def _ad_mukerrer_mi(self, ad: str, anahtar) -> bool:
+        """Ortak havuz (Rev-160): aynı katta bu ad başka bir kayıtta var mı?
+        Bu oturumda AYNI poligonun yeniden seçimi soru sormaz (düzeltme)."""
+        n = eleman_ad_normalize(ad)
+        if not n:
+            return False
+        if any(eleman_ad_normalize(s.get("ad")) == n and s["poligon_handle"] != anahtar for s in self._satirlar):
+            return True
+        if anahtar in self._mevcut or any(eleman_ad_normalize(s.get("ad")) == n for s in self._mevcut.values()):
+            return True
+        return bool(self._ad_kayitli and self._ad_kayitli(n))
+
+    def _hesap(self, s: Dict) -> Dict:
+        return perde_hesapla(s["alan_m2"], s["cevre_m"], self.ayar.kat_yuksekligi_m,
+                             self.ayar.doseme_kalinligi_m, self.ayar.beton_esasi, s["dusulen_m"])
+
+    # ── toplu döngü (kullanıcı AutoCAD'de) ──
+    def _dongu(self):
+        logger.info("[PERDE] toplu döngü BAŞLADI")
+        self.son_hata = ""
+        mesaj = self.connector.komut_satiri_mesaj
+        try:
+            self.connector.perde_toplu_baslat()
+            mesaj(f"PERDE TOPLU SEÇİM (birim {self.birim}, ölçek {self.olcek_adi}) — her perde: "
+                  "kesit + [bitişik uç çizgileri] + [ad yazısı] + ENTER. Bitirmek için boş ENTER.")
+            while True:
+                okuma = self.connector.perde_oku()
+                if okuma.get("durum") == "bos_secim":
+                    break
+                try:
+                    d = perde_secimi_degerlendir(okuma["objeler"], self.birim, self.olcek)
+                    if d.get("zincir") and not d["hata"]:
+                        # Rev-155: patlatılmış kontur — kenarlar ayrı nesne, uç düşümü ikinci istemle
+                        mesaj(f"Kontur kuruldu ({len(d['zincir_parcalari'])} kenar): alan {d['alan_m2']:.4f} m2, "
+                              f"çevre {d['cevre_m']:.2f} m.")
+                        d = perde_zincir_uc_dus(d, self.connector.perde_uc_sec())
+                finally:
+                    # Blok patlatmasından kalan geçici nesneler her turda silinir (hata olsa da)
+                    temizle = getattr(self.connector, "perde_gecici_temizle", None)
+                    if temizle:
+                        temizle()
+                if d["hata"]:
+                    mesaj(f"HATA: {d['hata']} — bu seçim ATLANDI, tekrar seçin.")
+                    continue
+                if not self.alan_teyitli or perde_alan_supheli_mi(d["alan_m2"]):
+                    ek = f" UYARI: {d['uyari']}." if d["uyari"] else ""
+                    kabul = self.connector.komut_satiri_evet_hayir(
+                        f"Alan {d['alan_m2']:.4f} m2, çevre {d['cevre_m']:.2f} m okundu (birim "
+                        f"{self.birim}, ölçek {self.olcek_adi}).{ek} AREA ile kontrol edin, doğru mu?")
+                    if not kabul:
+                        if not self.alan_teyitli:
+                            mesaj("Alan kabul edilmedi — döngü DURDURULDU. Programda birim/ölçeği "
+                                  "düzeltip tekrar başlatın.")
+                            break
+                        mesaj("Alan kabul edilmedi — bu perde ATLANDI.")
+                        continue
+                    self.alan_teyitli = True
+                self._perde_isle(d, mesaj)
+            mesaj(f"PERDE: seçim bitti — {len(self._satirlar)} perde. Programa dönün.")
+        except Exception as e:
+            logger.error(f"[PERDE] toplu döngü hata: {e}", exc_info=True)
+            self.son_hata = str(e)
+            QMessageBox.critical(self, "Hata", f"AutoCAD seçimi sırasında hata:\n{e}")
+        logger.info(f"[PERDE] toplu döngü BİTTİ, toplanan: {len(self._satirlar)}")
+        self.durum_lbl.setText(f"Seçim durdu — {len(self._satirlar)} perde. Devam için "
+                               "'Seçime Devam Et', bitirmek için TAMAMLANDI.")
+        try:
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    def _perde_isle(self, d: Dict, mesaj) -> None:
+        anahtar = d["poligon_handle"]
+        eski = self._mevcut.get(anahtar) or next(
+            (s for s in self._satirlar if s["poligon_handle"] == anahtar), None)
+        ad = d["ad"] or (eski["ad"] if eski else
+                         f"Perde {len(self._mevcut) + len(self._satirlar) + 1}")
+        satir = {
+            "ad": ad, "poligon_handle": anahtar, "alan_m2": d["alan_m2"],
+            "cevre_m": d["cevre_m"], "dusulen_m": d["dusulen_m"],
+            "handleler": list(d["kullanilan_handleler"]),
+            "uyari": d["uyari"], "yeni_boyanan": [], "onceki_renkler": {},
+        }
+        hesap = self._hesap(satir)
+        if hesap["hata"]:
+            mesaj(f"HATA: {ad} — {hesap['hata']} — ATLANDI.")
+            return
+        # Rev-160: aynı katta aynı ad (kolon aracından ya da başka paftadan) -> sor; Hayır'da renk değişmez
+        if d["ad"] and self._ad_mukerrer_mi(d["ad"], anahtar):
+            if not self.connector.komut_satiri_evet_hayir(f"{ad} bu katta zaten kayıtlı. Güncellensin mi?"):
+                mesaj(f"{ad} değiştirilmedi — ATLANDI.")
+                return
+            eski = eski or True
+            # Bu oturumda aynı adla başka poligondan alınmış satır -> yerini yenisi alır
+            for s in [s for s in self._satirlar if eleman_ad_normalize(s.get("ad")) == eleman_ad_normalize(ad)
+                      and s["poligon_handle"] != anahtar]:
+                self._satirlar.remove(s)
+                self._satir_renk_geri(s, self._geri_boya)
+        idx = next((i for i, s in enumerate(self._satirlar) if s["poligon_handle"] == anahtar), None)
+        if idx is not None:
+            onceki = self._satirlar.pop(idx)
+            # Güncellemede artık kullanılmayan (bu oturumda boyanmış) handle'lar
+            for h in onceki.get("yeni_boyanan", []):
+                if h in satir["handleler"]:
+                    satir["yeni_boyanan"].append(h)
+                    satir["onceki_renkler"][h] = (onceki.get("onceki_renkler") or {}).get(h)
+                else:
+                    self._geri_boya(h, onceki=(onceki.get("onceki_renkler") or {}).get(h))
+        # Önceki seçimde zaten boyanmış olanı tekrar boyama (önceki renk kaydı ezilmesin)
+        satir["yeni_boyanan"] += [h for h in satir["handleler"]
+                                  if h not in satir["yeni_boyanan"] and self._boya(h, satir["onceki_renkler"])]
+        self._satirlar.append(satir)
+        self._tabloyu_doldur()
+
+        durum = "GÜNCELLENDİ" if eski else "EKLENDİ"
+        mesaj(f"{ad} {durum}: alan={satir['alan_m2']:.2f} m2, çevre={satir['cevre_m']:.2f} m "
+              f"(düşülen {satir['dusulen_m']:.2f}), beton={tek_hane(hesap['beton_m3'])} m3, "
+              f"kalıp={tek_hane(hesap['kalip_m2'])} m2 (toplam {len(self._satirlar)} perde)")
+        uyarilar = "; ".join(u for u in (d["uyari"], hesap["uyari"]) if u)
+        if uyarilar:
+            mesaj(f"  UYARI {ad}: {uyarilar}")
+
+    def _tabloyu_doldur(self):
+        self.table.setRowCount(0)
+        for s in self._satirlar:
+            h = self._hesap(s)
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            degerler = [s["ad"], f"{s['alan_m2']:.2f}", f"{s['cevre_m']:.2f}", f"{s['dusulen_m']:.2f}",
+                        f"{tek_hane(h['beton_m3'])}", f"{tek_hane(h['kalip_m2'])}"]
+            for col, deger in enumerate(degerler):
+                item = QTableWidgetItem(deger)
+                if s.get("uyari"):
+                    item.setToolTip(s["uyari"])
+                    item.setForeground(QColor("#f5b041"))
+                self.table.setItem(row, col, item)
+        uyarili = [f"{s['ad']}: {s['uyari']}" for s in self._satirlar if s.get("uyari")]
+        self.uyari_lbl.setText(("Uyarılar — " + " | ".join(uyarili)) if uyarili else "")
+        self.btn_geri_al.setEnabled(bool(self._satirlar))
+        self._toplam_guncelle()
+
+    def _toplam_guncelle(self):
+        hesaplar = [self._hesap(s) for s in self._satirlar]
+        beton = sum(h["beton_m3"] for h in hesaplar)
+        kalip = sum(h["kalip_m2"] for h in hesaplar)
+        self.toplam_lbl.setText(f" TOPLANAN: {len(self._satirlar)} perde | Beton: {tek_hane(beton, True)} m³ | "
+                                f"Kalıp: {tek_hane(kalip, True)} m²")
+
+    def _son_ekleneni_geri_al(self):
+        if not self._satirlar:
+            return
+        satir = self._satirlar.pop()
+        self._satir_renk_geri(satir, self._geri_boya)
+        self._tabloyu_doldur()
+
+    def _bitti(self):
+        if not self._satirlar:
+            if self._soru("Hiç Perde Eklenmedi", "Hiç perde eklenmedi. Kapatılsın mı?"):
+                super().reject()
+            return
+        self.accept()
+
+    def _iptal(self):
+        if self._satirlar and not self._soru(
+            "İptal Edilsin Mi?",
+            f"Toplanan {len(self._satirlar)} perde tabloya EKLENMEYECEK ve bu oturumda "
+            "boyanan renkler geri alınacak. İptal edilsin mi?"
+        ):
+            return
+        self._renkleri_geri_al_ve_kapat()
+
+    def _renkleri_geri_al_ve_kapat(self):
+        satirlar, self._satirlar = self._satirlar, []
+        for s in reversed(satirlar):
+            self._satir_renk_geri(s, self._geri_boya)
+        super().reject()
+
+    def reject(self):
+        """Rev-162: Esc / pencere X'i toplanan perdeleri SESSİZCE atıyordu (Kat Özeti'ne
+        hiçbir şey gitmiyor, AutoCAD'de renkler boyalı kalıyordu). Artık sorulur:
+        Evet = tabloya ekle, Hayır = ekleme + renkleri geri al, Vazgeç = panel açık kalsın."""
+        if not self._satirlar:
+            super().reject()
+            return
+        S = QMessageBox.StandardButton
+        cevap = QMessageBox.question(
+            self, "Perdeler Henüz Eklenmedi",
+            f"Toplanan {len(self._satirlar)} perde henüz tabloya EKLENMEDİ.\n\n"
+            "Evet: tabloya ekle (Kat Özeti'ne de geçer)\n"
+            "Hayır: ekleme, AutoCAD'deki renkleri geri al\n"
+            "Vazgeç: pencere açık kalsın",
+            S.Yes | S.No | S.Cancel, S.Yes)
+        if cevap == S.Yes:
+            self.accept()
+        elif cevap == S.No:
+            self._renkleri_geri_al_ve_kapat()
+
+    def sonuclar(self) -> List[Dict]:
+        return list(self._satirlar)
+
+
+class DosemeDonguPaneli(QDialog):
+    """Döşeme — AutoCAD köşe tıklama döngüsü (Rev-144 Aşama 2).
+
+    Neyi çözüyoruz? Kullanıcı AutoCAD'de KALIR: her döşeme için KİRİŞ İÇ
+    YÜZÜ köşelerini sırayla tıklar (nokta sınırı yok), ENTER ile kapatır;
+    program kapalı MACENTA poligonu METRAJ_DOSEME katmanına çizer, alanı
+    tabloya ekler. Mod sorusu YOK (Rev-146: dikdörtgen modu kaldırıldı).
+    1. köşede ENTER/ESC döngüyü bitirir; köşe alırken ESC o seçimi iptal eder. İlk döşemede (ve şüpheli
+    alanda) teyit; ilk teyit reddedilirse döngü durur. Ağırlık merkezi
+    kayıtlı bir döşemenin içine düşerse güncelleme sorulur. OSMODE döngü
+    boyunca 33, nasıl biterse bitsin geri yüklenir.
+    Geri al / iptal: çizilen poligon silinir, güncellenen satırın eski
+    hali ve poligonu geri getirilir.
+
+    Nasıl test ederiz? scratchpad/test_doseme_poligon.py (sahte connector).
+    """
+
+    KOLONLAR = ["Ad", "Brüt Alan (m²)", "Boşluk (m²)", "Çevre (m)", "Kalınlık (cm)", "Beton (m³)", "Kaynak"]
+
+    def __init__(self, connector, birim: str, olcek_adi: str, olcek: float, kalinlik_cm: float,
+                 alan_teyitli: bool = False, kayitlar=None, parent=None, hedef_idx: Optional[int] = None,
+                 mod: str = "doseme", sacak_kalinlik_cm: float = 16.0):
+        super().__init__(parent)
+        # Rev-164: mod="sacak" -> panel SADECE saçak toplar ([H]alka / [Ş]erit)
+        self.mod = mod
+        self.sacak_kalinlik_cm = sacak_kalinlik_cm
+        self.connector = connector
+        self.birim = birim
+        self.olcek_adi = olcek_adi
+        self.olcek = olcek
+        self.kalinlik_cm = kalinlik_cm
+        self.alan_teyitli = alan_teyitli
+        # Çalışma kopyası — TAMAMLANDI'da pencereye geçer, iptalde atılır
+        # Derin kopya: boşluk listeleri pencere satırlarıyla paylaşılmasın (iptalde bozulmasın)
+        self.kayitlar: List[Dict] = copy.deepcopy(list(kayitlar or []))
+        self._eylemler: List[Dict] = []
+        self.son_hata = ""
+        # Rev-159: verilirse panel SADECE bu döşemeye boşluk ekler (formdaki "Boşluk Ekle")
+        self.hedef_idx = hedef_idx if hedef_idx is not None and 0 <= hedef_idx < len(self.kayitlar) else None
+        self._bosluk_ipucu_verildi = False
+
+        self.setWindowTitle("Döşeme — AutoCAD Köşe Tıklama" if self.hedef_idx is None else
+                            f"Döşeme {self.kayitlar[self.hedef_idx]['ad']} — AutoCAD'de Boşluk Ekle")
+        self.setMinimumSize(820, 460)
+        self.setStyleSheet(
+            "QDialog { background: #252535; color: white; } QLabel { color: white; }"
+            "QTableWidget { background: #1e1e2e; color: white; gridline-color: #444; }"
+            "QHeaderView::section { background: #333345; color: white; font-weight: bold;"
+            " padding: 4px; border: 1px solid #555; }"
+            "QPushButton { background: #444; color: white; padding: 6px 14px;"
+            " border: 1px solid #666; border-radius: 4px; } QPushButton:hover { background: #555; }"
+        )
+        lay = QVBoxLayout(self)
+        bilgi = QLabel(
+            "AutoCAD'de her döşeme için köşeleri KİRİŞ İÇ YÜZLERİNDEN sırayla tıklayın (akstan değil, "
+            "nokta sınırı yok), ENTER ile kapatın. Döşeme MACENTA (mor-pembe) çizilir. "
+            "Son döşemeye boşluk (merdiven/şaft/asansör) için 1. köşede B yazın — boşluk KIRMIZI çizilir. "
+            "Bitirmek için 1. köşede ENTER. "
+            f"Birim: {birim}, ölçek: {olcek_adi}, "
+            f"kalınlık: {kalinlik_cm:g} cm."
+            if self.hedef_idx is None else
+            f"AutoCAD'de {self.kayitlar[self.hedef_idx]['ad']} döşemesinin İÇİNDE boşluk köşelerini sırayla "
+            "tıklayın, ENTER ile kapatın; arka arkaya birden fazla boşluk eklenebilir. Bitirmek için 1. "
+            f"köşede ENTER. Boşluk KIRMIZI çizilir. Birim: {birim}, ölçek: {olcek_adi}."
+        )
+        if self.mod == "sacak":
+            self.setWindowTitle("Saçak — AutoCAD Köşe Tıklama")
+            bilgi.setText(
+                f"SAÇAK (kalınlık {sacak_kalinlik_cm:g} cm). AutoCAD'de önce tip seçin: "
+                "[H]alka — saçak binayı tamamen sarıyor: önce saçak UCU dış köşeleri, sonra kenar kirişin "
+                "DIŞ yüz köşeleri. [Ş]erit — saçak bazı cephelerde: önce kiriş DIŞ yüzü boyunca noktalar + "
+                "ENTER (kiriş hattı), sonra saçak ucu boyunca noktalar + ENTER (uç hattı; yön önemsiz). "
+                "Saçak KEHRİBAR (ACI 40) çizilir. Bitirmek için tip sorusunda ENTER. "
+                f"Birim: {birim}, ölçek: {olcek_adi}.")
+        bilgi.setWordWrap(True)
+        bilgi.setStyleSheet("color: #d4a017; font-size: 9pt;")
+        lay.addWidget(bilgi)
+        self.durum_lbl = QLabel("Hazır.")
+        self.durum_lbl.setWordWrap(True)
+        self.durum_lbl.setStyleSheet("color: #5dade2; font-size: 10pt; font-weight: bold; padding: 4px;")
+        lay.addWidget(self.durum_lbl)
+
+        ust = QHBoxLayout()
+        self.btn_basla = QPushButton(" Seçime Devam Et (AutoCAD)")
+        self.btn_basla.setStyleSheet(
+            "QPushButton { background: #8e44ad; color: white; font-weight: bold;"
+            " padding: 6px 16px; border: 1px solid #a569bd; border-radius: 4px; }")
+        self.btn_basla.clicked.connect(self._dongu)
+        ust.addWidget(self.btn_basla)
+        self.btn_geri_al = QPushButton(" Son Ekleneni Geri Al")
+        self.btn_geri_al.setToolTip("Son eklenen/güncellenen döşemeyi geri alır, poligonunu çizimden siler.")
+        self.btn_geri_al.clicked.connect(self._son_ekleneni_geri_al)
+        ust.addWidget(self.btn_geri_al)
+        lay.addLayout(ust)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(len(self.KOLONLAR))
+        self.table.setHorizontalHeaderLabels(self.KOLONLAR)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table)
+        self.toplam_lbl = QLabel()
+        self.toplam_lbl.setStyleSheet("color: #2ecc71; font-size: 11pt; font-weight: bold; padding: 6px;")
+        lay.addWidget(self.toplam_lbl)
+
+        alt = QHBoxLayout()
+        btn_bitti = QPushButton(" TAMAMLANDI — Tabloya Ekle")
+        btn_bitti.setStyleSheet(
+            "QPushButton { background: #27ae60; color: white; font-weight: bold;"
+            " padding: 6px 16px; border: 1px solid #2ecc71; border-radius: 4px; }")
+        btn_bitti.clicked.connect(self.accept)
+        alt.addWidget(btn_bitti)
+        btn_iptal = QPushButton("İptal")
+        btn_iptal.clicked.connect(self._iptal)
+        alt.addWidget(btn_iptal)
+        lay.addLayout(alt)
+        self._tabloyu_doldur()
+
+    # ── döngü (kullanıcı AutoCAD'de) ──
+    def _dongu(self):
+        c = self.connector
+        mesaj = c.komut_satiri_mesaj
+        import threading
+        logger.info(f"[DOSEME] köşe tıklama döngüsü BAŞLADI (thread {threading.current_thread().name}, "
+                    f"{threading.get_ident()})")
+        osmode_hata = ""
+        try:
+            c.doseme_toplu_baslat()
+            try:
+                if self.hedef_idx is None and self.mod != "sacak":
+                    mesaj(f"DÖŞEME (birim {self.birim}, ölçek {self.olcek_adi}): köşeleri KİRİŞ İÇ "
+                          "YÜZLERİNDEN sırayla tıklayın, akstan DEĞİL; ENTER ile kapatın. Son döşemeye "
+                          "boşluk için 1. köşede B. Bitirmek için 1. köşede ENTER.")
+                if self.hedef_idx is not None:
+                    self._hedef_bosluk_dongusu(mesaj)
+                elif self.mod == "sacak":
+                    self._sacak_dongusu(mesaj)
+                while self.hedef_idx is None and self.mod != "sacak":
+                    koseler = self._poligon_al(mesaj)
+                    if koseler == "bitti":
+                        break
+                    if koseler == "bosluk":
+                        idx = self._son_doseme_idx()
+                        if idx is None:
+                            mesaj("Önce bir döşeme tıklayın — boşluk SON EKLENEN döşemeye bağlanır. Önceki "
+                                  "döşemelere programdaki 'Boşluk Ekle' butonuyla ekleyin.")
+                        else:
+                            self._bosluk_ekle(idx, mesaj)
+                        continue
+                    if koseler is None:
+                        mesaj("Seçim iptal edildi (ESC) — sonraki döşemeye geçin.")
+                        continue
+                    d = doseme_poligon_degerlendir(koseler, self.birim, self.olcek)
+                    if d["hata"]:
+                        mesaj(f"HATA: {d['hata']} — bu seçim ALINMADI.")
+                        continue
+                    if not self.alan_teyitli or d["supheli"]:
+                        if not c.komut_satiri_evet_hayir(
+                                f"Alan {d['alan_m2']:.2f} m2, çevre {d['cevre_m']:.2f} m (birim {self.birim}, "
+                                f"ölçek {self.olcek_adi}). AREA ile kontrol edin, doğru mu?"):
+                            if not self.alan_teyitli:
+                                mesaj("Alan kabul edilmedi — döngü DURDURULDU. Programda birim/ölçeği "
+                                      "düzeltip tekrar başlatın.")
+                                break
+                            mesaj("Alan kabul edilmedi — bu döşeme ALINMADI.")
+                            continue
+                        self.alan_teyitli = True
+                    self._doseme_isle(d, mesaj)
+            finally:
+                osmode_hata = c.doseme_toplu_bitir() or ""
+            mesaj(f"DÖŞEME: seçim bitti — {len(self._eylemler)} işlem. Programa dönün.")
+        except Exception as e:
+            logger.error(f"[DOSEME] döngü hatası: {e}", exc_info=True)
+            self.son_hata = str(e)
+            QMessageBox.critical(self, "Hata", f"AutoCAD seçimi sırasında hata:\n{e}")
+        if osmode_hata:
+            QMessageBox.warning(self, "Nesne Yakalama (OSMODE)", osmode_hata)
+        self.durum_lbl.setText(f"Seçim durdu — bu oturumda {len(self._eylemler)} işlem. Devam için "
+                               "'Seçime Devam Et', bitirmek için TAMAMLANDI.")
+        try:
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    BOSLUK_ANAHTAR = "Bosluk"   # AutoCAD anahtar kelimesi (ASCII) — "B" yazmak yeter
+
+    def _poligon_al(self, mesaj, baslik: str = "DÖŞEME", en_az: int = 3):
+        """Köşeleri sırayla alır (sınırsız). Dönüş: köşe listesi | None (ESC,
+        bu poligon iptal) | "bitti" (1. köşede ENTER/ESC — döşemede döngü
+        biter, boşlukta "boşluk yok") | "bosluk" (döşeme 1. köşesinde B —
+        son döşemeye boşluk, Rev-159). en_az=2: açık hat (saçak şeridi, Rev-164)."""
+        c = self.connector
+        noktalar = []
+        doseme = baslik == "DÖŞEME"
+        sozcuk = "köşe" if en_az >= 3 else "nokta"
+        while True:
+            if not noktalar:
+                istem = (f"DÖŞEME 1. köşe (kiriş İÇ YÜZÜ) veya [{self.BOSLUK_ANAHTAR}] (son döşemeye) "
+                         "— bitirmek için ENTER:" if doseme
+                         else f"{baslik} 1. {sozcuk} — vazgeçmek için ENTER:")
+            else:
+                ek = (" (bitirmek için ENTER)" if en_az < 3 else " (kapatmak için ENTER)") \
+                    if len(noktalar) >= en_az else ""
+                istem = f"{baslik} {len(noktalar) + 1}. {sozcuk}{ek}:"
+            if doseme and not noktalar:
+                durum, p = c.doseme_nokta_al(istem, None, anahtarlar=self.BOSLUK_ANAHTAR)
+            else:
+                durum, p = c.doseme_nokta_al(istem, noktalar[-1] if noktalar else None)
+            if not noktalar and durum in ("enter", "esc"):
+                return "bitti"
+            if durum == "nokta":
+                noktalar.append(p)
+            elif durum == "enter":
+                if len(noktalar) >= en_az:
+                    return noktalar
+                mesaj(f"En az {en_az} {sozcuk} gerekli ({len(noktalar)} var) — devam edin, vazgeçmek için ESC.")
+            elif durum == "metin":
+                if doseme and not noktalar and str(p).strip().casefold().startswith("b"):
+                    return "bosluk"
+                mesaj("Nokta tıklayın" + ("; son döşemeye boşluk için B" if doseme and not noktalar else "")
+                      + "; kapatmak için ENTER, vazgeçmek için ESC.")
+            else:
+                return None
+
+    def _yeni_ad(self, onek: str = "D") -> str:
+        adlar = {s["ad"] for s in self.kayitlar}
+        n = 1
+        while f"{onek}{n}" in adlar:
+            n += 1
+        return f"{onek}{n}"
+
+    def _satir_poligonlarini_sil(self, s: Dict):
+        """Döşeme poligonunu ve bağlı boşluk poligonlarını (saçakta iç poligonu) çizimden siler."""
+        c = self.connector
+        c.obje_sil(s.get("handle"))
+        if s.get("ic_handle"):
+            c.obje_sil(s["ic_handle"])
+        for b in s.get("bosluklar") or []:
+            c.obje_sil(b.get("handle"))
+
+    def _satir_poligonlarini_ciz(self, s: Dict):
+        """Geri alınan satırın döşeme + boşluk poligonlarını yeniden çizer (yeni handle'lar).
+        Saçak: kehribar dış/şerit poligonu + (halkada) iç poligon."""
+        c = self.connector
+        if sacak_mi(s):
+            if s.get("koseler"):
+                s["handle"] = c.doseme_poligon_ciz(s["koseler"], renk=SACAK_RENK)
+            if s.get("ic_koseler"):
+                s["ic_handle"] = c.doseme_poligon_ciz(s["ic_koseler"], renk=SACAK_RENK)
+            return
+        if s.get("koseler"):
+            s["handle"] = c.doseme_poligon_ciz(s["koseler"])
+        for b in s.get("bosluklar") or []:
+            b["handle"] = c.doseme_poligon_ciz(b["koseler"], renk=int(AcadColor.RED))
+
+    @staticmethod
+    def _bosluk_toplamlarini_guncelle(s: Dict):
+        bl = s.get("bosluklar") or []
+        s["bosluk_alan_m2"] = round(sum(b["alan_m2"] for b in bl), 4)
+        s["bosluk_cevre_m"] = round(sum(b["cevre_m"] for b in bl), 3)
+
+    def _doseme_isle(self, d: Dict, mesaj) -> None:
+        c = self.connector
+        merkez = d["agirlik_merkezi"]
+        # Saçak satırları hariç — halka saçağın dış poligonu bütün binayı kapsar (Rev-164)
+        idx = next((i for i, s in enumerate(self.kayitlar)
+                    if not sacak_mi(s) and s.get("koseler") and nokta_poligon_icinde_mi(merkez, s["koseler"])),
+                   None)
+        if idx is not None:
+            eski = self.kayitlar[idx]
+            if not c.komut_satiri_evet_hayir(f"Bu alan zaten {eski['ad']} olarak kayıtlı. Güncellensin mi?"):
+                mesaj(f"{eski['ad']} değiştirilmedi — yeni alan eklenmedi.")
+                return
+        handle = c.doseme_poligon_ciz(d["koseler"])
+        if idx is not None:
+            onceki = copy.deepcopy(self.kayitlar[idx])
+            self._satir_poligonlarini_sil(onceki)
+            satir = copy.deepcopy(onceki)
+            satir.update({"brut_alan_m2": d["alan_m2"], "cevre_m": d["cevre_m"], "koseler": d["koseler"],
+                          "handle": handle, "kaynak": "Tıklama", "bosluklar": []})
+            if onceki.get("bosluklar"):
+                mesaj(f"{onceki['ad']}: eski boşluklar kaldırıldı — gerekiyorsa yeniden ekleyin.")
+            self._bosluk_toplamlarini_guncelle(satir)
+            self.kayitlar[idx] = satir
+            self._eylemler.append({"tip": "guncelle", "idx": idx, "onceki": onceki})
+            durum = "GÜNCELLENDİ"
+        else:
+            satir = {"ad": self._yeni_ad(), "brut_alan_m2": d["alan_m2"], "bosluk_alan_m2": 0.0,
+                     "bosluk_cevre_m": 0.0, "serbest_kenar_m": 0.0, "kalinlik_cm": self.kalinlik_cm,
+                     "kaynak": "Tıklama", "handle": handle, "koseler": d["koseler"], "cevre_m": d["cevre_m"],
+                     "bosluklar": []}
+            self.kayitlar.append(satir)
+            idx = len(self.kayitlar) - 1
+            self._eylemler.append({"tip": "ekle", "idx": idx})
+            durum = "EKLENDİ"
+        self._tabloyu_doldur()
+        h = self._hesap(satir)
+        if h["hata"]:
+            mesaj(f"{satir['ad']} {durum} ama HESAP HATASI: {h['hata']} — tabloda düzeltin.")
+        else:
+            mesaj(f"{satir['ad']} {durum}: alan={d['alan_m2']:.2f} m2, çevre={d['cevre_m']:.2f} m, "
+                  f"beton={tek_hane(h['beton_m3'])} m3 ({satir['kalinlik_cm']:g} cm)"
+                  + (" — boşluk varsa 1. köşede B" if not self._bosluk_ipucu_verildi else ""))
+        self._bosluk_ipucu_verildi = True
+
+    def _son_doseme_idx(self) -> Optional[int]:
+        """Bu oturumda son eklenen/güncellenen (veya boşluk eklenen) döşeme —
+        eylem listesinden türetilir, geri almada kendiliğinden bir öncekine döner."""
+        for e in reversed(self._eylemler):
+            if 0 <= e.get("idx", -1) < len(self.kayitlar):
+                return e["idx"]
+        return None
+
+    def _bosluk_ekle(self, idx: int, mesaj) -> str:
+        """Hedef döşemeye TEK boşluk tıklatır (Rev-159 — soru yok; AutoCAD'de B
+        veya formdan "Boşluk Ekle"). Kırmızı çizilir, satıra bağlanır, AYRI bir
+        geri alma adımıdır. Dönüş: "eklendi" | "reddedildi" | "bitti" (1.
+        köşede ENTER/ESC) | "iptal" (köşe alırken ESC)."""
+        c = self.connector
+        satir = self.kayitlar[idx]
+        if sacak_mi(satir):
+            mesaj(f"{satir['ad']} bir saçak — saçağa boşluk eklenmez.")
+            return "bitti"
+        koseler = self._poligon_al(mesaj, baslik=f"BOŞLUK ({satir['ad']})")
+        if koseler == "bitti":
+            return "bitti"
+        if koseler is None:
+            mesaj("Boşluk iptal edildi (ESC).")
+            return "iptal"
+        b = bosluk_degerlendir(satir.get("koseler") or [], koseler,
+                               [x["koseler"] for x in satir.get("bosluklar") or []],
+                               self.birim, self.olcek, satir["brut_alan_m2"])
+        if b["hata"]:
+            mesaj(f"HATA: {b['hata']} — boşluk ALINMADI.")
+            return "reddedildi"
+        handle = c.doseme_poligon_ciz(b["koseler"], renk=int(AcadColor.RED))
+        satir.setdefault("bosluklar", []).append(
+            {"koseler": b["koseler"], "alan_m2": b["alan_m2"], "cevre_m": b["cevre_m"], "handle": handle})
+        self._bosluk_toplamlarini_guncelle(satir)
+        self._eylemler.append({"tip": "bosluk", "idx": idx})
+        self._tabloyu_doldur()
+        h = self._hesap(satir)
+        mesaj(f"{satir['ad']}: boşluk eklendi {b['alan_m2']:.2f} m2 (çevre {b['cevre_m']:.2f} m) — "
+              f"net {h['net_alan_m2']:.2f} m2, beton {tek_hane(h['beton_m3'])} m3, "
+              f"toplam kalıp {tek_hane(h['toplam_kalip_m2'])} m2")
+        return "eklendi"
+
+    @staticmethod
+    def _hesap(s: Dict) -> Dict:
+        return doseme_hesapla(s["brut_alan_m2"], s["kalinlik_cm"], s.get("bosluk_alan_m2", 0.0),
+                              s.get("bosluk_cevre_m", 0.0), s.get("serbest_kenar_m", 0.0))
+
+    def _tabloyu_doldur(self):
+        self.table.setRowCount(0)
+        beton = alan = 0.0
+        for s in self.kayitlar:
+            h = self._hesap(s)
+            beton += h["beton_m3"]
+            alan += h["net_alan_m2"]
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            cevre = s.get("cevre_m")
+            bosluk = s.get("bosluk_alan_m2") or 0.0
+            for col, v in enumerate([s["ad"], f"{s['brut_alan_m2']:.2f}", f"{bosluk:.2f}",
+                                     f"{cevre:.2f}" if cevre else "-", f"{s['kalinlik_cm']:g}",
+                                     f"{tek_hane(h['beton_m3'])}", s.get("kaynak", "")]):
+                self.table.setItem(row, col, QTableWidgetItem(v))
+        self.btn_geri_al.setEnabled(bool(self._eylemler))
+        n_sacak = sum(1 for s in self.kayitlar if sacak_mi(s))
+        self.toplam_lbl.setText(f" {len(self.kayitlar) - n_sacak} döşeme"
+                                + (f" + {n_sacak} saçak" if n_sacak else "")
+                                + f" | Net alan: {alan:,.2f} m² | Beton: {tek_hane(beton, True)} m³")
+
+    def _geri_al_bir(self):
+        c = self.connector
+        e = self._eylemler.pop()
+        if e["tip"] == "ekle":
+            self._satir_poligonlarini_sil(self.kayitlar.pop(e["idx"]))
+        elif e["tip"] == "bosluk":
+            s = self.kayitlar[e["idx"]]
+            b = s["bosluklar"].pop()
+            c.obje_sil(b.get("handle"))
+            self._bosluk_toplamlarini_guncelle(s)
+        else:  # guncelle: yeni poligonları sil, eski satırı ve poligonlarını geri getir
+            self._satir_poligonlarini_sil(self.kayitlar[e["idx"]])
+            onceki = copy.deepcopy(e["onceki"])
+            self._satir_poligonlarini_ciz(onceki)
+            self.kayitlar[e["idx"]] = onceki
+
+    def _son_ekleneni_geri_al(self):
+        if self._eylemler:
+            self._geri_al_bir()
+            self._tabloyu_doldur()
+
+    def _hedef_bosluk_dongusu(self, mesaj) -> None:
+        """Formdan "Boşluk Ekle" (Rev-159): seçili döşemeye arka arkaya boşluk
+        tıklatır; 1. köşede ENTER biter. Kontroller AutoCAD'deki B ile aynı
+        (_bosluk_ekle) — iki yol aynı sonucu verir."""
+        ad = self.kayitlar[self.hedef_idx]["ad"]
+        mesaj(f"BOŞLUK → {ad} (birim {self.birim}, ölçek {self.olcek_adi}): boşluk köşelerini sırayla "
+              "tıklayın, ENTER ile kapatın. Bitirmek için 1. köşede ENTER.")
+        while self._bosluk_ekle(self.hedef_idx, mesaj) != "bitti":
+            pass
+
+    # ── Rev-164: SAÇAK modu ──
+    def _sacak_dongusu(self, mesaj) -> None:
+        """Tip sorusu ([Halka]/[Serit]) -> tıklamalar -> değerlendirme -> kayıt; tip sorusunda ENTER biter."""
+        c = self.connector
+        mesaj(f"SAÇAK (kalınlık {self.sacak_kalinlik_cm:g} cm, birim {self.birim}, ölçek {self.olcek_adi}): "
+              "H = binayı saran halka, S = bazı cephelerde şerit. Bitirmek için ENTER.")
+        while True:
+            secim = c.komut_satiri_secenek("SAÇAK tipi", "Halka Serit")
+            if not secim:
+                break
+            if secim.strip().upper().startswith("H"):
+                dis = self._poligon_al(mesaj, baslik="SAÇAK UCU (dış köşe)")
+                if dis in ("bitti", None):
+                    mesaj("Saçak iptal edildi.")
+                    continue
+                ic = self._poligon_al(mesaj, baslik="KENAR KİRİŞ DIŞ YÜZÜ (iç köşe)")
+                if ic in ("bitti", None):
+                    mesaj("Saçak iptal edildi (iç köşeler alınmadı).")
+                    continue
+                d = sacak_halka_degerlendir(dis, ic, self.birim, self.olcek)
+                alt = SACAK_HALKA
+            else:
+                kiris = self._poligon_al(mesaj, baslik="KİRİŞ HATTI (kiriş dış yüzü)", en_az=2)
+                if kiris in ("bitti", None):
+                    mesaj("Saçak iptal edildi.")
+                    continue
+                uc = self._poligon_al(mesaj, baslik="SAÇAK UCU HATTI", en_az=2)
+                if uc in ("bitti", None):
+                    mesaj("Saçak iptal edildi (uç hattı alınmadı).")
+                    continue
+                d = sacak_serit_degerlendir(kiris, uc, self.birim, self.olcek)
+                alt = SACAK_SERIT
+            if d["hata"]:
+                mesaj(f"HATA: {d['hata']}")
+                continue
+            if not self.alan_teyitli or d["supheli"]:
+                if not c.komut_satiri_evet_hayir(
+                        f"Saçak alanı {d['alan_m2']:.2f} m2, kalıp kenarı {d['kenar_m']:.2f} m (birim "
+                        f"{self.birim}, ölçek {self.olcek_adi}). Doğru mu?"):
+                    if not self.alan_teyitli:
+                        mesaj("Alan kabul edilmedi — döngü DURDURULDU. Birim/ölçeği düzeltip tekrar başlatın.")
+                        break
+                    mesaj("Alan kabul edilmedi — saçak ALINMADI.")
+                    continue
+                self.alan_teyitli = True
+            self._sacak_isle(d, alt, mesaj)
+
+    def _sacak_isle(self, d: Dict, alt: str, mesaj) -> None:
+        """Mükerrer (sadece saçak satırları arasında) -> çizim (kehribar) -> satır + eylem."""
+        c = self.connector
+        idx = sacak_mukerrer_bul(d, self.kayitlar)
+        if idx is not None and not c.komut_satiri_evet_hayir(
+                f"Bu saçak zaten {self.kayitlar[idx]['ad']} olarak kayıtlı. Güncellensin mi?"):
+            mesaj(f"{self.kayitlar[idx]['ad']} değiştirilmedi — saçak ALINMADI.")
+            return
+        handle = c.doseme_poligon_ciz(d["koseler"], renk=SACAK_RENK)
+        ic_handle = c.doseme_poligon_ciz(d["ic_koseler"], renk=SACAK_RENK) if d.get("ic_koseler") else None
+        satir = {"tip": SACAK_TIPI, "sacak_tipi": alt, "brut_alan_m2": d["alan_m2"], "bosluk_alan_m2": 0.0,
+                 "bosluk_cevre_m": 0.0, "serbest_kenar_m": d["kenar_m"], "kalinlik_cm": self.sacak_kalinlik_cm,
+                 "kaynak": f"Saçak-{alt}", "handle": handle, "ic_handle": ic_handle, "koseler": d["koseler"],
+                 "ic_koseler": d.get("ic_koseler") or [], "cevre_m": d["cevre_m"], "kiris_m": d["kiris_m"],
+                 "bosluklar": []}
+        if idx is not None:
+            onceki = copy.deepcopy(self.kayitlar[idx])
+            self._satir_poligonlarini_sil(onceki)
+            satir["ad"] = onceki["ad"]
+            satir["kalinlik_cm"] = onceki.get("kalinlik_cm", self.sacak_kalinlik_cm)
+            self.kayitlar[idx] = satir
+            self._eylemler.append({"tip": "guncelle", "idx": idx, "onceki": onceki})
+            durum = "GÜNCELLENDİ"
+        else:
+            satir["ad"] = self._yeni_ad("SÇ")
+            self.kayitlar.append(satir)
+            self._eylemler.append({"tip": "ekle", "idx": len(self.kayitlar) - 1})
+            durum = "EKLENDİ"
+        self._tabloyu_doldur()
+        h = self._hesap(satir)
+        mesaj(f"{satir['ad']} ({alt}) {durum}: alan={d['alan_m2']:.2f} m2, kenar={d['kenar_m']:.2f} m, "
+              f"beton={tek_hane(h['beton_m3'])} m3, toplam kalıp={tek_hane(h['toplam_kalip_m2'])} m2")
+
+    def _iptal(self):
+        if self._eylemler:
+            cevap = QMessageBox.question(
+                self, "İptal Edilsin Mi?",
+                f"Bu oturumdaki {len(self._eylemler)} işlem geri alınacak ve çizilen poligonlar "
+                "silinecek. İptal edilsin mi?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if cevap != QMessageBox.StandardButton.Yes:
+                return
+        self.reject()
+
+    def reject(self):
+        # Pencere X ile kapatılsa bile çizimde sahipsiz poligon kalmasın
+        while self._eylemler:
+            self._geri_al_bir()
+        super().reject()
+
+    def sonuclar(self) -> List[Dict]:
+        return list(self.kayitlar)
+
+
+class KirisDonguPaneli(QDialog):
+    """Kiriş beton+kalıp — AutoCAD toplu seçim paneli, MOD BAZLI (Rev-150 Aşama 2).
+
+    Neyi çözüyoruz? Kullanıcı AutoCAD'de KALIR: seçilen modda (İç / Kenar)
+    her kiriş için etiket yazısı + kenar çizgileri + ENTER; tip SORULMAZ.
+    L = çizgi uzunlukları toplamı / 2. İç = TURUNCU, Kenar = MAVİ. Boş ENTER
+    döngüyü bitirir; panelden diğer mod seçilip devam edilir (satırlar
+    birikir). Panel ana tablonun ÇALIŞMA KOPYASI üzerinde çalışır: mükerrer
+    (handle) seçim mevcut satırı günceller; İptal / X tüm eylemleri geri alır.
+    Nasıl test ederiz? scratchpad/test_kiris_secim.py — sahte connector.
+    """
+
+    KOLONLAR = ["Ad", "b (cm)", "h (cm)", "L1 (m)", "L2 (m)", "Tip", "t (cm)", "Beton (m³)", "Kalıp (m²)"]
+    MOD_METNI = {
+        KIRIS_TIPLERI[0]: "KİRİŞ — İÇ KİRİŞ modu (iki tarafı döşeme)",
+        KIRIS_TIPLERI[1]: "KİRİŞ — KENAR KİRİŞ modu (tek tarafı döşeme)",
+    }
+
+    def __init__(self, connector, birim: str, olcek_adi: str, olcek: float, t_cm: float,
+                 mod: str, teyitli: bool = False, kayitlar=None, parent=None):
+        super().__init__(parent)
+        self.connector = connector
+        self.birim = birim
+        self.olcek_adi = olcek_adi
+        self.olcek = olcek
+        self.t_cm = t_cm
+        self.mod = mod
+        self.teyitli = teyitli
+        self.kayitlar: List[Dict] = copy.deepcopy(list(kayitlar or []))
+        self._eylemler: List[Dict] = []
+        self.son_hata = ""
+
+        self.setWindowTitle("Kiriş — AutoCAD Toplu Seçim")
+        self.setMinimumSize(900, 500)
+        self.setStyleSheet(
+            "QDialog { background: #252535; color: white; }"
+            "QLabel { color: white; }"
+            "QTableWidget { background: #1e1e2e; color: white; gridline-color: #444; }"
+            "QHeaderView::section { background: #333345; color: white; font-weight: bold;"
+            " padding: 4px; border: 1px solid #555; }"
+            "QPushButton { background: #444; color: white; padding: 6px 14px;"
+            " border: 1px solid #666; border-radius: 4px; }"
+            "QPushButton:hover { background: #555; }"
+        )
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+        bilgi = QLabel(
+            "AutoCAD'de her kiriş için: etiket yazısı (örn. K101 (25/50)) + iki kenar çizgisi → ENTER. "
+            "Bitirmek için hiçbir şey seçmeden ENTER — sonra diğer modu seçip devam edebilirsiniz. "
+            f"İç = turuncu, Kenar = mavi. Birim: {birim}, ölçek: {olcek_adi}, döşeme t = {t_cm:g} cm."
+        )
+        bilgi.setStyleSheet("color: #d4a017; font-size: 9pt;")
+        bilgi.setWordWrap(True)
+        lay.addWidget(bilgi)
+        self.durum_lbl = QLabel("Hazır.")
+        self.durum_lbl.setStyleSheet("color: #5dade2; font-size: 10pt; font-weight: bold; padding: 4px;")
+        self.durum_lbl.setWordWrap(True)
+        lay.addWidget(self.durum_lbl)
+
+        ust = QHBoxLayout()
+        self.btn_ic = QPushButton(" İç Kiriş Seç")
+        self.btn_ic.setToolTip("İki tarafı döşemeli kirişler — turuncuya boyanır.")
+        self.btn_ic.setStyleSheet("QPushButton { background: #e67e22; color: white; font-weight: bold; }")
+        self.btn_ic.clicked.connect(lambda: self._dongu(KIRIS_TIPLERI[0]))
+        ust.addWidget(self.btn_ic)
+        self.btn_kenar = QPushButton(" Kenar Kiriş Seç")
+        self.btn_kenar.setToolTip("Bir tarafında döşeme olmayan kirişler (cephe, boşluk kenarı) — maviye boyanır.")
+        self.btn_kenar.setStyleSheet("QPushButton { background: #2471a3; color: white; font-weight: bold; }")
+        self.btn_kenar.clicked.connect(lambda: self._dongu(KIRIS_TIPLERI[1]))
+        ust.addWidget(self.btn_kenar)
+        self.btn_geri_al = QPushButton(" Son Ekleneni Geri Al")
+        self.btn_geri_al.setToolTip("Son eklemeyi / güncellemeyi geri alır, çizimdeki rengi de geri döndürür.")
+        self.btn_geri_al.clicked.connect(self._son_ekleneni_geri_al)
+        ust.addWidget(self.btn_geri_al)
+        lay.addLayout(ust)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(len(self.KOLONLAR))
+        self.table.setHorizontalHeaderLabels(self.KOLONLAR)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        lay.addWidget(self.table)
+        self.toplam_lbl = QLabel()
+        self.toplam_lbl.setStyleSheet("color: #2ecc71; font-size: 11pt; font-weight: bold; padding: 6px;")
+        lay.addWidget(self.toplam_lbl)
+
+        alt = QHBoxLayout()
+        btn_bitti = QPushButton(" TAMAMLANDI — Tabloya Aktar")
+        btn_bitti.setStyleSheet("QPushButton { background: #27ae60; color: white; font-weight: bold; }")
+        btn_bitti.clicked.connect(self.accept)
+        alt.addWidget(btn_bitti)
+        btn_iptal = QPushButton("İptal")
+        btn_iptal.clicked.connect(self._iptal)
+        alt.addWidget(btn_iptal)
+        lay.addLayout(alt)
+        self._tabloyu_doldur()
+
+    # ── renk ──
+    def _boya(self, handle, tip):
+        try:
+            self.connector.obje_renklendir_hizli(handle, KIRIS_RENKLERI[tip])
+        except Exception as e:
+            logger.error(f"[KIRIS] _boya hata: {e}", exc_info=True)
+
+    def _geri_boya(self, handle):
+        try:
+            self.connector.obje_isaret_geri_al(handle)
+        except Exception as e:
+            logger.error(f"[KIRIS] _geri_boya hata: {e}", exc_info=True)
+
+    # ── döngü (kullanıcı AutoCAD'de) ──
+    def _dongu(self, mod: Optional[str] = None):
+        if mod:
+            self.mod = mod
+        logger.info(f"[KIRIS] döngü BAŞLADI mod={self.mod}")
+        self.son_hata = ""
+        mesaj = self.connector.komut_satiri_mesaj
+        try:
+            self.connector.kiris_toplu_baslat()
+            mesaj(self.MOD_METNI[self.mod])
+            mesaj("Her kiriş: etiket yazısı + iki kenarın TÜM çizgileri (bölünen kenarın bütün "
+                  "parçaları) + ENTER. Bitirmek için boş ENTER.")
+            while True:
+                okuma = self.connector.kiris_oku()
+                if okuma.get("durum") == "bos_secim":
+                    break
+                if not self._kiris_isle(okuma, mesaj):
+                    break
+            mesaj(f"KİRİŞ: seçim bitti — tabloda {len(self.kayitlar)} kiriş. Programa dönün.")
+        except Exception as e:
+            logger.error(f"[KIRIS] döngü hata: {e}", exc_info=True)
+            self.son_hata = str(e)
+            QMessageBox.critical(self, "Hata", f"AutoCAD seçimi sırasında hata:\n{e}")
+        self.durum_lbl.setText(
+            f"Seçim durdu ({self.mod} modu) — {len(self.kayitlar)} kiriş. Diğer modla devam edebilir "
+            "veya TAMAMLANDI ile tabloya aktarabilirsiniz.")
+        self._tabloyu_doldur()
+        try:
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    def _kiris_isle(self, okuma: Dict, mesaj) -> bool:
+        """Tek seçimi işler. False -> döngü durmalı (ilk teyit reddedildi)."""
+        sor = self.connector.komut_satiri_evet_hayir
+        d = kiris_secim_degerlendir(okuma, self.birim, self.olcek)
+        if not d["gecerli"]:
+            mesaj(f"HATA: {d['hata']} — seçim ALINMADI, tekrar seçin.")
+            return True
+        ad = d["ad"]
+        b, h = d["b_cm"], d["h_cm"]
+        if d["kesit_elle"]:
+            b = self.connector.komut_satiri_sayi_sor(f"{ad}: yazıda kesit yok. Genişlik b (cm), ESC = vazgeç:")
+            h = self.connector.komut_satiri_sayi_sor(f"{ad}: Yükseklik h (cm):") if b else None
+            if not b or not h:
+                mesaj(f"{ad} ALINMADI (kesit girilmedi).")
+                return True
+        handleler = [x for x in [d["yazi_handle"]] + d["cizgi_handleler"] if x]
+        muk = kiris_mukerrer_bul(self.kayitlar, handleler)
+        if muk["hata"]:
+            mesaj(f"HATA: {muk['hata']} — seçim ALINMADI.")
+            return True
+        idx = muk["index"]
+        eski = self.kayitlar[idx] if idx is not None else None
+        # Rev-158: l1/l2 = kenar KAPSAMI (boşluk dahil), d1/d2 = DOLU (yan kalıp)
+        satir = {"ad": ad, "b_cm": b, "h_cm": h, "l1_m": d["l1_m"], "l2_m": d["l2_m"],
+                 "d1_m": d["d1_m"], "d2_m": d["d2_m"], "tip": self.mod,
+                 "t_cm": eski["t_cm"] if eski else self.t_cm, "kaynak": "Çizim", "handleler": handleler}
+        hesap = self._satir_hesap(satir)
+        if hesap["hata"]:
+            mesaj(f"HATA: {ad} — {hesap['hata']} — ALINMADI.")
+            return True
+        if not self.teyitli:
+            if not sor(f"{ad}: {b:g}/{h:g}, L1 = {d['l1_m']:.2f} m, L2 = {d['l2_m']:.2f} m okundu "
+                       f"(birim {self.birim}, ölçek {self.olcek_adi}). LIST ile kontrol edin, doğru mu?"):
+                mesaj("Uzunluk kabul edilmedi — döngü DURDURULDU. Programda çizim birimi/ölçeğini "
+                      "düzeltip tekrar başlatın.")
+                return False
+            self.teyitli = True
+        eksik = kenar_eksik_secim_uyarisi(d["l1_m"], d["l2_m"], b) if kenar_eksik_secim_uyarisi else ""
+        if eksik:
+            # Parçalar soru sırasında boyalı olsun — eksik parça çizimde görünsün
+            kayitli = {x for k in self.kayitlar for x in k.get("handleler") or []}
+            for hnd in handleler:
+                self._boya(hnd, self.mod)
+            if not sor(f"{ad}: {eksik}. Yine de alınsın mı?"):
+                for hnd in handleler:
+                    if hnd not in kayitli:
+                        self._geri_boya(hnd)
+                    elif eski is not None:
+                        self._boya(hnd, eski["tip"])
+                mesaj(f"{ad} ALINMADI (eksik parça şüphesi) — eksik kenar parçalarıyla tekrar seçin.")
+                return True
+            d["notlar"].append(eksik)
+        if eski is not None:
+            soru = (f"Bu kiriş zaten {eski['ad']} olarak kayıtlı. Güncellensin mi?"
+                    if eski["tip"] == self.mod else
+                    f"{eski['ad']} {eski['tip'].upper()} olarak kayıtlı. {self.mod.upper()} olarak güncellensin mi?")
+            if not sor(soru):
+                mesaj(f"{ad} ALINMADI (kayıt değişmedi).")
+                return True
+            onceki = copy.deepcopy(eski)
+            for hnd in onceki["handleler"]:
+                if hnd not in handleler:
+                    self._geri_boya(hnd)
+            self.kayitlar[idx] = satir
+            self._eylemler.append({"tip": "guncelle", "idx": idx, "onceki": onceki})
+            durum = "GÜNCELLENDİ"
+        else:
+            self.kayitlar.append(satir)
+            self._eylemler.append({"tip": "ekle", "idx": len(self.kayitlar) - 1})
+            durum = "EKLENDİ"
+        for hnd in handleler:
+            self._boya(hnd, self.mod)
+        self._tabloyu_doldur()
+        dolu = ("" if (satir["d1_m"], satir["d2_m"]) == (satir["l1_m"], satir["l2_m"])
+                else f" (yan dolu {satir['d1_m']:.2f}/{satir['d2_m']:.2f})")
+        mesaj(f"{ad} {durum} ({self.mod}): {b:g}/{h:g}, L1={satir['l1_m']:.2f} L2={satir['l2_m']:.2f} m{dolu}, "
+              f"beton={tek_hane(hesap['beton_m3'])} m3, kalıp={tek_hane(hesap['toplam_kalip_m2'])} m2, "
+              f"{len(d['cizgi_handleler'])} çizgi")
+        for n in d["notlar"] + [x for x in (hesap["uyari"], hesap["bilgi"]) if x]:
+            mesaj(f"  NOT {ad}: {n}")
+        return True
+
+    @staticmethod
+    def _satir_hesap(s: Dict) -> Dict:
+        """Kayıt satırının hesabı — kapsam (l1/l2) + dolu (d1/d2; eski kayıtta yok -> kapsam)."""
+        return kiris_hesapla(s["b_cm"], s["h_cm"], s["l1_m"], s["tip"], s["t_cm"], s["l2_m"],
+                             s.get("d1_m"), s.get("d2_m"))
+
+    # ── tablo / geri al ──
+    def _tabloyu_doldur(self):
+        self.table.setRowCount(0)
+        beton = kalip = 0.0
+        for s in self.kayitlar:
+            h = self._satir_hesap(s)
+            beton += h["beton_m3"]
+            kalip += h["toplam_kalip_m2"]
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            degerler = [s["ad"], f"{s['b_cm']:g}", f"{s['h_cm']:g}", f"{s['l1_m']:.2f}", f"{s['l2_m']:.2f}", s["tip"],
+                        f"{s['t_cm']:g}", f"{tek_hane(h['beton_m3'])}", f"{tek_hane(h['toplam_kalip_m2'])}"]
+            for col, deger in enumerate(degerler):
+                self.table.setItem(row, col, QTableWidgetItem(deger))
+        self.btn_geri_al.setEnabled(bool(self._eylemler))
+        self.toplam_lbl.setText(f" TOPLAM: {len(self.kayitlar)} kiriş | Beton: {tek_hane(beton, True)} m³ | "
+                                f"Kalıp: {tek_hane(kalip, True)} m²")
+
+    def _geri_al_bir(self):
+        e = self._eylemler.pop()
+        yeni = self.kayitlar[e["idx"]]
+        if e["tip"] == "ekle":
+            for hnd in yeni["handleler"]:
+                self._geri_boya(hnd)
+            del self.kayitlar[e["idx"]]
+            return
+        onceki = e["onceki"]
+        for hnd in yeni["handleler"]:
+            if hnd not in onceki["handleler"]:
+                self._geri_boya(hnd)
+        for hnd in onceki["handleler"]:
+            self._boya(hnd, onceki["tip"])
+        self.kayitlar[e["idx"]] = onceki
+
+    def _son_ekleneni_geri_al(self):
+        if self._eylemler:
+            self._geri_al_bir()
+            self._tabloyu_doldur()
+
+    def _iptal(self):
+        if self._eylemler:
+            cevap = QMessageBox.question(
+                self, "İptal Edilsin Mi?",
+                f"Bu oturumdaki {len(self._eylemler)} işlem geri alınacak, renkler eski haline dönecek. "
+                "İptal edilsin mi?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if cevap != QMessageBox.StandardButton.Yes:
+                return
+        self.reject()
+
+    def reject(self):
+        # X ile kapatma da iptal sayılır — çizimde yanıltıcı renk kalmasın
+        while self._eylemler:
+            self._geri_al_bir()
+        super().reject()
+
+    def sonuclar(self) -> List[Dict]:
+        return list(self.kayitlar)
+
+
+class SbhDemirTipDialog(QDialog):
+    """Bir SBH tipinin demir parametreleri (Rev-153).
+
+    Neyi çözüyoruz? Filiz/tevzi çapı, aralığı, boyu vb. SBH tipine göre değişir;
+    tip başına BİR KEZ girilir, kalıcı saklanır. Tevzi sıra 0 = formülle hesapla.
+    Nasıl test ederiz? scratchpad/test_temel_kirisi_demir_ui.py (headless).
+    """
+
+    TAM_SAYI_ALANLAR = ("filiz_cap", "filiz_yuz", "tevzi_cap", "tevzi_sira", "tevzi_yuz")
+
+    def __init__(self, tip: str, parametre: Dict, yeni_tip: bool = False, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{tip} — Demir Parametreleri")
+        self.setMinimumWidth(420)
+        lay = QVBoxLayout(self)
+        aciklama = QLabel(
+            (f"'{tip}' tipi için kayıtlı demir parametresi yok — kesit detayından bir kez girin.\n"
+             if yeni_tip else "") +
+            "Filiz: düşey, kiriş boyunca her aralıkta bir. Tevzi: yatay, kiriş boyunca uzanır, "
+            "yükseklik boyunca her aralıkta bir sıra. Tevzi sıra 0 = (y − 2·pas) ÷ aralık ile hesaplanır."
+        )
+        aciklama.setWordWrap(True)
+        lay.addWidget(aciklama)
+        form = QGridLayout()
+        self.alanlar: Dict[str, QDoubleSpinBox] = {}
+        p = sbh_parametre_tamamla(parametre) if sbh_parametre_tamamla else dict(parametre)
+        for i, (anahtar, etiket, birim) in enumerate(SBH_DEMIR_ALANLARI):
+            if anahtar in self.TAM_SAYI_ALANLAR:
+                spin = QSpinBox()
+                spin.setRange(0, 500)
+            else:
+                spin = QDoubleSpinBox()
+                spin.setDecimals(2)
+                spin.setRange(0.0, 5000.0)
+            spin.setSuffix(f" {birim}")
+            if anahtar == "tevzi_sira":
+                spin.setSpecialValueText("Otomatik (formül)")
+            spin.setValue(p.get(anahtar) or 0)
+            form.addWidget(QLabel(etiket + ":"), i, 0)
+            form.addWidget(spin, i, 1)
+            self.alanlar[anahtar] = spin
+        lay.addLayout(form)
+        self.hata_label = QLabel()
+        self.hata_label.setStyleSheet("color:#e74c3c; font-weight:bold;")
+        lay.addWidget(self.hata_label)
+        butonlar = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        butonlar.button(QDialogButtonBox.StandardButton.Ok).setText("Kaydet")
+        butonlar.button(QDialogButtonBox.StandardButton.Cancel).setText("Vazgeç")
+        butonlar.accepted.connect(self._kaydet)
+        butonlar.rejected.connect(self.reject)
+        lay.addWidget(butonlar)
+
+    def parametreler(self) -> Dict:
+        p = {k: (int(s.value()) if k in self.TAM_SAYI_ALANLAR else float(s.value()))
+             for k, s in self.alanlar.items()}
+        p["tevzi_sira"] = p["tevzi_sira"] or None
+        return p
+
+    def _kaydet(self):
+        hata = sbh_parametre_dogrula(sbh_parametre_tamamla(self.parametreler())) if sbh_parametre_dogrula else ""
+        if hata:
+            self.hata_label.setText(f"⚠ {hata}")
+            return
+        self.accept()
+
+
 class MetrajAnalizWindow(QMainWindow):
     """Akilli Metraj Analizi Ana Penceresi"""
+
+    # ── Rev-151: kiriş / döşeme kayıtları kat bazlı — property AKTİF katın listesi ──
+    def _aktif_kat_anahtari(self) -> str:
+        return getattr(self, "aktif_kat_adi", "") or ""
+
+    @property
+    def kiris_kayitlari(self) -> List[Dict]:
+        return self._kiris_kat_kayitlari.setdefault(self._aktif_kat_anahtari(), [])
+
+    @kiris_kayitlari.setter
+    def kiris_kayitlari(self, deger: List[Dict]) -> None:
+        self._kiris_kat_kayitlari[self._aktif_kat_anahtari()] = list(deger)
+
+    @property
+    def doseme_kayitlari(self) -> List[Dict]:
+        return self._doseme_kat_kayitlari.setdefault(self._aktif_kat_anahtari(), [])
+
+    @doseme_kayitlari.setter
+    def doseme_kayitlari(self, deger: List[Dict]) -> None:
+        self._doseme_kat_kayitlari[self._aktif_kat_anahtari()] = list(deger)
+
+    @property
+    def merdiven_kayitlari(self) -> List[Dict]:
+        return self._merdiven_kat_kayitlari.setdefault(self._aktif_kat_anahtari(), [])
+
+    @merdiven_kayitlari.setter
+    def merdiven_kayitlari(self, deger: List[Dict]) -> None:
+        self._merdiven_kat_kayitlari[self._aktif_kat_anahtari()] = list(deger)
 
     def __init__(self, parent=None, db=None):
         super().__init__(parent)
@@ -470,10 +2865,22 @@ class MetrajAnalizWindow(QMainWindow):
             self.db = None
         self.setWindowTitle("Akıllı Metraj Analizi")
         self.setMinimumSize(700, 700)
+        # Demir Metrajı sekmesi gibi dikey içeriği yoğun sekmelerde sürekli
+        # kaydırmayı azaltmak için pencere daha büyük açılır (minimum değil).
+        self.resize(1000, 900)
 
         # Veri listeleri
         self.kirisler: List[Dict] = []
         self.duvarlar: List[Dict] = []
+        # Rev-134 devam: Kolon Yazısından Toplu Oku mükerrer engelleme —
+        # anahtar (kat_adi, kolon_adi) -> {en_m, boy_m, kat_yuk_m, beton, kalip}.
+        # Aynı kat+kolon adı tekrar okunursa GÜNCELLENİR (üzerine yazılır),
+        # tabloya ikinci kez EKLENMEZ; farklı kattaki aynı isim ayrı sayılır
+        # (self.aktif_kat_adi Demir Metrajı ile PAYLAŞILAN aynı kat mekanizması).
+        self.beton_kalip_kolon_kayitlari: Dict[tuple, Dict] = {}
+        # Rev-160: kolon aracında boyutu çözümlenemeyen S/P adları (kat, ad) -> yazı handle'ı;
+        # perde aracıyla alınınca listeden düşer
+        self.okunamayan_elemanlar: Dict[tuple, Optional[str]] = {}
         self.kolonlar: List[Dict] = [] # Kolonlar
         self.minhalar: List[Dict] = [] # Kapi/Pencere acikliklari
         self.oda_isimleri: List[Dict] = [] # Oda isimleri (TEXT/MTEXT)
@@ -497,6 +2904,36 @@ class MetrajAnalizWindow(QMainWindow):
         # Format: {"kat_adi": str, "demirler": List[DemirBilgisi], "rapor": Dict}
         self.demir_kat_verileri: List[Dict] = []
         self.aktif_kat_adi: str = "" # Şu an seçili kat
+
+        # İhale Demir Metrajı — Aralıklı Donatı (Ø/aralık) dedup registry.
+        # (kat_adi, handle) -> DemirBilgisi. Aynı yazı tekrar okunup/mesafesi
+        # düzeltilirse ESKİ kaydın üzerine YAZAR (kolon betonundaki mükerrer
+        # birikme bug'ının aynısı yaşanmasın diye, bkz. CLAUDE.md Rev-134).
+        self.aralikli_donati_kayitlari: Dict[tuple, "DemirBilgisi"] = {}
+
+        # Rev-137 Temel Kirişi (SBH) registry: yazi_handle -> satır dict.
+        # Aynı SBH yazısı tekrar seçilirse kayıt GÜNCELLENİR (birikme yok).
+        self.temel_kirisi_kayitlari: Dict[str, Dict] = {}
+
+        # Rev-143 Perde registry: (kat_adi, poligon_handle) -> satır (ham
+        # alan/çevre/düşüm; beton/kalıp her gösterimde o KATIN güncel
+        # ayarıyla hesaplanır). Kat anahtarı şart: farklı DWG'lerde (katlarda)
+        # aynı handle tekrar kullanılabilir.
+        self.perde_kayitlari: Dict[tuple, Dict] = {}
+        # Kat başına yükseklik esası — perde yazar, döşeme aracı okuyacak
+        # (çift sayım kararı). yukseklik_ayari = AKTİF katınki.
+        self.kat_yukseklik_ayarlari: Dict[str, "KatYukseklikAyari"] = {}
+        self.yukseklik_ayari = KatYukseklikAyari() if KatYukseklikAyari else None
+
+        # Rev-144 Döşeme / Rev-150 Kiriş satırları — ham girdiler; beton/kalıp
+        # gösterimde hesaplanır. Rev-151: KAT BAZLI saklanır (kat -> liste);
+        # `doseme_kayitlari` / `kiris_kayitlari` property'leri AKTİF katın
+        # listesini verir (mükerrer handle kontrolü de kat içinde — handle
+        # sadece bir DWG içinde benzersiz, bkz. Rev-143).
+        self._doseme_kat_kayitlari: Dict[str, List[Dict]] = {}
+        self._kiris_kat_kayitlari: Dict[str, List[Dict]] = {}
+        # Rev-152 Merdiven kol / ara sahanlık satırları — kat bazlı, ham girdi
+        self._merdiven_kat_kayitlari: Dict[str, List[Dict]] = {}
 
         # --- YENİ VERİ YAPILARI (6 Özellik için) ---
         # Özellik 1: Net / Brüt Alan Ayrımı
@@ -558,7 +2995,20 @@ class MetrajAnalizWindow(QMainWindow):
 
         left_layout.addStretch()
 
-        main_layout.addWidget(left_panel, 1)
+        # Sol paneli DIŞ bir QScrollArea içine al: içerik pencere boyundan
+        # uzun olduğunda (Demir Metrajı sekmesi gibi kalemli bölümlerde sık
+        # görülüyor) tek bir dış kaydırma çubuğuyla erişilebilsin — aksi
+        # halde Qt, iç içe sabit-yükseklikli kutuları (acad_tab_widget'in
+        # setMinimumHeight(600) değeri gibi) pencereye sığdırmak için
+        # sessizce sıkıştırıyor ve alt taraftaki butonlar (DEMİR EXCEL'E
+        # AKTAR, KESİM LİSTESİNE AKTAR vb.) hem görünmüyor hem de hangi iç
+        # kutunun kaydırılması gerektiği belli olmuyordu (bkz. Rev-116).
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setWidget(left_panel)
+        main_layout.addWidget(left_scroll, 1)
 
     def _create_settings_group(self, parent_layout):
         """Genel ayarlar grubu (İnce İşler için)"""
@@ -606,7 +3056,11 @@ class MetrajAnalizWindow(QMainWindow):
         layout.addWidget(self._alan_bilgi_label, 3, 1)
 
         self.settings_group.setLayout(layout)
-        parent_layout.addWidget(self.settings_group)
+        # Rev-154: "Genel Ayarlar" arayüzden KALDIRILDI (kullanıcı isteği). Widget'lar
+        # oluşturulmaya devam ediyor — kat_yuksekligi_spin (kolon okuma varsayılanı),
+        # doseme_kalinligi_spin, rbtn_net/_alan_bilgi_label başka metodlarca okunuyor
+        # (Rev-145 kuralı: erişilen self.x silinmez, sadece layout'a eklenmez).
+        self.settings_group.setVisible(False)
 
     def _create_kiris_group(self, parent_layout):
         """Kiris ekleme grubu"""
@@ -1287,7 +3741,9 @@ class MetrajAnalizWindow(QMainWindow):
         # Scroll area içeriği bağla ve tab'a ekle
         _ince_scroll.setWidget(_ince_content)
         _ince_outer_layout.addWidget(_ince_scroll)
-        self.acad_tab_widget.addTab(ince_isler_tab, " İnce İşler")
+        # Sekme kaldırıldı (sadece Kaba İnşaat aktif) — widget canlı tutuluyor ki
+        # self.ince_toplam_label / self.ince_maliyet_label gibi child referanslar çökmesin.
+        self._ince_isler_tab_gizli = ince_isler_tab
 
         # ─────────────────────────────────────────────────────────────────
         # SEKME 2: DEMİR METRAJI
@@ -1308,6 +3764,31 @@ class MetrajAnalizWindow(QMainWindow):
         demir_layout = QVBoxLayout(_demir_content)
         demir_layout.setContentsMargins(5, 10, 5, 5)
 
+        # Eleman Tipi seçimi — izlenebilirlik icin (Kesim Listesi'nde "Not/Poz"
+        # sutununda gorunur). Kesim optimizasyon algoritmasi TUM eleman
+        # tiplerini ayni (sabit boy) muamele eder, bu secim kesim planini
+        # ETKILEMEZ (bkz. CLAUDE.md Rev-117 karari, 2026-08-19).
+        eleman_tipi_layout = QHBoxLayout()
+        eleman_tipi_layout.addWidget(QLabel("Eleman Tipi:"))
+        self.demir_eleman_tipi_combo = QComboBox()
+        self.demir_eleman_tipi_combo.addItems(
+            ["Kolon", "Perde", "Kiriş", "Döşeme", "Temel", "Diğer"]
+        )
+        self.demir_eleman_tipi_combo.setToolTip(
+            "Şimdi seçeceğiniz demirlerin ait olduğu eleman tipi.\n"
+            "Sadece izlenebilirlik/raporlama içindir — Kesim Listesi'nde\n"
+            "'Not/Poz' sütununda görünür. Kesim optimizasyonunu (fire\n"
+            "hesabını) ETKİLEMEZ, tüm tipler aynı şekilde kesilir.\n\n"
+            "Her eleman tipi için ayrı ayrı seçip 'DEMİR METRAJI AL' ile aktarın."
+        )
+        eleman_tipi_layout.addWidget(self.demir_eleman_tipi_combo, 1)
+        demir_layout.addLayout(eleman_tipi_layout)
+
+        # Demir aksiyon butonları — dikey yığın yerine tek sırada (sayfa
+        # yüksekliğini ~150px azaltır, kaydırma ihtiyacını düşürür).
+        demir_btn_row = QHBoxLayout()
+        demir_btn_row.setSpacing(6)
+
         # Demir Metraj butonu
         self.btn_acad_demir = QPushButton(" DEMİR METRAJİ AL")
         self.btn_acad_demir.clicked.connect(self._autocad_demir_metraj)
@@ -1317,8 +3798,8 @@ class MetrajAnalizWindow(QMainWindow):
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8B4513, stop:1 #654321);
         color: white;
         font-weight: bold;
-        font-size: 12pt;
-        padding: 12px;
+        font-size: 10pt;
+        padding: 8px 4px;
         border: 2px solid #CD853F;
         }
         QPushButton:hover {
@@ -1329,7 +3810,7 @@ class MetrajAnalizWindow(QMainWindow):
         color: #666;
         }
         """)
-        demir_layout.addWidget(self.btn_acad_demir)
+        demir_btn_row.addWidget(self.btn_acad_demir)
 
         # Kolon/Perde Birleşik Hesaplama butonu
         self.btn_kolon_grup = QPushButton(" KOLON/PERDE HESAPLA")
@@ -1346,8 +3827,8 @@ class MetrajAnalizWindow(QMainWindow):
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2E8B57, stop:1 #228B22);
         color: white;
         font-weight: bold;
-        font-size: 11pt;
-        padding: 10px;
+        font-size: 10pt;
+        padding: 8px 4px;
         border: 2px solid #3CB371;
         }
         QPushButton:hover {
@@ -1358,7 +3839,7 @@ class MetrajAnalizWindow(QMainWindow):
         color: #666;
         }
         """)
-        demir_layout.addWidget(self.btn_kolon_grup)
+        demir_btn_row.addWidget(self.btn_kolon_grup)
 
         # Kolon Filizi Tablo Okuma butonu
         self.btn_kolon_filizi = QPushButton(" KOLON FİLİZİ OKU")
@@ -1375,8 +3856,8 @@ class MetrajAnalizWindow(QMainWindow):
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8B4513, stop:1 #A0522D);
         color: white;
         font-weight: bold;
-        font-size: 11pt;
-        padding: 10px;
+        font-size: 10pt;
+        padding: 8px 4px;
         border: 2px solid #CD853F;
         }
         QPushButton:hover {
@@ -1387,15 +3868,102 @@ class MetrajAnalizWindow(QMainWindow):
         color: #666;
         }
         """)
-        demir_layout.addWidget(self.btn_kolon_filizi)
+        demir_btn_row.addWidget(self.btn_kolon_filizi)
 
-        # Demir birim seçimi
+        # İstinat Demir Hesabı — "Poza Göre Donatı Metraj Tablosu" okuma
+        # butonu (bkz. CLAUDE.md Rev-128/129/130). Koordinat bazlı satır/
+        # sütun kümelemesi + başlık tespiti + kg/ton hesabı yapar.
+        self.btn_poz_donati = QPushButton(" İSTİNAT DEMİR HESABI")
+        self.btn_poz_donati.clicked.connect(self._autocad_poz_donati_oku)
+        self.btn_poz_donati.setEnabled(False)
+        self.btn_poz_donati.setToolTip(
+        "Poza Göre Donatı Metraj Tablosunu (POZ/ADET/ÇAP/BOY + çap bazlı\n"
+        "TOPLAM sütunları) AutoCAD'den okur:\n"
+        "• Tüm tabloyu kutu çizerek seçin (başlık satırı dahil)\n"
+        "• Program POZ/ADET/ÇAP/BOY sütunlarını koordinata göre otomatik tanır\n"
+        "• Çapa göre toplam ağırlık (kg/ton) hesaplar\n"
+        "• Tablodaki hazır TOPLAM sütunuyla karşılaştırıp sapma varsa uyarır"
+        )
+        self.btn_poz_donati.setStyleSheet("""
+        QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6c3483, stop:1 #512e5f);
+        color: white;
+        font-weight: bold;
+        font-size: 10pt;
+        padding: 8px 4px;
+        border: 2px solid #8e44ad;
+        }
+        QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #8e44ad, stop:1 #6c3483);
+        }
+        QPushButton:disabled {
+        background: #444;
+        color: #666;
+        }
+        """)
+        demir_btn_row.addWidget(self.btn_poz_donati)
+
+        demir_layout.addLayout(demir_btn_row)
+
+        # ── İhale Demir Metrajı — Aralıklı Donatı (Ø/aralık) okuma ─────────
+        # Adet yerine dağılım aralığıyla etiketlenen donatılar için ayrı
+        # bölüm (bkz. CLAUDE.md Rev-136). Mevcut adetli demir okuma
+        # araçlarından TAMAMEN AYRI bir format/akış olduğu için kendi
+        # başlığı altında gösteriliyor.
+        ihale_demir_baslik = QLabel("İhale Demir Metrajı")
+        ihale_demir_baslik.setStyleSheet(
+            "color:#d4a017; font-weight:bold; font-size:11pt; padding-top:6px;"
+        )
+        demir_layout.addWidget(ihale_demir_baslik)
+
+        ihale_demir_row = QHBoxLayout()
+        ihale_demir_row.setSpacing(6)
+
+        self.btn_aralikli_donati = QPushButton(" ARALIKLI DONATI OKU (Ø/ARALIK)")
+        self.btn_aralikli_donati.clicked.connect(self._autocad_aralikli_donati_oku)
+        self.btn_aralikli_donati.setEnabled(False)
+        self.btn_aralikli_donati.setToolTip(
+            "Adet yerine dağılım aralığıyla etiketlenen donatıları okur:\n"
+            "• Format: Ø14/20 L=500 (çap/aralık_cm L=çubuk_boyu_cm)\n"
+            "• Format: Ø14/20 l=300 (küçük l) radye alt ilavesi de okunur\n"
+            "• ÖLÇÜDEN (varsayılan): yazıyı seç + ENTER, dağılım ölçüsünü\n"
+            "  (DIMENSION) seç + ENTER → adet = ölçü ÷ aralık + 1; döngü kendiliğinden\n"
+            "  sürer, yazı seçiminde boş ENTER ile biter. Ölçü yoksa boş ENTER = elle gir\n"
+            "• ELLE: her turda TEK yazı seçin, mesafeyi (m) yazın\n"
+            "• Seçilen yazı ve ölçü YEŞİLE boyanır (hangileri alındı görünür)\n"
+            "• 'Son Ekleneni Geri Al' ile yanlış girilen son demiri düzeltin\n"
+            "• Döşeme iki yönlüyse her yönü AYRI okutun (program birleştirmez)"
+        )
+        self.btn_aralikli_donati.setStyleSheet("""
+        QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #b7950b, stop:1 #7d6608);
+        color: white;
+        font-weight: bold;
+        font-size: 10pt;
+        padding: 8px 4px;
+        border: 2px solid #d4ac0d;
+        }
+        QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d4ac0d, stop:1 #b7950b);
+        }
+        QPushButton:disabled {
+        background: #444;
+        color: #666;
+        }
+        """)
+        ihale_demir_row.addWidget(self.btn_aralikli_donati)
+        ihale_demir_row.addStretch(1)
+
+        demir_layout.addLayout(ihale_demir_row)
+
+        # Demir birim — her zaman cm (L= değerleri projede cm cinsinden)
         demir_birim_layout = QHBoxLayout()
-        demir_birim_layout.addWidget(QLabel("Boy Birimi:"))
+        demir_birim_layout.addWidget(QLabel("Boy Birimi: cm"))
         self.demir_birim_combo = QComboBox()
-        self.demir_birim_combo.addItems(["cm", "m"])
-        self.demir_birim_combo.setCurrentIndex(0) # Varsayılan: cm
+        self.demir_birim_combo.addItems(["cm"])
+        self.demir_birim_combo.setCurrentIndex(0)
         self.demir_birim_combo.setEnabled(False)
+        self.demir_birim_combo.setVisible(False)  # Tek seçenek, göstermeye gerek yok
         demir_birim_layout.addWidget(self.demir_birim_combo)
 
         self.btn_demir_renk_geri = QPushButton("↩ Renkleri Geri Al")
@@ -1460,8 +4028,8 @@ class MetrajAnalizWindow(QMainWindow):
 
         # Kat listesi
         self.demir_kat_listesi = QListWidget()
-        self.demir_kat_listesi.setMinimumHeight(200)
-        self.demir_kat_listesi.setMaximumHeight(350)
+        self.demir_kat_listesi.setMinimumHeight(120)
+        self.demir_kat_listesi.setMaximumHeight(180)
         self.demir_kat_listesi.setStyleSheet("""
         QListWidget {
         background: #2a2a3a;
@@ -1509,6 +4077,10 @@ class MetrajAnalizWindow(QMainWindow):
 
         # Demir Excel Export butonu
         self.btn_demir_excel = QPushButton(" DEMİR EXCEL'E AKTAR")
+        self.btn_demir_excel.setToolTip(
+            "Bu ekranda topladığınız demir (çap/boy/adet/ağırlık) verisini\n"
+            "kat kat ayrı sayfalar halinde Excel'e aktarır."
+        )
         self.btn_demir_excel.clicked.connect(self._demir_excel_export)
         self.btn_demir_excel.setEnabled(False)
         self.btn_demir_excel.setStyleSheet("""
@@ -1528,6 +4100,66 @@ class MetrajAnalizWindow(QMainWindow):
         }
         """)
         demir_layout.addWidget(self.btn_demir_excel)
+
+        # Kesim Listesine Aktar butonu — Yapısal Demir Hesaplama penceresini
+        # açar/öne getirir ve toplanan demirleri doğrudan Kesim Listesi'ne
+        # aktarır (AutoCAD'e ikinci kez bağlanmaya veya Excel gidip-gelmeye
+        # gerek kalmadan, bkz. Rev-114).
+        self.btn_kesime_aktar = QPushButton(" KESİM LİSTESİNE AKTAR")
+        self.btn_kesime_aktar.setToolTip(
+            "Tüm katlarda toplanan demirleri, 'Yapısal Demir Hesaplama'\n"
+            "penceresinin Kesim Listesi sekmesine doğrudan aktarır.\n"
+            "Pencere açık değilse otomatik açılır."
+        )
+        self.btn_kesime_aktar.clicked.connect(self._kesim_listesine_aktar)
+        self.btn_kesime_aktar.setEnabled(False)
+        self.btn_kesime_aktar.setStyleSheet("""
+        QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d35400, stop:1 #a04000);
+        color: white;
+        font-weight: bold;
+        padding: 8px;
+        border: 2px solid #e67e22;
+        }
+        QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e67e22, stop:1 #d35400);
+        }
+        QPushButton:disabled {
+        background: #444;
+        color: #666;
+        }
+        """)
+        demir_layout.addWidget(self.btn_kesime_aktar)
+
+        # Çap Bazlı Tonaj butonu — tüm katlardaki demirleri çapa göre
+        # gruplayıp toplam boy/ağırlık/tonaj gösterir (sipariş için).
+        self.btn_cap_tonaj = QPushButton(" ÇAP BAZLI TONAJ")
+        self.btn_cap_tonaj.setToolTip(
+            "Tüm katlarda toplanan demirleri çapa (Ø8, Ø12, Ø16...) göre\n"
+            "gruplayıp her çap için toplam boy, ağırlık ve tonajı gösterir."
+        )
+        self.btn_cap_tonaj.clicked.connect(self._cap_bazli_tonaj_goster)
+        # DEMİR EXCEL'E AKTAR / KESİM LİSTESİNE AKTAR butonlarının aksine
+        # kasıtlı olarak hep aktif — veri yoksa tıklayınca _cap_bazli_tonaj_goster
+        # zaten anlaşılır bir uyarı gösteriyor (donuk/tıklanamaz buton yerine).
+        self.btn_cap_tonaj.setEnabled(True)
+        self.btn_cap_tonaj.setStyleSheet("""
+        QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2980b9, stop:1 #1f618d);
+        color: white;
+        font-weight: bold;
+        padding: 8px;
+        border: 2px solid #3498db;
+        }
+        QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3498db, stop:1 #2980b9);
+        }
+        QPushButton:disabled {
+        background: #444;
+        color: #666;
+        }
+        """)
+        demir_layout.addWidget(self.btn_cap_tonaj)
 
         # ─────────────────────────────────────────────────────────────────
         # SEKME 2: KABA İNŞAAT (Demir Metrajı + Beton & Kalıp alt sekmeleri)
@@ -1741,6 +4373,37 @@ class MetrajAnalizWindow(QMainWindow):
         """)
         bk_form_layout.addWidget(self.btn_bk_acad_olc, 3, 2, 1, 4)
 
+        # Rev-134: Kolon boyutunu geometriden değil, boyut YAZISINDAN
+        # ("SZ07 50/50") toplu okuyan buton — geometri (BoundingBox/Area)
+        # 1/50 ölçek + mm birim belirsizliğinde güvenilmez çıktı (Rev-133).
+        self.btn_bk_kolon_yazi = QPushButton(" Kolon Yazısından Toplu Oku")
+        self.btn_bk_kolon_yazi.clicked.connect(self._beton_kalip_kolon_yazisindan_oku)
+        self.btn_bk_kolon_yazi.setEnabled(False)
+        self.btn_bk_kolon_yazi.setToolTip(
+        "AutoCAD'de bir bölgeyi kutuyla seçin — içindeki TÜM boyut\n"
+        "yazıları ('SZ07 50/50' gibi) okunur. İsmi S/P ile başlayanlar\n"
+        "KOLON sayılır, K ile başlayanlar (kiriş) ve tanımsızlar atlanır."
+        )
+        self.btn_bk_kolon_yazi.setStyleSheet("""
+        QPushButton {
+        background: #4a1a5a;
+        color: #ce93d8;
+        font-weight: bold;
+        padding: 6px 14px;
+        border: 1px solid #ce93d8;
+        border-radius: 4px;
+        }
+        QPushButton:hover {
+        background: #6a2a7a;
+        }
+        QPushButton:disabled {
+        background: #222;
+        color: #555;
+        border-color: #444;
+        }
+        """)
+        bk_form_layout.addWidget(self.btn_bk_kolon_yazi, 4, 0, 1, 6)
+
         # Ekle butonu
         btn_bk_ekle = QPushButton("+ Ekle")
         btn_bk_ekle.clicked.connect(self._beton_kalip_kalem_ekle)
@@ -1764,9 +4427,9 @@ class MetrajAnalizWindow(QMainWindow):
 
         # --- Tablo ---
         self.beton_kalip_table = QTableWidget()
-        self.beton_kalip_table.setColumnCount(9)
+        self.beton_kalip_table.setColumnCount(10)
         self.beton_kalip_table.setHorizontalHeaderLabels(
-        ["Eleman", "Adet", "Ölçü1 (m)", "Ölçü2 (m)", "Ölçü3 (m)",
+        ["Kat", "Eleman", "Adet", "Ölçü1 (m)", "Ölçü2 (m)", "Ölçü3 (m)",
         "Net Beton (m³)", "Fire (%)", "Sipariş (m³)", "Kalıp (m²)"]
         )
         self.beton_kalip_table.horizontalHeader().setSectionResizeMode(
@@ -1877,6 +4540,57 @@ class MetrajAnalizWindow(QMainWindow):
         _bk_scroll.setWidget(_bk_content)
         _bk_outer.addWidget(_bk_scroll)
         kaba_insaat_sub_tabs.addTab(beton_kalip_tab, " Beton & Kalıp")
+        self._beton_kalip_tab_gizli = beton_kalip_tab
+
+        # Rev-137: Temel Kirişi (SBH) Beton + Kalıp sekmesi
+        _tk_idx = kaba_insaat_sub_tabs.addTab(self._temel_kirisi_sekmesi_olustur(), " Temel Kirişi")
+        kaba_insaat_sub_tabs.setTabToolTip(
+            _tk_idx,
+            "SBH temel kirişleri: yazıdan kesit + kenar çizgisinden net uzunluk → "
+            "beton m³ ve kalıp m² (sadece 2 yan yüz)."
+        )
+        # Rev-139: Radye Temel Beton + Kalıp sekmesi
+        _radye_idx = kaba_insaat_sub_tabs.addTab(self._radye_sekmesi_olustur(), " Radye Temel")
+        kaba_insaat_sub_tabs.setTabToolTip(
+            _radye_idx, "Radye temel: net alan × kalınlık → beton, çevre × kalınlık → kalıp."
+        )
+        # Rev-143: Perde (L/T/U kesit) Beton + Kalıp sekmesi
+        _perde_idx = kaba_insaat_sub_tabs.addTab(self._perde_sekmesi_olustur(), " Perde")
+        kaba_insaat_sub_tabs.setTabToolTip(
+            _perde_idx,
+            "Perde (L/T/U kesit): kesit alanı × yükseklik → beton, "
+            "kalıplanan kenarlar toplamı × yükseklik → kalıp."
+        )
+        # Rev-144: Döşeme (plak) Beton + Kalıp sekmesi
+        _doseme_idx = kaba_insaat_sub_tabs.addTab(self._doseme_sekmesi_olustur(), " Döşeme")
+        kaba_insaat_sub_tabs.setTabToolTip(
+            _doseme_idx,
+            "Plak döşeme: net alan × kalınlık → beton; alt kalıp + kenar kalıbı → kalıp. "
+            "Alan kiriş iç yüzleri arasında."
+        )
+        # Rev-150: Kiriş (normal, döşeme altı) Beton + Kalıp sekmesi
+        _kiris_idx = kaba_insaat_sub_tabs.addTab(self._kiris_sekmesi_olustur(), " Kiriş")
+        kaba_insaat_sub_tabs.setTabToolTip(
+            _kiris_idx,
+            "Düz kiriş: b × h × L_net → beton; alt + yan yüzler (döşeme tarafında h − t) → kalıp. "
+            "L_net kolon/perde yüzleri arası."
+        )
+        # Rev-152: Merdiven (plak merdiven kolu + ara sahanlık) Beton + Kalıp sekmesi
+        _merdiven_idx = kaba_insaat_sub_tabs.addTab(self._merdiven_sekmesi_olustur(), " Merdiven")
+        kaba_insaat_sub_tabs.setTabToolTip(
+            _merdiven_idx,
+            "Plak merdiven: kol (n, rıht, basamak, kol eni, plak kalınlığı) ve ARA sahanlık → beton m³, "
+            "kalıp m² (alt yüz / rıht / yan / kenar). Kat sahanlığı Döşeme sekmesinde alınır."
+        )
+        # Rev-151: Kat bazlı beton + kalıp özeti (kolon/perde/kiriş/döşeme + Temel)
+        _ozet_idx = kaba_insaat_sub_tabs.addTab(self._kat_ozeti_sekmesi_olustur(), " Kat Özeti")
+        kaba_insaat_sub_tabs.setTabToolTip(
+            _ozet_idx,
+            "Tüm sekmelerdeki beton (m³) ve kalıp (m²) miktarları kat kat, tek tabloda. "
+            "Radye ve temel kirişi 'Temel' satırında."
+        )
+        kaba_insaat_sub_tabs.currentChanged.connect(
+            lambda i, idx=_ozet_idx: self._kat_ozeti_yenile() if i == idx else None)
 
         # ─────────────────────────────────────────────────────────────────
         # Alt sekme 2: Hızlı Keşif (eski "Kaba Yapı" sekmesi buraya taşındı)
@@ -1982,8 +4696,12 @@ class MetrajAnalizWindow(QMainWindow):
 
         _kesif_scroll.setWidget(_kesif_content)
         _kesif_outer.addWidget(_kesif_scroll)
-        kaba_insaat_sub_tabs.addTab(hizli_kesif_tab, " Hızlı Keşif")
+        # Sekme kaldırıldı (sadece Demir Metrajı aktif) — widget canlı tutuluyor.
+        self._hizli_kesif_tab_gizli = hizli_kesif_tab
 
+        # Rev-133 (2026-09-06): "Beton & Kalıp" sekmesi LISP kat yüksekliği
+        # bug fix'inin test edilebilmesi için tekrar görünür yapıldı — sekme
+        # çubuğu artık gizlenmiyor (birden fazla alt sekme var).
         kaba_insaat_layout.addWidget(kaba_insaat_sub_tabs)
         self.acad_tab_widget.addTab(kaba_insaat_tab, " Kaba İnşaat")
 
@@ -2195,13 +4913,17 @@ class MetrajAnalizWindow(QMainWindow):
 
         _ck_scroll.setWidget(_ck_content)
         _ck_outer.addWidget(_ck_scroll)
-        self.acad_tab_widget.addTab(coklu_kat_tab, " Çoklu Kat")
+        # Sekme kaldırıldı (sadece Kaba İnşaat aktif)
+        self._coklu_kat_tab_gizli = coklu_kat_tab
 
         # (Kaba Yapı sekmesi → Kaba İnşaat > Hızlı Keşif alt sekmesine taşındı)
 
         # SEKME 4: LISP ARAÇLARI
+        # Rev-133 (2026-09-06): kat yüksekliği bug fix'inin test edilebilmesi
+        # için tekrar görünür yapıldı.
         lisp_tab = self._lisp_araclari_tab_olustur()
         self.acad_tab_widget.addTab(lisp_tab, " LISP Araçları")
+        self._lisp_tab_gizli = lisp_tab
 
         # Sekme değişikliği callback'i
         self.acad_tab_widget.currentChanged.connect(self._sekme_degisti)
@@ -2212,131 +4934,11 @@ class MetrajAnalizWindow(QMainWindow):
         acad_group.setLayout(acad_main_layout)
         parent_layout.addWidget(acad_group)
 
-        # ═══════════════════════════════════════════════════════════════════
-        # DXF DOSYA YÜKLEME (Mimari)
-        # ═══════════════════════════════════════════════════════════════════
-        dxf_layout = QHBoxLayout()
-        btn_dxf = QPushButton(" DXF DOSYASI YUKLE (Mimari)")
-        btn_dxf.clicked.connect(self._load_dxf_file)
-        btn_dxf.setStyleSheet("""
-        QPushButton {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #9c27b0, stop:1 #7b1fa2);
-        color: white;
-        font-weight: bold;
-        font-size: 10pt;
-        padding: 8px;
-        border: 2px solid #ce93d8;
-        }
-        QPushButton:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ab47bc, stop:1 #9c27b0);
-        }
-        """)
-        dxf_layout.addWidget(btn_dxf)
-        parent_layout.addLayout(dxf_layout)
-
-        # DXF durum etiketi
+        # DXF yükle / HESAPLA / Temizle / Duvar-Kiriş Excel / Metraj Cetveline Aktar /
+        # Tedarikçiye Teklif butonları kullanıcı isteğiyle arayüzden kaldırıldı (Rev-145).
+        # Metotlar duruyor; _clear_all ve _load_dxf_file durum etiketine yazdığı için
+        # etiket ekrana eklenmeden tutuluyor.
         self.dxf_status_label = QLabel("DXF dosyasi yuklenmedi")
-        self.dxf_status_label.setStyleSheet("color: #888; font-style: italic; padding: 5px;")
-        parent_layout.addWidget(self.dxf_status_label)
-
-        # Hesaplama butonlari
-        btn_layout = QHBoxLayout()
-
-        btn_hesapla = QPushButton("HESAPLA")
-        btn_hesapla.clicked.connect(self._calculate_and_visualize)
-        btn_hesapla.setStyleSheet("""
-        QPushButton {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #00BFFF, stop:1 #0066cc);
-        color: white;
-        font-weight: bold;
-        font-size: 12pt;
-        padding: 12px;
-        border: 2px solid #00DDFF;
-        }
-        QPushButton:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #00DDFF, stop:1 #00BFFF);
-        }
-        """)
-        btn_layout.addWidget(btn_hesapla)
-
-        btn_temizle = QPushButton("Temizle")
-        btn_temizle.clicked.connect(self._clear_all)
-        btn_temizle.setStyleSheet("background-color: #4a3a2a; border-color: #ff9800;")
-        btn_layout.addWidget(btn_temizle)
-
-        parent_layout.addLayout(btn_layout)
-
-        # Excel export butonu
-        export_layout = QHBoxLayout()
-        btn_excel = QPushButton(" EXCEL'E AKTAR")
-        btn_excel.clicked.connect(self._export_to_excel)
-        btn_excel.setStyleSheet("""
-        QPushButton {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4CAF50, stop:1 #388E3C);
-        color: white;
-        font-weight: bold;
-        font-size: 10pt;
-        padding: 8px;
-        border: 2px solid #81C784;
-        }
-        QPushButton:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #66BB6A, stop:1 #4CAF50);
-        }
-        """)
-        export_layout.addWidget(btn_excel)
-        parent_layout.addLayout(export_layout)
-
-        # ─────────────────────────────────────────────────────────────────
-        # Özellik 3 — Metraj Cetvelı'ne Tek Tuşla Aktarım
-        # ─────────────────────────────────────────────────────────────────
-        btn_metraj_aktar = QPushButton(" METRAJ CETVELİNE AKTAR")
-        btn_metraj_aktar.clicked.connect(self._metraj_cetvelne_aktar)
-        btn_metraj_aktar.setToolTip(
-        "Hesaplanan tüm imalat kalemlerini\n"
-        "Ana Ekran → Metraj Cetveli'ne otomatik ekler."
-        )
-        btn_metraj_aktar.setStyleSheet("""
-        QPushButton {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #00897B, stop:1 #00695C);
-        color: white;
-        font-weight: bold;
-        font-size: 10pt;
-        padding: 8px;
-        border: 2px solid #4DB6AC;
-        }
-        QPushButton:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #26A69A, stop:1 #00897B);
-        }
-        """)
-        parent_layout.addWidget(btn_metraj_aktar)
-
-        # ─────────────────────────────────────────────────────────────────
-        # Özellik 6 — Tedarikçi Entegrasyonu
-        # ─────────────────────────────────────────────────────────────────
-        btn_tedarikci = QPushButton(" TEDARİKÇİYE TEKLİF İSTE")
-        btn_tedarikci.clicked.connect(self._tedarikci_gonder)
-        btn_tedarikci.setToolTip(
-        "Malzeme listesini tedarikçi teklif formatında\n"
-        "panoya kopyalar veya metin dosyasına kaydeder."
-        )
-        btn_tedarikci.setStyleSheet("""
-        QPushButton {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #1565C0, stop:1 #0D47A1);
-        color: white;
-        font-weight: bold;
-        font-size: 10pt;
-        padding: 8px;
-        border: 2px solid #42A5F5;
-        }
-        QPushButton:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #1976D2, stop:1 #1565C0);
-        }
-        """)
-        parent_layout.addWidget(btn_tedarikci)
 
         # ─────────────────────────────────────────────────────────────────
         # Özellik 4 — Anormallik Uyarı Paneli
@@ -2644,8 +5246,11 @@ class MetrajAnalizWindow(QMainWindow):
             self.btn_demir_renk_geri.setEnabled(True)
             self.btn_kolon_grup.setEnabled(True)
             self.btn_kolon_filizi.setEnabled(True)
+            self.btn_poz_donati.setEnabled(True)
+            self.btn_aralikli_donati.setEnabled(True)
             self.btn_kat_ekle.setEnabled(True)
             self.btn_bk_acad_olc.setEnabled(True)
+            self.btn_bk_kolon_yazi.setEnabled(True)
             # İnce işler tablolarındaki AutoCAD butonlarını etkinleştir
             self._ince_isler_butonlari_etkinlestir(True)
             # Katman listesini doldur
@@ -3632,10 +6237,13 @@ class MetrajAnalizWindow(QMainWindow):
 
         try:
             # Kullanıcıya bilgi ver
+            _secili_tip = self.demir_eleman_tipi_combo.currentText()
             QMessageBox.information(
                 self, f"Demir Metrajı - {self.aktif_kat_adi}",
-                f" Aktif Kat: {self.aktif_kat_adi}\n\n"
-                "AutoCAD penceresine geçin ve DEMİR YAZILARINI seçin.\n\n"
+                f" Aktif Kat: {self.aktif_kat_adi}\n"
+                f" Eleman Tipi: {_secili_tip}\n\n"
+                "AutoCAD penceresine geçin ve SADECE bu eleman tipine ait\n"
+                "DEMİR YAZILARINI seçin.\n\n"
                 "Örnek formatlar:\n"
                 " • 10Ø12 L=250\n"
                 " • 5ø16 l=180\n"
@@ -3679,8 +6287,13 @@ class MetrajAnalizWindow(QMainWindow):
                 )
                 return
 
+            # Seçilen eleman tipini tüm başarılı demirlere etiketle
+            secili_eleman_tipi = self.demir_eleman_tipi_combo.currentText()
+            for _d in rapor["basarili"]:
+                _d.eleman_tipi = secili_eleman_tipi
+
             # Başarılı sonuç mesajı
-            ozet = "DEMİR METRAJ RAPORU\n"
+            ozet = f"DEMİR METRAJ RAPORU — {secili_eleman_tipi}\n"
             ozet += f"{'='*40}\n\n"
             ozet += f"Seçilen obje : {rapor['secim_sayisi']}\n"
             ozet += f"Metin objesi : {rapor['metin_sayisi']}\n"
@@ -3721,12 +6334,133 @@ class MetrajAnalizWindow(QMainWindow):
 
             # Excel butonunu etkinleştir
             self.btn_demir_excel.setEnabled(True)
+            self.btn_kesime_aktar.setEnabled(True)
 
             logger.info(f"'{self.aktif_kat_adi}' katına {len(rapor['basarili'])} demir eklendi")
 
         except Exception as e:
             logger.error(f"Demir metraj hatası: {e}")
             QMessageBox.critical(self, "Hata", f"Demir metrajı alınırken hata:\n{e}")
+
+    def _aralikli_donati_kat_satirlarini_yeniden_olustur(self, kat_adi: str):
+        """Belirtilen katın 'aralıklı donatı' kaynaklı demir satırlarını
+        registry'den (self.aralikli_donati_kayitlari) yeniden inşa eder.
+
+        Neyi çözüyoruz? Kullanıcı aynı yazıyı (aynı AutoCAD handle) tekrar
+        okutup mesafeyi düzeltirse, ESKİ satır silinmeden yeni satır
+        EKLENİRSE toplam sessizce büyür — kolon betonunda yaşanan mükerrer
+        birikme bug'ının aynısı (bkz. CLAUDE.md Rev-134). Bu yüzden bu
+        katın registry'de bilinen TÜM handle'larına ait eski satırlar
+        önce silinir, sonra registry'deki güncel haliyle yeniden eklenir.
+        Manuel eklenmiş veya başka araçlarla (Demir Metrajı Al, Kolon
+        Filizi vb.) eklenmiş satırlara DOKUNULMAZ (onların handle'ı bu
+        registry'de yok).
+        """
+        kat_data = next(
+        (k for k in self.demir_kat_verileri if k["kat_adi"] == kat_adi), None
+        )
+        if kat_data is None:
+            return
+        bu_kat_handleleri = {
+        h for (k, h) in self.aralikli_donati_kayitlari if k == kat_adi
+        }
+        kat_data["demirler"] = [
+        d for d in kat_data["demirler"] if d.handle not in bu_kat_handleleri
+        ]
+        for (k, h), demir in self.aralikli_donati_kayitlari.items():
+            if k == kat_adi:
+                kat_data["demirler"].append(demir)
+
+    def _autocad_aralikli_donati_oku(self):
+        """Aralıklı donatı (Ø/aralık) yazılarını AutoCAD'den TEK TEK,
+        döngüsel seçimle okur, her biri için hemen dağılım mesafesi alıp
+        aktif kata ekler.
+
+        İhale Demir Metrajı, Aşama 3 güncelleme (bkz. CLAUDE.md Rev-136 —
+        "radye gibi dağınık donatı" senaryosu). Kutu ile toplu okuma yerine
+        DÖNGÜSEL tek-obje seçimi kullanılıyor: her turda kullanıcı bir yazı
+        seçer, hemen mesafe girer, obje YEŞİLE boyanır — böylece hangi
+        demirlerin alındığı çizimde gözle görülür, aynı demiri iki kez
+        sayma/atlama riski düşer (bkz. AralikliDonatiDonguPaneli). Mükerrer
+        okuma, handle bazlı registry ile engellenir (bkz.
+        _aralikli_donati_kat_satirlarini_yeniden_olustur).
+        """
+        try:
+            if not self.acad_connector or not self.acad_connector.bagli:
+                QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+                return
+
+            if not self.aktif_kat_adi:
+                QMessageBox.warning(self, "Uyarı", "Önce bir kat ekleyin ve seçin!")
+                return
+
+            QMessageBox.information(
+            self, "İhale Demir Metrajı — Aralıklı Donatı Oku",
+            "Adet yerine dağılım aralığıyla etiketlenen donatıları\n"
+            "(örn. Ø14/20 L=500) TEK TEK okuyacaksınız.\n\n"
+            "Açılacak panelde 'Demir Seç' butonuna basıp AutoCAD'de\n"
+            "TEK bir yazı seçin — hemen dağılım mesafesi sorulacak,\n"
+            "obje YEŞİLE boyanacak. Bitirince panelde 'Bitti — Aktif\n"
+            "Kata Ekle'ye basın.\n\n"
+            "Döşeme iki yönlüyse HER YÖNÜ AYRI okutun — program\n"
+            "iki yönü otomatik birleştirmez."
+            )
+
+            mevcut_handleler = {
+            h for (k, h) in self.aralikli_donati_kayitlari if k == self.aktif_kat_adi
+            }
+            panel = AralikliDonatiDonguPaneli(self.acad_connector, mevcut_handleler, self)
+            if panel.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            satirlar = panel.sonuclar()
+            if not satirlar:
+                QMessageBox.warning(
+                self, "Uyarı",
+                "Hiçbir donatı toplanmadığı için eklenecek veri yok."
+                )
+                return
+
+            eleman_tipi = self.demir_eleman_tipi_combo.currentText()
+            for s in satirlar:
+                d = DemirBilgisi(
+                handle=s.get("handle", ""),
+                orijinal_metin=(
+                f"Ø{s['cap']}/{s['aralik_cm']:.0f} L={s['boy_cm']:.0f}cm "
+                f"(mesafe={s['mesafe_m']:.2f}m, adet={s['adet']})"
+                ),
+                katman=s.get("layer", ""),
+                )
+                d.adet = s["adet"]
+                d.cap = s["cap"]
+                d.boy = s["boy_cm"]
+                d.toplam_boy = s["toplam_boy_m"]
+                d.agirlik_birim = s["agirlik_birim"]
+                d.toplam_agirlik = s["toplam_agirlik_kg"]
+                d.gecerli = True
+                d.eleman_tipi = eleman_tipi
+
+                # Mükerrer engelleme: (kat, handle) anahtarıyla ESKİ kaydın
+                # üzerine yaz — asla ayrı bir satır olarak biriktirme.
+                self.aralikli_donati_kayitlari[(self.aktif_kat_adi, d.handle)] = d
+
+            self._aralikli_donati_kat_satirlarini_yeniden_olustur(self.aktif_kat_adi)
+            self._demir_kat_listesini_guncelle()
+            self.btn_demir_excel.setEnabled(True)
+            self.btn_kesime_aktar.setEnabled(True)
+
+            QMessageBox.information(
+            self, "İhale Demir Metrajı — Eklendi",
+            f"'{self.aktif_kat_adi}' katına {len(satirlar)} aralıklı donatı eklendi.\n\n"
+            f"(Aynı yazı tekrar okunursa mükerrer eklenmez, üzerine yazılır.)"
+            )
+            logger.info(
+            f"'{self.aktif_kat_adi}' katına {len(satirlar)} aralıklı donatı eklendi"
+            )
+
+        except Exception as e:
+            logger.error(f"Aralıklı donatı okuma hatası: {e}")
+            QMessageBox.critical(self, "Hata", f"Hata:\n{e}")
 
     def _autocad_dusay_eleman_hesapla(self):
         """
@@ -3841,6 +6575,7 @@ class MetrajAnalizWindow(QMainWindow):
 
             self._demir_kat_listesini_guncelle()
             self.btn_demir_excel.setEnabled(True)
+            self.btn_kesime_aktar.setEnabled(True)
 
             elemanlar = sonuc.get("elemanlar", [])
             tip = sonuc.get("tip", "")
@@ -3919,23 +6654,224 @@ class MetrajAnalizWindow(QMainWindow):
 
             self._demir_kat_listesini_guncelle()
             self.btn_demir_excel.setEnabled(True)
+            self.btn_kesime_aktar.setEnabled(True)
             logger.info(f"'{self.aktif_kat_adi}' katına {len(rapor['basarili'])} kolon filizi demiri eklendi")
 
         except Exception as e:
             logger.error(f"Kolon filizi okuma hatası: {e}")
             QMessageBox.critical(self, "Hata", f"Kolon filizi okuma sırasında hata:\n{e}")
 
+    def _poz_donati_tek_tablo_oku(self, tablo_no: int):
+        """Tek bir 'Poza Göre Donatı Metraj Tablosu' seçtirip poz kayıtlarını
+        döndürür (henüz hesap/DemirBilgisi'ye çevrim YOK — bu, birden fazla
+        tabloyu tek tek toplayıp SONUNDA birlikte hesaplayabilmek için ayrı
+        tutuldu, bkz. _autocad_poz_donati_oku).
+
+        ÖNEMLİ: Birden fazla tablo AYNI ANDA (tek kutu ile) seçilirse
+        koordinat kümelemesi tabloları birbirine karıştırır (kullanıcı
+        gerçek testte bunu yaşadı — 770 obje 3 satır x 5 sütuna sıkıştı).
+        Bu yüzden HER ÇAĞRIDA sadece TEK bir tablo seçtirilir; birden fazla
+        tablo varsa çağıran (bkz. _autocad_poz_donati_oku) bu metodu birden
+        çok kez çağırır.
+
+        Returns:
+            (poz_kayitlari_listesi, iptal_edildi_mi) — poz_kayitlari_listesi
+            None ise o turda geçerli veri bulunamadı (hata mesajı zaten
+            gösterildi); iptal_edildi_mi True ise kullanıcı tüm işlemi
+            iptal etti (döngü tamamen durmalı).
+        """
+        rapor = self.acad_connector.get_poz_bazli_donati_tablosu(
+            mesaj=f"Tablo {tablo_no}: Poza göre donatı metraj tablosunu kutu çizerek seçin "
+                  f"(SADECE BU TABLOYU — başka tablo varsa dahil ETMEYİN)"
+        )
+
+        if rapor["secim_sayisi"] == 0:
+            QMessageBox.information(self, "Bilgi", "Hiç obje seçilmedi.")
+            return None, True
+
+        poz_kayitlari = rapor.get("poz_kayitlari", {})
+
+        # Başlık otomatik bulunamadıysa: kullanıcıya sütun sırasını sor
+        # (bkz. proje brief'i — "Başlık YOKSA kullanıcıya sor"). AutoCAD'e
+        # TEKRAR seçim yaptırmadan, zaten okunan grid_ham üzerinde tekrar
+        # dener — bu yüzden pahalı bir ikinci seçim adımı gerekmez.
+        if poz_kayitlari.get("sutun_tespiti") == "basarisiz":
+            sutun_sayisi = len(rapor["grid_ham"][0]) if rapor["grid_ham"] else 0
+            metin, ok = QInputDialog.getText(
+                self, "Sütun Sırası Gerekli",
+                f"Tablo {tablo_no}: Başlık satırı (ADET/ÇAP/BOY) otomatik tanınamadı.\n\n"
+                f"Tabloda {sutun_sayisi} sütun bulundu. Soldan sağa sütun\n"
+                f"sırasını virgülle ayırarak yazın:\n"
+                f"(poz, adet, cap, boy, sekil, toplam, yoksay)\n\n"
+                f"Örnek: poz,adet,cap,boy,sekil,toplam,toplam,toplam\n\n"
+                f"NOT: {sutun_sayisi} sütun bulundu ama çok fazla/az geliyorsa\n"
+                f"muhtemelen birden fazla tablo birlikte seçildi — İptal edip\n"
+                f"sadece TEK bir tabloyu tekrar seçmeyi deneyin."
+            )
+            if not ok or not metin.strip():
+                QMessageBox.information(self, "İptal", f"Tablo {tablo_no} için sütun sırası girilmedi, bu tablo atlandı.")
+                return None, False
+            sutun_sirasi = [s.strip().lower() for s in metin.split(",")]
+            if len(sutun_sirasi) != sutun_sayisi:
+                QMessageBox.critical(
+                    self, "Hata",
+                    f"Girilen sütun sayısı ({len(sutun_sirasi)}) tablodaki sütun "
+                    f"sayısıyla ({sutun_sayisi}) uyuşmuyor. Bu tablo atlandı."
+                )
+                return None, False
+
+            from app.core.autocad_connector import grid_den_poz_kayitlarini_cikar
+            poz_kayitlari = grid_den_poz_kayitlarini_cikar(rapor["grid_ham"], sutun_sirasi=sutun_sirasi)
+
+        if not poz_kayitlari.get("basarili"):
+            QMessageBox.warning(self, "Uyarı", f"Tablo {tablo_no}'da geçerli poz verisi bulunamadı, atlandı.")
+            return None, False
+
+        # Poz numaralarını tablo no ile etiketle — birden fazla tabloda ayni
+        # "Poz 1" gibi tekrar eden isimler sapma raporunda karışmasın.
+        etiketli = []
+        for kayit in poz_kayitlari["basarili"]:
+            yeni = dict(kayit)
+            yeni["poz_no"] = f"T{tablo_no}-{kayit['poz_no']}"
+            etiketli.append(yeni)
+
+        return etiketli, False
+
+    def _autocad_poz_donati_oku(self):
+        """AutoCAD'den bir veya birden fazla "Poza Göre Donatı Metraj
+        Tablosu"nu (her biri AYRI seçilerek) okur (İstinat Demir Hesabı) —
+        koordinat bazlı satır/sütun kümelemesi + başlık tespiti + kg/ton
+        hesabı (bkz. CLAUDE.md Rev-128/129/130/132).
+
+        Birden fazla tablo desteği (Rev-132): Kullanıcı gerçek projede
+        birden fazla ayrı tablo olduğunu bildirdi ve hepsini tek işlemde
+        eklemek istedi. Tabloları TEK BİR kutu ile birlikte seçmek koordinat
+        kümelemesini bozduğu için (tablolar arası dev boşluk, tablo içi
+        gerçek satır/sütun boşluğunu "gürültü" sanıp yutuyor — bkz.
+        PROGRAM_OZELLIKLERI Rev-132), bunun yerine kullanıcı tabloları TEK
+        TEK seçer, program her turdan sonra "başka tablo var mı?" diye sorar.
+        """
+        try:
+            if not self.acad_connector or not self.acad_connector.bagli:
+                QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+                return
+
+            if not self.aktif_kat_adi:
+                QMessageBox.warning(self, "Uyarı", "Önce bir kat ekleyin ve seçin!")
+                return
+
+            QMessageBox.information(
+                self, "İstinat Demir Hesabı — Tablo Okuma",
+                "AutoCAD'deki 'Poza Göre Donatı Metraj Tablosu'nu okuyacaksınız.\n\n"
+                "1. SADECE TEK BİR tabloyu kutu çizerek seçin\n"
+                " (POZ/ADET/ÇAP/BOY başlıkları dahil, başka tablo DAHİL ETMEYİN)\n"
+                "2. Seçimi tamamlamak için ENTER'a basın\n\n"
+                "Birden fazla tablonuz varsa merak etmeyin — bu tablo işlendikten\n"
+                "sonra 'Başka tablo var mı?' diye soracağız, sırayla ekleyebilirsiniz.\n\n"
+                "Program sütunları otomatik tanıyıp çapa göre toplam ağırlık\n"
+                "(kg/ton) hesaplayacak ve tablodaki hazır TOPLAM sütunuyla\n"
+                "karşılaştıracaktır."
+            )
+
+            tum_kayitlar = []
+            tablo_no = 1
+            while True:
+                kayitlar, iptal = self._poz_donati_tek_tablo_oku(tablo_no)
+                if iptal:
+                    break
+                if kayitlar:
+                    tum_kayitlar.extend(kayitlar)
+                    tablo_no += 1
+                    devam = QMessageBox.question(
+                        self, "Başka Tablo Var Mı?",
+                        f"Tablo {tablo_no - 1} işlendi ({len(kayitlar)} poz bulundu, "
+                        f"toplam birikmiş poz: {len(tum_kayitlar)}).\n\n"
+                        f"Eklemek istediğiniz başka bir 'Poza Göre Donatı Metraj\n"
+                        f"Tablosu' daha var mı?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if devam != QMessageBox.StandardButton.Yes:
+                        break
+                else:
+                    # Bu tur atlandi (basarisiz/iptal) - yine de devam etmek
+                    # isteyip istemedigini sor (toplam biriken varsa).
+                    if not tum_kayitlar:
+                        return
+                    devam = QMessageBox.question(
+                        self, "Devam Edilsin Mi?",
+                        f"Bu tablo atlandı. Şimdiye kadar {len(tum_kayitlar)} poz\n"
+                        f"toplandı. Başka bir tablo daha denemek ister misiniz?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if devam != QMessageBox.StandardButton.Yes:
+                        break
+
+            if not tum_kayitlar:
+                QMessageBox.warning(self, "Uyarı", "Geçerli poz verisi bulunamadı.")
+                return
+
+            from app.core.autocad_connector import (
+                poz_kayitlarindan_hesapla,
+                poz_kayitlarini_demir_bilgisine_cevir,
+            )
+            hesap = poz_kayitlarindan_hesapla(tum_kayitlar)
+            demirler = poz_kayitlarini_demir_bilgisine_cevir(tum_kayitlar)
+
+            mesaj = f"İSTİNAT DEMİR HESABI\n{'='*40}\n\n"
+            mesaj += f"Kat: {self.aktif_kat_adi}\n"
+            mesaj += f"İşlenen tablo sayısı: {tablo_no - 1}\n\n"
+            mesaj += f"Bulunan poz : {len(demirler)}\n"
+            g = hesap["genel"]
+            mesaj += f"Toplam Adet : {g['adet']:,}\n"
+            mesaj += f"Toplam Boy : {g['boy_m']:,.2f} m\n"
+            mesaj += f"Toplam Ağırlık : {g['agirlik_kg']:,.2f} kg\n"
+            mesaj += f" : {g['agirlik_kg']/1000:,.3f} ton\n"
+            mesaj += f"{chr(9472)*40}\n\n"
+            mesaj += "ÇAP BAZLI DAĞILIM:\n"
+            for cap in sorted(hesap["cap_ozeti"].keys()):
+                ozet = hesap["cap_ozeti"][cap]
+                mesaj += f" Ø{cap}: {ozet['adet']:,} adet, {ozet['boy_m']:,.2f}m, {ozet['agirlik_kg']:,.2f}kg\n"
+
+            if hesap["sapma_var_mi"]:
+                mesaj += f"\n⚠ {len(hesap['sapmalar'])} pozda tablodaki TOPLAM ile hesaplanan boy uyuşmuyor:\n"
+                for s in hesap["sapmalar"][:10]:
+                    mesaj += (f" Poz {s['poz_no']} (Ø{s['cap']}): hesaplanan={s['hesaplanan_boy']}m, "
+                              f"tablo={s['tablo_boy']}m, fark={s['fark']}m\n")
+                if len(hesap["sapmalar"]) > 10:
+                    mesaj += f" ... ve {len(hesap['sapmalar']) - 10} poz daha\n"
+            else:
+                mesaj += "\n✓ Tüm pozlarda hesaplanan boy, tablodaki TOPLAM ile uyuşuyor.\n"
+
+            QMessageBox.information(self, f"İstinat Demir Hesabı - {self.aktif_kat_adi}", mesaj)
+
+            for kat_data in self.demir_kat_verileri:
+                if kat_data["kat_adi"] == self.aktif_kat_adi:
+                    kat_data["demirler"].extend(demirler)
+                    break
+
+            self._demir_kat_listesini_guncelle()
+            self.btn_demir_excel.setEnabled(True)
+            self.btn_kesime_aktar.setEnabled(True)
+            logger.info(
+                f"'{self.aktif_kat_adi}' katına {tablo_no - 1} tablodan toplam "
+                f"{len(demirler)} istinat demir hesabı (poza göre donatı) poz eklendi"
+            )
+
+        except Exception as e:
+            logger.error(f"İstinat demir hesabı okuma hatası: {e}")
+            QMessageBox.critical(self, "Hata", f"İstinat demir hesabı okunurken hata:\n{e}")
+
     def _sekme_degisti(self, index: int):
         """Sekme değiştiğinde görünürlük ayarla.
 
-        idx 0 = İnce İşler
-        idx 1 = Kaba İnşaat (Demir Metrajı + Beton & Kalıp + Hızlı Keşif)
-        idx 2 = Çoklu Kat
+        Not: İnce İşler / Çoklu Kat sekmeleri hâlâ kaldırılmış durumda.
+        Kaba İnşaat (idx 0, alt sekmeler: Demir Metrajı/Beton & Kalıp) ve
+        LISP Araçları (Rev-133'te tekrar açıldı) aktif. Genel Ayarlar
+        artık hiç gösterilmiyor.
         """
-        ince_isler_aktif = (index == 0)
-
-        # Genel Ayarlar: yalnızca İnce İşler sekmesinde görünsün
-        self.settings_group.setVisible(ince_isler_aktif)
+        self.settings_group.setVisible(False)
 
 
     def _demir_kat_ekle(self):
@@ -3969,6 +6905,7 @@ class MetrajAnalizWindow(QMainWindow):
         # Yeni eklenen katı seç
         self.demir_kat_listesi.setCurrentRow(self.demir_kat_listesi.count() - 1)
         self.aktif_kat_adi = kat_adi
+        self._aktif_kat_degisti()
 
         # Silme butonunu etkinleştir
         self.btn_kat_sil.setEnabled(True)
@@ -3997,6 +6934,7 @@ class MetrajAnalizWindow(QMainWindow):
                 self.aktif_kat_adi = ""
                 self.btn_kat_sil.setEnabled(False)
             logger.info(f"Kat silindi: {kat_adi}")
+            self._aktif_kat_degisti()
 
     def _demir_kat_secildi(self, item):
         """Kat listesinden bir kat seçildi"""
@@ -4005,6 +6943,7 @@ class MetrajAnalizWindow(QMainWindow):
             self.aktif_kat_adi = self.demir_kat_verileri[current_row]["kat_adi"]
             self.btn_kat_sil.setEnabled(True)
             logger.info(f"Aktif kat değişti: {self.aktif_kat_adi}")
+            self._aktif_kat_degisti()
 
     def _demir_kat_listesini_guncelle(self):
         """Kat listesini güncelle (demir sayılarıyla)"""
@@ -4015,6 +6954,25 @@ class MetrajAnalizWindow(QMainWindow):
             self.demir_kat_listesi.addItem(
             f" {kat_data['kat_adi']} ({demir_sayisi} demir, {toplam_agirlik:.1f} kg)"
             )
+
+    def _excel_sayfa_adi_guvenli(self, kat_adi: str, kullanilan: set) -> str:
+        """Kat adını Excel sayfa adı kurallarına uygun hale getirir.
+
+        Excel sayfa adlarında \\ / ? * [ ] : karakterleri yasaktır ve 31
+        karakteri geçemez; ayrıca aynı çalışma kitabında iki sayfa aynı
+        isme sahip olamaz. Kullanıcının serbestçe girdiği kat adı (örn.
+        "Bodrum Kat / Sığınak") doğrudan sayfa adı yapılırsa openpyxl
+        ValueError fırlatır ve tüm dışa aktarım çöker.
+        """
+        temiz = re.sub(r'[\\/?*\[\]:]', '-', kat_adi).strip() or "Kat"
+        temiz = temiz[:31]
+        taban, sayac = temiz, 2
+        while temiz in kullanilan:
+            ek = f"_{sayac}"
+            temiz = taban[:31 - len(ek)] + ek
+            sayac += 1
+        kullanilan.add(temiz)
+        return temiz
 
     def _demir_excel_export(self):
         """Demir metraj verilerini Excel'e aktar"""
@@ -4035,12 +6993,14 @@ class MetrajAnalizWindow(QMainWindow):
             return
         try:
             CUBUK_BOYU = 12.0
+            kullanilan_sayfalar = set()
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
                 g_adet = 0; g_boy = 0.0; g_agir = 0.0
                 for kd in self.demir_kat_verileri:
                     if not kd["demirler"]: continue
-                    sayfa = kd["kat_adi"][:31]
-                    rows = [{"Poz/Metin": d.orijinal_metin, "Adet": d.adet,
+                    sayfa = self._excel_sayfa_adi_guvenli(kd["kat_adi"], kullanilan_sayfalar)
+                    rows = [{"Eleman Tipi": getattr(d, "eleman_tipi", "") or "-",
+                             "Poz/Metin": d.orijinal_metin, "Adet": d.adet,
                              "Cap (mm)": d.cap, "Boy (cm)": d.boy,
                              "Toplam Boy (m)": d.toplam_boy,
                              "Birim Agirlik (kg/m)": d.agirlik_birim,
@@ -4061,6 +7021,104 @@ class MetrajAnalizWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Excel export hatasi: {e}")
             QMessageBox.critical(self, "Hata", f"Hata:\n{e}")
+
+    def _kesim_listesine_aktar(self):
+        """Toplanan demirleri 'Yapısal Demir Hesaplama' penceresinin
+        Kesim Listesi sekmesine doğrudan aktarır (AutoCAD'e ikinci kez
+        bağlanmaya veya Excel'e kaydedip geri okumaya gerek kalmadan)."""
+        if not self.demir_kat_verileri:
+            QMessageBox.warning(self, "Uyarı", "Henüz demir metrajı alınmış kat yok!")
+            return
+        tum_demirler = [d for kd in self.demir_kat_verileri for d in kd["demirler"]]
+        if not tum_demirler:
+            QMessageBox.warning(self, "Uyarı", "Hiçbir katta demir verisi yok!")
+            return
+
+        try:
+            parcalar = demirlerden_kesim_parcalari_uret(
+                tum_demirler, boy_bindirme_dahil=True, birim="cm"
+            )
+        except Exception as e:
+            logger.error(f"Kesim listesine aktarim donusum hatasi: {e}")
+            QMessageBox.critical(self, "Hata", f"Veri dönüştürülemedi:\n{e}")
+            return
+
+        self._kesim_penceresine_ekle(
+            [(p.cap, p.boy_cm, p.adet, p.eleman_tipi or "") for p in parcalar], "Demir"
+        )
+
+    def _kesim_penceresine_ekle(self, kalemler: List[tuple], kaynak_adi: str) -> bool:
+        """[(çap, boy_cm, adet, eleman_tipi)] kalemlerini Kesim Listesi'ne ekler.
+
+        Rev-153: Demir Metrajı ve Temel Kirişi aktarımının ORTAK yolu (Rev-118
+        singleton penceresi korunur — açıksa aynı pencereye eklenir).
+        """
+        desteklenmeyen_caplar = set()
+        gecerli = []
+        for k in kalemler:
+            if k[0] in _KESIM_DESTEKLENEN_CAPLAR:
+                gecerli.append(k)
+            else:
+                desteklenmeyen_caplar.add(k[0])
+
+        if not gecerli:
+            QMessageBox.warning(
+                self, "Uyarı",
+                "Aktarılabilecek demir bulunamadı (çaplar Kesim Listesi'nin\n"
+                f"desteklediği aralık dışında: {sorted(_KESIM_DESTEKLENEN_CAPLAR)})."
+            )
+            return False
+
+        ana_pencere = self.parent()
+        if ana_pencere is None or not hasattr(ana_pencere, "open_demir_hesaplama"):
+            QMessageBox.critical(
+                self, "Hata",
+                "Ana pencereye erişilemedi, Kesim Listesi penceresi açılamıyor."
+            )
+            return False
+
+        demir_penceresi = getattr(ana_pencere, "demir_window", None)
+        try:
+            acik_mi = demir_penceresi is not None and demir_penceresi.isVisible()
+        except RuntimeError:
+            acik_mi = False  # Qt C++ nesnesi silinmiş (pencere kapatılmış)
+        if not acik_mi:
+            ana_pencere.open_demir_hesaplama()
+            demir_penceresi = ana_pencere.demir_window
+
+        for cap, boy_cm, adet, eleman in gecerli:
+            demir_penceresi._kesim_satir_ekle_deger(cap, boy_cm, adet, eleman)
+
+        demir_penceresi.tab_widget.setCurrentIndex(3)  # Kesim Listesi sekmesi
+        demir_penceresi.show()
+        demir_penceresi.raise_()
+        demir_penceresi.activateWindow()
+
+        mesaj = f"{kaynak_adi}: {len(gecerli)} kalem Kesim Listesi'ne aktarıldı."
+        if desteklenmeyen_caplar:
+            mesaj += (
+                f"\n\n{len(desteklenmeyen_caplar)} kalem atlandı "
+                f"(desteklenmeyen çap: {sorted(desteklenmeyen_caplar)})."
+            )
+        QMessageBox.information(self, "Aktarıldı", mesaj)
+        logger.info(
+            f"Kesim Listesine aktarim ({kaynak_adi}): {len(gecerli)} kalem "
+            f"(atlanan cap: {sorted(desteklenmeyen_caplar) if desteklenmeyen_caplar else 'yok'})"
+        )
+        return True
+
+    def _cap_bazli_tonaj_goster(self):
+        """Tüm katlarda toplanan demirleri çapa göre gruplayıp toplam
+        boy/ağırlık/tonaj tablosunu gösterir (bkz. CapBazliTonajDialog)."""
+        if not self.demir_kat_verileri:
+            QMessageBox.warning(self, "Uyarı", "Henüz demir metrajı alınmış kat yok!")
+            return
+        tum_demirler = [d for kd in self.demir_kat_verileri for d in kd["demirler"]]
+        if not tum_demirler:
+            QMessageBox.warning(self, "Uyarı", "Hiçbir katta demir verisi yok!")
+            return
+        dialog = CapBazliTonajDialog(tum_demirler, self)
+        dialog.exec()
 
     def _autocad_sonuclari_tabloya_ekle(self, objeler: list):
         """AutoCAD'den alinan objeleri sonuc tablosuna ekle"""
@@ -5070,6 +8128,401 @@ class MetrajAnalizWindow(QMainWindow):
         )
 
 
+    def _beton_kalip_kolon_yazisindan_oku(self) -> None:
+        """Rev-134 Aşama 2/3: kutu seçimiyle kolon boyut yazılarını toplu
+        okur, kat yüksekliğini sorup beton/kalıp hesabını yapar, önizleme
+        gösterir ve onay sonrası mevcut beton_kalip_table'a ekler.
+
+        Neyi çözüyoruz?
+        Geometriden (BoundingBox/Area) kolon boyutu okumak 1/50 ölçek + mm
+        birim belirsizliğinde güvenilmez (Rev-133). Kullanıcı bir bölgeyi
+        kutuyla seçer, program içindeki TÜM yazıları okuyup S/P ile
+        başlayanları kolon sayar; K ile başlayanlar (kiriş) ve tanımsızlar
+        güvenlik katmanı gereği atlanır. En/boy yazıdan (ölçekten bağımsız)
+        geldiği için sadece KAT YÜKSEKLİĞİ eksik kalıyor — onu kullanıcıdan
+        TEK SEFERDE (tüm kolonlar için ortak) alıp mevcut
+        `_beton_kalip_hesapla_eleman("Kolon", ...)` formülüyle (Kalıp Alanı
+        Analizi'ndeki Kolon formülüyle AYNI, yeniden yazılmadı) her kolonun
+        beton m³/kalıp m²'sini hesaplıyoruz.
+
+        Aktif kat + mükerrer engelleme (2026-09-07):
+        Demir Metrajı sekmesindeki AYNI `self.aktif_kat_adi` mekanizması
+        kullanılıyor — okuma öncesi bir kat seçili/eklenmiş olmalı. Her
+        kolon `(aktif_kat_adi, kolon_adi)` anahtarıyla
+        `self.beton_kalip_kolon_kayitlari` registry'sine YAZILIR (aynı
+        anahtar zaten varsa GÜNCELLENİR, yeni satır olarak EKLENMEZ) —
+        böylece aynı katın aynı kolonu birden fazla kez okunursa toplam
+        BÜYÜMEZ. Farklı kattaki aynı isim ayrı anahtar olduğu için AYRI
+        sayılır. Tablodaki "Kolon" satırları, onaydan sonra SADECE aktif
+        kat için registry'den yeniden inşa edilir
+        (`_beton_kalip_kat_kolon_satirlarini_yeniden_olustur`) — diğer
+        katların satırlarına dokunulmaz.
+
+        Nasıl test ederiz?
+        `scratchpad/test_kolon_beton_hesap_asama2.py`: 12 kolon @ (50/50)
+        "Zemin" katına h=4.60 -> toplam 13.80 m³; AYNI 12 kolonu TEKRAR
+        "Zemin"e okursan toplam YİNE 13.80 (34.8 değil, mükerrer
+        engellendi); aktif kat "1.Kat" yapılıp aynı 12 kolon okunursa
+        toplam 27.60 (iki kat ayrı ayrı biriktiği için).
+        """
+        if not self.acad_connector or not self.acad_connector.bagli:
+            QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+            return
+
+        # Kat seçimi kontrolü — Demir Metrajı'ndaki AYNI kat mekanizması ve
+        # AYNI uyarı deseni (bkz. `_autocad_demir_metraj_oku` benzeri
+        # handler'lar) beton/kalıp için de zorunlu: hangi kata yazıldığı
+        # bilinmeden mükerrer engelleme anahtarı (kat+kolon adı) kurulamaz.
+        if not self.aktif_kat_adi:
+            QMessageBox.warning(
+                self, "Kat Seçimi Gerekli",
+                "Önce bir kat eklemeniz/seçmeniz gerekiyor!\n\n"
+                "1. Demir Metrajı sekmesindeki 'Kat İsmi Girişi' bölümüne\n"
+                "   kat adını yazın (Örn: Zemin Kat, 1. Kat)\n"
+                "2. '+ Ekle' butonuna tıklayın\n"
+                "3. Sonra Beton & Kalıp kolon okumasını yapabilirsiniz\n\n"
+                "(Aktif kat, Demir Metrajı ile PAYLAŞILAN aynı kattır.)"
+            )
+            return
+
+        ret = QMessageBox.information(
+            self, "Kolon Yazısından Toplu Oku",
+            "AutoCAD penceresine geçin ve kolon (varsa kiriş) boyut\n"
+            "yazılarının bulunduğu bölgeyi KUTU ile seçin, sonra ENTER'a basın.\n\n"
+            "İsmi S/P ile başlayanlar alınır: uzun/kısa kenar ≥ 6 ise PERDE\n"
+            "(camgöbeği), değilse KOLON (yeşil). K ile başlayanlar (kiriş),\n"
+            "donatı yazıları ve tanımsızlar otomatik ATLANIR. Boyutu yazmayan\n"
+            "S/P adları (L/T/U perde) KIRMIZI boyanır — perde aracıyla alın.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+        )
+        if ret == QMessageBox.StandardButton.Cancel:
+            return
+
+        try:
+            sonuc = self.acad_connector.get_kolon_beton_yazidan()
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"AutoCAD okuma hatası:\n{e}")
+            return
+
+        if sonuc["secim_sayisi"] == 0:
+            QMessageBox.information(self, "Seçim Yok", "Hiç obje seçilmedi.")
+            return
+
+        kolonlar = sonuc["kolonlar"]
+        aktif_kat = self.aktif_kat_adi
+        # Zaten kayıtlı bir adın boyutsuz yazısı (ör. perde aracıyla alınmış S260) tekrar listelenmez
+        okunamayanlar = [o for o in (sonuc.get("okunamayanlar") or [])
+                         if self._kolon_kaydi_bul(aktif_kat, o["ad"]) is None
+                         and self._perde_kaydi_bul(aktif_kat, o["ad"]) is None]
+        if not kolonlar and not okunamayanlar:
+            QMessageBox.warning(
+                self, "Kolon Bulunamadı",
+                f"{sonuc['ozet']}\n\nSeçimde S/P ile başlayan kolon / perde yazısı bulunamadı."
+            )
+            return
+
+        # Rev-160 — 1) Mükerrer: ortak havuz (kat + ad; kolon aracı + perde aracı, farklı
+        # pafta/handle olsa bile). Hayır denen eleman ALINMAZ ve rengi DEĞİŞMEZ.
+        S = QMessageBox.StandardButton
+        secilen: List[Dict] = []
+        hepsi: Optional[bool] = None   # Tümüne Evet / Tümüne Hayır
+        bu_okumada = set()
+        for k in kolonlar:
+            n = eleman_ad_normalize(k["ad"])
+            if (n in bu_okumada or self._kolon_kaydi_bul(aktif_kat, n) is not None
+                    or self._perde_kaydi_bul(aktif_kat, n) is not None):
+                if hepsi is None:
+                    cevap = QMessageBox.question(
+                        self, "Kayıtlı Eleman", f"{k['ad']} bu katta zaten kayıtlı. Güncellensin mi?",
+                        S.Yes | S.No | S.YesToAll | S.NoToAll, S.No)
+                    if cevap in (S.YesToAll, S.NoToAll):
+                        hepsi = cevap == S.YesToAll
+                    evet = cevap in (S.Yes, S.YesToAll)
+                else:
+                    evet = hepsi
+                if not evet:
+                    continue
+                secilen = [s for s in secilen if eleman_ad_normalize(s["ad"]) != n]
+            bu_okumada.add(n)
+            k = dict(k)
+            k.setdefault("eleman_tipi", eleman_tipi_belirle(k["en_cm"], k["boy_cm"]))
+            secilen.append(k)
+
+        # 2) Boyama: Kolon yeşil, Perde camgöbeği, okunamayan kırmızı. Her boyamanın önceki
+        # program rengi saklanır — İptal ters sırayla bir önceki hâle döndürür.
+        renk_gecmisi: List[tuple] = []
+
+        def boya(handle, renk):
+            if handle:
+                renk_gecmisi.append((handle, self._eleman_renk(handle, renk)))
+
+        for k in secilen:
+            boya(k.get("handle"), ELEMAN_RENKLERI[k["eleman_tipi"]])
+        for o in okunamayanlar:
+            boya(o.get("handle"), OKUNAMAYAN_RENK)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Kolon / Perde Yazısından Toplu Oku — {aktif_kat}")
+        dlg.setMinimumSize(620, 540)
+        dlg.setStyleSheet("background: #252535; color: white;")
+        lay = QVBoxLayout(dlg)
+
+        ozet_label = QLabel(f"Aktif Kat: {aktif_kat}\n{sonuc['ozet']}")
+        ozet_label.setWordWrap(True)
+        ozet_label.setStyleSheet(
+            "color: #ce93d8; font-weight: bold; padding: 6px;"
+            " border: 1px solid #ce93d8; border-radius: 4px; background: #1e1e2e;"
+        )
+        lay.addWidget(ozet_label)
+
+        # Kat yüksekliği — "Genel Ayarlar" alanından öntanımlı, TEK SEFERDE (tüm elemanlar için ortak)
+        yuk_satir = QHBoxLayout()
+        yuk_satir.addWidget(QLabel("Kolon Kat Yüksekliği (m):"))
+        yukseklik_spin = QDoubleSpinBox()
+        yukseklik_spin.setRange(0.5, 20.0)
+        yukseklik_spin.setSingleStep(0.05)
+        yukseklik_spin.setDecimals(2)
+        yukseklik_spin.setValue(round(self.kat_yuksekligi_spin.value() / 100.0, 2))
+        yukseklik_spin.setToolTip("Sadece KOLONLAR için (tam kat). Perdeler Perde sekmesindeki kat ayarıyla "
+                                  "hesaplanır.")
+        yuk_satir.addWidget(yukseklik_spin)
+        yuk_satir.addStretch()
+        lay.addLayout(yuk_satir)
+        # Rev-161: perdeler Perde sekmesinin kat ayarıyla (kalıp NET yükseklik) — iki araç aynı sonucu verir
+        perde_ayar = self._perde_kat_ayari(aktif_kat)
+        perde_esas_label = QLabel(f"Perdeler (Perde sekmesi kat ayarı): {perde_ayar.esas_etiketi()}")
+        perde_esas_label.setWordWrap(True)
+        perde_esas_label.setStyleSheet("color: #48c9b0; font-size: 9pt; padding: 2px 6px;")
+        lay.addWidget(perde_esas_label)
+
+        tablo = QTableWidget()
+        tablo.setColumnCount(6)
+        tablo.setHorizontalHeaderLabels(["Ad", "Tip", "Boyut (cm)", "Beton (m³)", "Kalıp (m²)", "Katman"])
+        tablo.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        tablo.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        tablo.setToolTip("Tip otomatik: uzun/kısa kenar ≥ 6 ise Perde (TBDY 2018). Yanlışsa Tip "
+                         "hücresinden değiştirin — AutoCAD'deki renk de güncellenir.")
+        tablo.setRowCount(len(secilen))
+        lay.addWidget(tablo, 1)
+        self._kolon_tip_combolari = []
+
+        toplam_label = QLabel()
+        toplam_label.setStyleSheet("color: #f39c12; font-weight: bold; padding: 6px; font-size: 11pt;")
+        lay.addWidget(toplam_label)
+
+        def _tabloyu_hesapla_ve_doldur():
+            kat_yuk_m = yukseklik_spin.value()
+            beton_t = kalip_t = 0.0
+            for row, k in enumerate(secilen):
+                h = self._kolon_eleman_hesap(aktif_kat, k["en_cm"], k["boy_cm"], k["eleman_tipi"], kat_yuk_m)
+                beton_t += h["beton_m3"]
+                kalip_t += h["kalip_m2"]
+                for col, v in ((0, str(k["ad"])), (2, f"{k['en_cm']:.0f}/{k['boy_cm']:.0f}"),
+                               (3, f"{tek_hane(h['beton_m3'])}"), (4, f"{tek_hane(h['kalip_m2'])}"),
+                               (5, str(k.get("layer", "")))):
+                    tablo.setItem(row, col, QTableWidgetItem(v))
+            perde = sum(1 for k in secilen if k["eleman_tipi"] == "Perde")
+            toplam_label.setText(
+                f"TOPLAM: {tek_hane(beton_t)} m³ beton  |  {tek_hane(kalip_t)} m² kalıp"
+                f"  ({len(secilen) - perde} kolon, {perde} perde)"
+            )
+
+        def _tip_degisti(row, tip):
+            k = secilen[row]
+            if k["eleman_tipi"] == tip:
+                return
+            k["eleman_tipi"] = tip
+            boya(k.get("handle"), ELEMAN_RENKLERI[tip])
+            _tabloyu_hesapla_ve_doldur()
+
+        for row, k in enumerate(secilen):
+            combo = QComboBox()
+            combo.addItems(list(ELEMAN_TIPLERI))
+            combo.setCurrentText(k["eleman_tipi"])
+            combo.currentTextChanged.connect(lambda t, r=row: _tip_degisti(r, t))
+            tablo.setCellWidget(row, 1, combo)
+            self._kolon_tip_combolari.append(combo)
+
+        yukseklik_spin.valueChanged.connect(_tabloyu_hesapla_ve_doldur)
+        _tabloyu_hesapla_ve_doldur()
+
+        if okunamayanlar:
+            ok_label = QLabel("Şu elemanlar okunamadı, perde aracıyla alın: "
+                              + ", ".join(o["ad"] for o in okunamayanlar))
+            ok_label.setWordWrap(True)
+            ok_label.setStyleSheet("color: #ff6b6b; font-weight: bold; padding: 4px;")
+            lay.addWidget(ok_label)
+        atlanan_ad_listesi = ([k["ad"] or "?" for k in sonuc["kirisler_atlanan"]]
+                              + [k["ad"] or "?" for k in sonuc["tanimsizlar"]])
+        if atlanan_ad_listesi:
+            atlanan_label = QLabel(
+                "Atlanan yazılar (kiriş / tanımsız, hesaba katılmadı): " + ", ".join(atlanan_ad_listesi[:20])
+                + (" ..." if len(atlanan_ad_listesi) > 20 else "")
+            )
+            atlanan_label.setWordWrap(True)
+            atlanan_label.setStyleSheet("color: #aaa; font-size: 9pt; padding: 4px;")
+            lay.addWidget(atlanan_label)
+
+        info_label = QLabel(
+            "Liste doğruysa \"Onayla ve Tabloya Ekle\"ye basın — aynı tip ve boyuttakiler TEK satırda "
+            "gruplanır. Vazgeç: AutoCAD'deki renkler bir önceki hâline döner."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #f39c12; font-size: 9pt; font-style: italic;")
+        lay.addWidget(info_label)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Onayla ve Tabloya Ekle")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Vazgeç")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            for handle, onceki in reversed(renk_gecmisi):
+                self._eleman_renk(handle, onceki)
+            return
+
+        # Onaylandı: (kat, ad) anahtarıyla registry'ye YAZILIR — aynı ad varsa (kolon aracında
+        # ya da perde aracında) yerini alır, mükerrer birikmez.
+        kat_yuk_m = yukseklik_spin.value()
+        yeni_sayisi = guncellenen_sayisi = 0
+        perde_silindi = False
+        for k in secilen:
+            n = eleman_ad_normalize(k["ad"])
+            eski = self._kolon_kaydi_bul(aktif_kat, n)
+            p_eski = self._perde_kaydi_bul(aktif_kat, n)
+            if eski:
+                del self.beton_kalip_kolon_kayitlari[eski]
+            if p_eski:
+                del self.perde_kayitlari[p_eski]
+                perde_silindi = True
+            if eski or p_eski:
+                guncellenen_sayisi += 1
+            else:
+                yeni_sayisi += 1
+            h = self._kolon_eleman_hesap(aktif_kat, k["en_cm"], k["boy_cm"], k["eleman_tipi"], kat_yuk_m)
+            # beton/kalip: kayıt anındaki değer (bilgi) — gösterim/özet _kolon_kayit_hesap ile GÜNCEL
+            # kat ayarından hesaplanır (Perde sekmesinde döşeme değişince perdeler de güncellenir)
+            self.beton_kalip_kolon_kayitlari[(aktif_kat, n)] = {
+                "en_m": k["en_m"], "boy_m": k["boy_m"], "en_cm": k["en_cm"], "boy_cm": k["boy_cm"],
+                "kat_yuk_m": kat_yuk_m, "beton": h["beton_m3"], "kalip": h["kalip_m2"],
+                "tip": k["eleman_tipi"], "handle": k.get("handle"),
+            }
+            self.okunamayan_elemanlar.pop((aktif_kat, n), None)
+        for o in okunamayanlar:
+            self.okunamayan_elemanlar[(aktif_kat, o["ad"])] = o.get("handle")
+
+        self._beton_kalip_kat_kolon_satirlarini_yeniden_olustur(aktif_kat)
+        self._beton_kalip_toplamlar_guncelle()
+        if perde_silindi:
+            self._perde_tablo_yenile()
+
+        kat_kayit = [self._kolon_kayit_hesap(kat, v)
+                     for (kat, _ad), v in self.beton_kalip_kolon_kayitlari.items() if kat == aktif_kat]
+        kat_beton = sum(h["beton_m3"] for h in kat_kayit)
+        kat_kalip = sum(h["kalip_m2"] for h in kat_kayit)
+        bekleyen = [ad for (kat, ad) in self.okunamayan_elemanlar if kat == aktif_kat]
+        QMessageBox.information(
+            self, "Eklendi",
+            f"Aktif Kat: {aktif_kat}\n"
+            f"{yeni_sayisi} eleman yeni eklendi, {guncellenen_sayisi} eleman güncellendi"
+            f" (mükerrer okuma birikmedi).\n"
+            f"Kolon kat yüksekliği (tam kat): {kat_yuk_m:.2f} m\n"
+            f"Perdeler: {self._perde_kat_ayari(aktif_kat).esas_etiketi()}\n\n"
+            f"'{aktif_kat}' katı toplamı (kolon + perde): {tek_hane(kat_beton)} m³ beton, {tek_hane(kat_kalip)} m² kalıp."
+            + (f"\n\nŞu elemanlar okunamadı, perde aracıyla alın: {', '.join(bekleyen)}" if bekleyen else "")
+        )
+
+    def _beton_kalip_kat_kolon_satirlarini_yeniden_olustur(self, kat_adi: str) -> None:
+        """Verilen kata ait "Kolon Yazısından Toplu Oku" kaynaklı satırları
+        tablodan silip, `beton_kalip_kolon_kayitlari` registry'sindeki
+        GÜNCEL (mükerrersiz) veriden aynı boyuttaki kolonları gruplayarak
+        yeniden ekler.
+
+        Neyi çözüyoruz?
+        Registry mükerrer okumayı zaten engelliyor (aynı kat+kolon adı
+        üzerine yazılıyor), ama GÖRÜNEN tabloyu da senkron tutmak gerekir
+        — aksi halde eski (yanlış sayıda/yükseklikte) satır ekranda kalır.
+        Sadece BU kata ait, "kolon_yazisi" kaynaklı satırlar silinir (bir
+        cell'e `Qt.ItemDataRole.UserRole` ile etiketlenmiş) — manuel
+        "+ Ekle" ile girilmiş satırlara ve DİĞER katların satırlarına
+        dokunulmaz.
+
+        Nasıl test ederiz?
+        registry'de {("Zemin","SZ01"):.., ("Zemin","SZ02"):..} varken bu
+        metod çağrılırsa tabloda "Zemin" + "Kolon" etiketli TEK (veya
+        boyuta göre birden fazla) satır kalmalı, "1.Kat" satırları
+        etkilenmemeli.
+        """
+        KOLON_YAZISI_ETIKETI = "kolon_yazisi"
+
+        for row in reversed(range(self.beton_kalip_table.rowCount())):
+            kat_item = self.beton_kalip_table.item(row, 0)
+            if (
+                kat_item is not None
+                and kat_item.text() == kat_adi
+                and kat_item.data(Qt.ItemDataRole.UserRole) == KOLON_YAZISI_ETIKETI
+            ):
+                self.beton_kalip_table.removeRow(row)
+
+        # Rev-160: grup anahtarı (tip, en, boy) — Kolon ve Perde ayrı satır.
+        # Rev-161: her kayıt _kolon_kayit_hesap ile — kolon tam kat, perde Perde sekmesi kat
+        # ayarıyla (kalıp NET yükseklik); grup toplamı kayıtların toplamı.
+        gruplar: Dict[tuple, Dict] = {}
+        perde_ayar = self._perde_kat_ayari(kat_adi)
+        for (kat, _kolon_adi), kayit in self.beton_kalip_kolon_kayitlari.items():
+            if kat != kat_adi:
+                continue
+            tip = kayit.get("tip", "Kolon")
+            anahtar = (tip, round(kayit["en_m"], 4), round(kayit["boy_m"], 4))
+            g = gruplar.setdefault(anahtar, {"adet": 0, "beton": 0.0, "kalip": 0.0,
+                                             "h": perde_ayar.kat_yuksekligi_m if tip == "Perde"
+                                             else kayit["kat_yuk_m"]})
+            h = self._kolon_kayit_hesap(kat, kayit)
+            g["adet"] += 1
+            g["beton"] += h["beton_m3"]
+            g["kalip"] += h["kalip_m2"]
+
+        fire_pct = self.bk_fire_spin.value()
+        for (tip, en_m, boy_m), g in sorted(gruplar.items()):
+            adet, kat_yuk_m = g["adet"], g["h"]
+            beton, kalip = round(g["beton"], 4), round(g["kalip"], 4)
+            siparis = round(beton * (1 + fire_pct / 100), 3)
+
+            row = self.beton_kalip_table.rowCount()
+            self.beton_kalip_table.insertRow(row)
+            veriler = [
+                kat_adi, tip, str(adet), f"{en_m:.2f}", f"{boy_m:.2f}", f"{kat_yuk_m:.2f}",
+                f"{tek_hane(beton)}", f"{fire_pct:.1f}", f"{tek_hane(siparis)}", f"{tek_hane(kalip)}",
+            ]
+            for col, deger in enumerate(veriler):
+                item = QTableWidgetItem(deger)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, KOLON_YAZISI_ETIKETI)
+                if tip == "Perde":
+                    item.setToolTip(f"Perde (kolon yazısından): {perde_ayar.esas_etiketi()}")
+                self._bk_tam_deger(item, col, beton, siparis, kalip)
+                self.beton_kalip_table.setItem(row, col, item)
+
+    def _kolon_eleman_hesap(self, kat: str, en_cm: float, boy_cm: float, tip: str, kolon_h_m: float) -> Dict:
+        """Rev-161: kolon aracındaki eleman — Kolon: tam kat (kolon_h_m); Perde: Perde sekmesinin
+        kat ayarı (beton esası + kalıp NET yükseklik) — Perde sekmesiyle aynı sonuç."""
+        if tip == "Perde":
+            a = self._perde_kat_ayari(kat)
+            return kolon_perde_hesapla(en_cm, boy_cm, a.kat_yuksekligi_m, "Perde",
+                                       a.doseme_kalinligi_m, a.beton_esasi)
+        return kolon_perde_hesapla(en_cm, boy_cm, kolon_h_m, "Kolon")
+
+    def _kolon_kayit_hesap(self, kat: str, kayit: Dict) -> Dict:
+        """Registry kaydını GÜNCEL ayarla hesaplar (eski kayıtta en_cm yoksa en_m'den)."""
+        en_cm = kayit.get("en_cm", round(kayit["en_m"] * 100, 4))
+        boy_cm = kayit.get("boy_cm", round(kayit["boy_m"] * 100, 4))
+        return self._kolon_eleman_hesap(kat, en_cm, boy_cm, kayit.get("tip", "Kolon"), kayit["kat_yuk_m"])
+
     def _beton_kalip_eleman_degisti(self, eleman: str):
         """Eleman türü değişince boyut etiketlerini dinamik güncelle.
 
@@ -5155,36 +8608,65 @@ class MetrajAnalizWindow(QMainWindow):
         self.beton_kalip_table.insertRow(row)
 
         veriler = [
+        self.aktif_kat_adi or "-",
         eleman,
         str(adet),
         f"{dim1:.2f}",
         f"{dim2:.2f}",
         f"{dim3:.2f}",
-        f"{beton:.3f}",
+        f"{tek_hane(beton)}",
         f"{fire_pct:.1f}",
-        f"{siparis:.3f}",
-        f"{kalip:.3f}",
+        f"{tek_hane(siparis)}",
+        f"{tek_hane(kalip)}",
         ]
         for col, deger in enumerate(veriler):
             item = QTableWidgetItem(deger)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._bk_tam_deger(item, col, beton, siparis, kalip)
             self.beton_kalip_table.setItem(row, col, item)
 
-            self._beton_kalip_toplamlar_guncelle()
+        self._beton_kalip_toplamlar_guncelle()
+
+    # Rev-165: Beton & Kalıp tablosu beton / sipariş / kalıp hücreleri TEK HANE gösterir;
+    # tam değer UserRole'de durur — toplam ve Excel tam değerden (yuvarlanmış metinden DEĞİL).
+    BK_SAYI_KOLONLARI = (6, 8, 9)
+
+    def _bk_tam_deger(self, item, col, beton, siparis, kalip):
+        deger = {6: beton, 8: siparis, 9: kalip}.get(col)
+        if deger is not None:
+            item.setData(Qt.ItemDataRole.UserRole, float(deger))
+
+    def _bk_hucre_degeri(self, row: int, col: int) -> float:
+        item = self.beton_kalip_table.item(row, col)
+        if item is None:
+            return 0.0
+        v = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+        try:
+            return float(item.text().replace(",", ".")) if item.text() else 0.0
+        except ValueError:
+            return 0.0
 
     def _beton_kalip_toplamlar_guncelle(self):
-        """Tablodaki tum satirlari okuyarak toplam etiketlerini guncelle."""
+        """Tablodaki tum satirlari okuyarak toplam etiketlerini guncelle.
+
+        Tabloda "Kat" s\u00fctunu eklendi\u011finden (index 0), di\u011fer t\u00fcm s\u00fctunlar
+        bir kayd\u0131r\u0131ld\u0131: Net Beton=6, Fire=7, Sipari\u015f=8, Kal\u0131p=9.
+        M\u00fckerrer okuma birikmesi art\u0131k `beton_kalip_kolon_kayitlari`
+        registry'sinde (kat+kolon ad\u0131 anahtar\u0131yla) engellendi\u011fi i\u00e7in, tablo
+        sat\u0131rlar\u0131 zaten benzersiz \u2014 burada ek bir dedup gerekmiyor, sadece
+        g\u00f6r\u00fcnen sat\u0131rlar\u0131 toplu.
+        """
         toplam_beton = toplam_siparis = toplam_kalip = 0.0
         for row in range(self.beton_kalip_table.rowCount()):
-            def _val(col):
-                item = self.beton_kalip_table.item(row, col)
-                return float(item.text()) if item else 0.0
-            toplam_beton += _val(5)
-            toplam_siparis += _val(7)
-            toplam_kalip += _val(8)
-        self.bk_toplam_beton_label.setText(f"Net Beton: {toplam_beton:.3f} m\u00b3")
-        self.bk_toplam_siparis_label.setText(f"Sipari\u015f: {toplam_siparis:.3f} m\u00b3")
-        self.bk_toplam_kalip_label.setText(f"Toplam Kal\u0131p: {toplam_kalip:.3f} m\u00b2")
+            # Rev-165: hücre tek hane gösterir — toplam TAM değerden (UserRole)
+            toplam_beton += self._bk_hucre_degeri(row, 6)
+            toplam_siparis += self._bk_hucre_degeri(row, 8)
+            toplam_kalip += self._bk_hucre_degeri(row, 9)
+        self.bk_toplam_beton_label.setText(f"Net Beton: {tek_hane(toplam_beton)} m\u00b3")
+        self.bk_toplam_siparis_label.setText(f"Sipari\u015f: {tek_hane(toplam_siparis)} m\u00b3")
+        self.bk_toplam_kalip_label.setText(f"Toplam Kal\u0131p: {tek_hane(toplam_kalip)} m\u00b2")
 
 
     def _beton_kalip_satir_sil(self):
@@ -5216,14 +8698,17 @@ class MetrajAnalizWindow(QMainWindow):
             return
 
         try:
-            sutunlar = ["Eleman", "Adet", "Olcu1(m)", "Olcu2(m)", "Olcu3(m)",
+            sutunlar = ["Kat", "Eleman", "Adet", "Olcu1(m)", "Olcu2(m)", "Olcu3(m)",
                         "Net Beton(m3)", "Fire(%)", "Siparis(m3)", "Kalip(m2)"]
             satirlar = []
             for row in range(self.beton_kalip_table.rowCount()):
                 satir = []
                 for col in range(self.beton_kalip_table.columnCount()):
                     item = self.beton_kalip_table.item(row, col)
-                    satir.append(item.text() if item else "")
+                    if col in self.BK_SAYI_KOLONLARI:
+                        satir.append(round(self._bk_hucre_degeri(row, col), 3))   # Excel'e tam değer
+                    else:
+                        satir.append(item.text() if item else "")
                 satirlar.append(satir)
 
             df = pd.DataFrame(satirlar, columns=sutunlar)
@@ -5231,19 +8716,3012 @@ class MetrajAnalizWindow(QMainWindow):
             ts = df["Siparis(m3)"].astype(float).sum()
             tk = df["Kalip(m2)"].astype(float).sum()
             toplam = pd.DataFrame([[
-                "TOPLAM", "", "", "", "",
-                f"{tb:.3f}", "", f"{ts:.3f}", f"{tk:.3f}"
+                "", "TOPLAM", "", "", "", "",
+                round(tb, 3), "", round(ts, 3), round(tk, 3)
             ]], columns=sutunlar)
-            pd.concat([df, toplam], ignore_index=True).to_excel(
-                file_path, index=False, sheet_name="Beton Kalip"
-            )
+            with pd.ExcelWriter(file_path, engine="openpyxl") as yazici:
+                pd.concat([df, toplam], ignore_index=True).to_excel(
+                    yazici, index=False, sheet_name="Beton Kalip"
+                )
+                beton_kalip_sutunlari_tek_hane(yazici.sheets["Beton Kalip"])   # Rev-166
             QMessageBox.information(self, "Basarili",
-                f"Kaydedildi:\n{file_path}\nBeton: {tb:.3f} m3 | Kalip: {tk:.3f} m2")
+                f"Kaydedildi:\n{file_path}\nBeton: {tek_hane(tb)} m3 | Kalip: {tek_hane(tk)} m2")
             logger.info(f"Beton Kalip Excel: {file_path}")
 
         except Exception as e:
             logger.error(f"Beton Kalip Excel hatasi: {e}")
             QMessageBox.critical(self, "Hata", f"Dosya kaydedilemedi:\n{str(e)}")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Rev-137: TEMEL KİRİŞİ (SBH) — Beton + Kalıp
+    # ─────────────────────────────────────────────────────────────────────
+    TK_KOLONLAR = ["Ad", "Genişlik (cm)", "Yükseklik (cm)", "Uzunluk (m)",
+                   "Beton (m³)", "Kalıp (m²)", "Uzunluk Kaynağı",
+                   # Rev-153 demir sütunları (beton/kalıp sütun indeksleri DEĞİŞMEDİ)
+                   "Filiz Adet", "Filiz Uzunluk (m)", "Filiz (kg)", "Tevzi Çubuk", "Tevzi Bindirme (k)",
+                   "Tevzi Boy (m)", "Tevzi Uzunluk (m)", "Tevzi (kg)", "Toplam Demir (kg)"]
+    TK_UZUNLUK_KOL = 3
+    SBH_DEMIR_AYAR_ANAHTARI = "sbh_demir_tipleri"
+
+    # ── Rev-139 / Rev-157: Radye Temel Beton + Kalıp (adlı kayıt listesi + Excel) ──
+    _RADYE_SPIN_STIL = (
+        "QDoubleSpinBox { background:#2a2a3a; color:white; border:1px solid #666;"
+        " padding:4px; }"
+    )
+    RADYE_KOLONLAR = ["Radye", "Alan (m²)", "Kalınlık (cm)", "Beton (m³)",
+                      "Dış Çevre (m)", "İç Boşluk Çevre (m)", "Kalıp (m²)"]
+    _RADYE_TABLO_STIL = (
+        "QTableWidget { background:#1e1e2e; color:#e0e0e0; gridline-color:#444; border:1px solid #555; }"
+        "QHeaderView::section { background:#2d2d3d; color:#a569bd; font-weight:bold;"
+        " padding:4px; border:1px solid #444; }"
+        "QTableWidget::item:selected { background:#3a3a5a; }"
+    )
+
+    def _radye_spin(self, maks: float, ondalik: int, sonek: str, ipucu: str) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, maks)
+        spin.setDecimals(ondalik)
+        spin.setSuffix(sonek)
+        spin.setToolTip(ipucu)
+        spin.setStyleSheet(self._RADYE_SPIN_STIL)
+        spin.setMinimumWidth(160)
+        spin.valueChanged.connect(self._radye_hesapla_guncelle)
+        return spin
+
+    @staticmethod
+    def _radye_buton(metin: str, renk: str, ipucu: str) -> QPushButton:
+        btn = QPushButton(metin)
+        btn.setToolTip(ipucu)
+        btn.setStyleSheet(f"background:{renk}; color:white; font-weight:bold; padding:5px 12px;"
+                          " border:none; border-radius:3px;")
+        return btn
+
+    def _radye_sekmesi_olustur(self) -> QWidget:
+        """Radye Temel sekmesini kurar (Rev-139, Rev-157'de kayıt listesine çevrildi).
+
+        Neyi çözüyoruz? Projedeki radye parçalarının (adlı) beton (alan ×
+        kalınlık) ve kalıp ((dış çevre + iç boşluk çevreleri) × kalınlık)
+        metrajı. Form bir radyeyi düzenler; "Radye Ekle" ile listeye girer,
+        liste Kat Özeti'nin "Temel" grubuna ve Excel "Radye" sayfasına gider.
+        Nasıl test ederiz? scratchpad/test_radye.py, test_radye_ozet_excel.py.
+        """
+        if not hasattr(self, "radye_kayitlari"):
+            self.radye_kayitlari: List[Dict] = []
+        tab = QWidget()
+        dis = QVBoxLayout(tab)
+        dis.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        icerik = QWidget()
+        lay = QVBoxLayout(icerik)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(8)
+
+        bilgi = QLabel(
+            "Radye temel metrajı — Alanı AutoCAD'de AREA komutuyla ölçüp (iç boşluklar düşülmüş "
+            "NET alan) girin. Kalınlık CM girilir, beton ve kalıpta ortak kullanılır. Kalıp = (dış çevre + "
+            "iç boşluk çevreleri) × kalınlık — asansör/merdiven kuyusu gibi boşlukların yan yüzü de "
+            "kalıplanır; alt yüz grobetona oturur. 'Radye Ekle'ye basmadan radye Kat Özeti'ne girmez."
+        )
+        bilgi.setWordWrap(True)
+        bilgi.setStyleSheet("color:#d4a017; font-size:9pt;")
+        lay.addWidget(bilgi)
+
+        grup_stil = (
+            "QGroupBox { color:#a569bd; font-weight:bold; border:1px solid #555;"
+            " border-radius:4px; margin-top:10px; padding-top:8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left:8px; padding:0 4px; }"
+            "QLabel { color:white; font-weight:normal; }"
+        )
+
+        beton_grup = QGroupBox("Beton")
+        beton_grup.setStyleSheet(grup_stil)
+        bg = QGridLayout(beton_grup)
+        self.radye_ad_edit = QLineEdit()
+        self.radye_ad_edit.setPlaceholderText("Boş bırakılırsa R1, R2 ...")
+        self.radye_ad_edit.setToolTip("Radye adı (örn. 'Ana Blok', 'R1'). Excel ve özette bu adla görünür.")
+        self.radye_ad_edit.setStyleSheet("background:#2a2a3a; color:white; border:1px solid #666; padding:4px;")
+        self.radye_alan_spin = self._radye_spin(
+            100000.0, 2, " m²", "Radyenin NET alanı (iç boşluklar düşülmüş) — AutoCAD'de AREA komutuyla ölçün.")
+        self.radye_kalinlik_spin = self._radye_spin(
+            1000.0, 1, " cm", "Radye kalınlığı SANTİMETRE (örn. 60). Beton ve kalıp hesabında ortak kullanılır.")
+        self.radye_beton_label = QLabel("0.00 m³")
+        bg.addWidget(QLabel("Radye Adı:"), 0, 0)
+        bg.addWidget(self.radye_ad_edit, 0, 1)
+        bg.addWidget(QLabel("Alan:"), 1, 0)
+        bg.addWidget(self.radye_alan_spin, 1, 1)
+        bg.addWidget(QLabel("Kalınlık:"), 2, 0)
+        bg.addWidget(self.radye_kalinlik_spin, 2, 1)
+        bg.addWidget(QLabel("Net Beton:"), 3, 0)
+        bg.addWidget(self.radye_beton_label, 3, 1)
+        bg.setColumnStretch(2, 1)
+        lay.addWidget(beton_grup)
+
+        kalip_grup = QGroupBox("Kalıp")
+        kalip_grup.setStyleSheet(grup_stil)
+        kg = QGridLayout(kalip_grup)
+        self.radye_dis_cevre_spin = self._radye_spin(
+            100000.0, 2, " m", "Radyenin dış çevre uzunluğu (metre).")
+        kg.addWidget(QLabel("Dış Çevre:"), 0, 0)
+        kg.addWidget(self.radye_dis_cevre_spin, 0, 1)
+
+        self.radye_bosluk_table = QTableWidget(0, 2)
+        self.radye_bosluk_table.setHorizontalHeaderLabels(["İç Boşluk Adı", "Çevre (m)"])
+        self.radye_bosluk_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.radye_bosluk_table.setToolTip(
+            "Asansör/merdiven kuyusu gibi iç boşluklar. Her biri ayrı satır; çevreleri kalıba EKLENİR. "
+            "Hücreye çift tıklayıp düzenleyin.")
+        self.radye_bosluk_table.setMaximumHeight(130)
+        self.radye_bosluk_table.setStyleSheet(self._RADYE_TABLO_STIL)
+        self.radye_bosluk_table.itemChanged.connect(self._radye_hesapla_guncelle)
+        kg.addWidget(QLabel("İç Boşluklar:"), 1, 0, Qt.AlignmentFlag.AlignTop)
+        kg.addWidget(self.radye_bosluk_table, 1, 1, 1, 2)
+        bosluk_btn = QHBoxLayout()
+        btn_b_ekle = self._radye_buton("+ Boşluk", "#5b2c6f", "Yeni iç boşluk satırı ekler.")
+        btn_b_ekle.clicked.connect(lambda: self._radye_bosluk_satir_ekle())
+        btn_b_sil = self._radye_buton("− Seçili Boşluk", "#7b241c", "Seçili iç boşluk satırını siler.")
+        btn_b_sil.clicked.connect(self._radye_bosluk_sil)
+        bosluk_btn.addWidget(btn_b_ekle)
+        bosluk_btn.addWidget(btn_b_sil)
+        bosluk_btn.addStretch()
+        kg.addLayout(bosluk_btn, 2, 1, 1, 2)
+
+        self.radye_toplam_cevre_label = QLabel("0.00 m")
+        self.radye_kalip_label = QLabel("0.00 m²")
+        kg.addWidget(QLabel("Toplam Çevre:"), 3, 0)
+        kg.addWidget(self.radye_toplam_cevre_label, 3, 1)
+        kg.addWidget(QLabel("Net Kalıp:"), 4, 0)
+        kg.addWidget(self.radye_kalip_label, 4, 1)
+        kg.setColumnStretch(2, 1)
+        lay.addWidget(kalip_grup)
+
+        self.radye_uyari_label = QLabel()
+        self.radye_uyari_label.setWordWrap(True)
+        self.radye_uyari_label.setStyleSheet("color:#e67e22; font-weight:bold;")
+        lay.addWidget(self.radye_uyari_label)
+
+        self.radye_sonuc_label = QLabel()
+        self.radye_sonuc_label.setWordWrap(True)
+        self.radye_sonuc_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; font-size:11pt; background:#2a2a3a;"
+            " border:1px solid #a569bd; border-radius:4px; padding:8px;"
+        )
+        lay.addWidget(self.radye_sonuc_label)
+
+        islem = QHBoxLayout()
+        btn_ekle = self._radye_buton("Radye Ekle", "#8e44ad", "Formdaki radyeyi listeye ekler.")
+        btn_ekle.clicked.connect(self._radye_ekle)
+        btn_guncelle = self._radye_buton("Seçiliyi Güncelle", "#2471a3",
+                                         "Listede seçili radyeyi formdaki değerlerle günceller.")
+        btn_guncelle.clicked.connect(self._radye_guncelle)
+        btn_sil = self._radye_buton("Seçiliyi Sil", "#922b21", "Listede seçili radyeyi siler.")
+        btn_sil.clicked.connect(self._radye_sil)
+        btn_excel = self._radye_buton(" Excel'e Aktar", "#1e8449",
+                                      "Radye listesini 'Radye' sayfalı Excel dosyasına kaydeder (formüllü).")
+        btn_excel.clicked.connect(self._radye_excel)
+        for b in (btn_ekle, btn_guncelle, btn_sil):
+            islem.addWidget(b)
+        islem.addStretch()
+        islem.addWidget(btn_excel)
+        lay.addLayout(islem)
+
+        self.radye_table = QTableWidget(0, len(self.RADYE_KOLONLAR))
+        self.radye_table.setHorizontalHeaderLabels(self.RADYE_KOLONLAR)
+        self.radye_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.radye_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.radye_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.radye_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.radye_table.setToolTip("Satıra tıklayınca radye forma yüklenir; düzeltip 'Seçiliyi Güncelle'.")
+        self.radye_table.setMinimumHeight(150)
+        self.radye_table.setStyleSheet(self._RADYE_TABLO_STIL)
+        self.radye_table.currentCellChanged.connect(self._radye_satir_secildi)
+        lay.addWidget(self.radye_table)
+
+        self.radye_toplam_label = QLabel()
+        self.radye_toplam_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; background:#2a2a3a; border:1px solid #a569bd;"
+            " border-radius:4px; padding:6px;")
+        lay.addWidget(self.radye_toplam_label)
+        lay.addStretch()
+
+        self._radye_hesapla_guncelle()
+        self._radye_tablo_yenile()
+        scroll.setWidget(icerik)
+        dis.addWidget(scroll)
+        return tab
+
+    # -- iç boşluk tablosu --
+    def _radye_bosluk_satir_ekle(self, ad: str = "", cevre: float = 0.0):
+        tablo = self.radye_bosluk_table
+        tablo.blockSignals(True)
+        try:
+            row = tablo.rowCount()
+            tablo.insertRow(row)
+            tablo.setItem(row, 0, QTableWidgetItem(ad or f"Boşluk {row + 1}"))
+            item = QTableWidgetItem(f"{cevre:.2f}")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            tablo.setItem(row, 1, item)
+        finally:
+            tablo.blockSignals(False)
+        self._radye_hesapla_guncelle()
+
+    def _radye_bosluk_sil(self):
+        row = self.radye_bosluk_table.currentRow()
+        if row < 0:
+            row = self.radye_bosluk_table.rowCount() - 1
+        if row >= 0:
+            self.radye_bosluk_table.removeRow(row)
+            self._radye_hesapla_guncelle()
+
+    def _radye_bosluklar_oku(self) -> List[Dict]:
+        bosluklar = []
+        tablo = self.radye_bosluk_table
+        for row in range(tablo.rowCount()):
+            ad_item, cevre_item = tablo.item(row, 0), tablo.item(row, 1)
+            try:
+                cevre = float((cevre_item.text() if cevre_item else "0").replace(",", ".") or 0)
+            except ValueError:
+                cevre = -1.0  # radye_hesapla negatif çevreyi hata sayar -> kullanıcı görür
+            bosluklar.append({"ad": (ad_item.text().strip() if ad_item else "") or f"Boşluk {row + 1}",
+                              "cevre_m": cevre})
+        return bosluklar
+
+    # -- form <-> kayıt --
+    def _radye_formdan_kayit(self) -> Dict:
+        return {
+            "ad": self.radye_ad_edit.text().strip(),
+            "alan_m2": self.radye_alan_spin.value(),
+            "kalinlik_cm": self.radye_kalinlik_spin.value(),
+            "dis_cevre_m": self.radye_dis_cevre_spin.value(),
+            "bosluklar": self._radye_bosluklar_oku(),
+        }
+
+    def _radye_forma_yukle(self, kayit: Dict):
+        spinler = (self.radye_alan_spin, self.radye_kalinlik_spin, self.radye_dis_cevre_spin)
+        for w in spinler:
+            w.blockSignals(True)
+        try:
+            self.radye_ad_edit.setText(kayit.get("ad", ""))
+            self.radye_alan_spin.setValue(kayit.get("alan_m2", 0.0))
+            self.radye_kalinlik_spin.setValue(kayit.get("kalinlik_cm", 0.0))
+            self.radye_dis_cevre_spin.setValue(kayit.get("dis_cevre_m", 0.0))
+            self.radye_bosluk_table.blockSignals(True)
+            self.radye_bosluk_table.setRowCount(0)
+            self.radye_bosluk_table.blockSignals(False)
+            for b in kayit.get("bosluklar", []):
+                self._radye_bosluk_satir_ekle(b.get("ad", ""), b.get("cevre_m", 0.0))
+        finally:
+            for w in spinler:
+                w.blockSignals(False)
+        self._radye_hesapla_guncelle()
+
+    def _radye_hesap(self) -> Dict:
+        """Formdaki radyenin hesabı (UI'dan bağımsız test için ayrı)."""
+        if radye_kaydi_hesapla is None:
+            return {"hata": "Hesap modülü yüklenemedi", "uyari": "",
+                    "beton_m3": 0.0, "kalip_m2": 0.0, "toplam_cevre_m": 0.0}
+        return radye_kaydi_hesapla(self._radye_formdan_kayit())
+
+    def _radye_hesapla_guncelle(self, *_):
+        # Form kurulurken widget'lar tek tek oluşur — hepsi hazır olmadan hesaplama
+        if not hasattr(self, "radye_sonuc_label"):
+            return
+        h = self._radye_hesap()
+        self.radye_beton_label.setText(f"{tek_hane(h['beton_m3'])} m³")
+        self.radye_toplam_cevre_label.setText(f"{h['toplam_cevre_m']:.2f} m")
+        self.radye_kalip_label.setText(f"{tek_hane(h['kalip_m2'])} m²")
+        if h["hata"]:
+            self.radye_uyari_label.setText(
+                "Alan ve kalınlık girin." if "sıfırdan büyük" in h["hata"] else f"⚠ {h['hata']}")
+        else:
+            self.radye_uyari_label.setText(f"⚠ {h['uyari']}" if h["uyari"] else "")
+        self.radye_sonuc_label.setText(
+            f"RADYE — Beton: {tek_hane(h['beton_m3'])} m³   |   Kalıp: {tek_hane(h['kalip_m2'])} m²"
+        )
+
+    # -- kayıt listesi --
+    def _radye_listeye_yaz(self, satir: Optional[int]) -> bool:
+        kayit = self._radye_formdan_kayit()
+        h = radye_kaydi_hesapla(kayit) if radye_kaydi_hesapla else {"hata": "Hesap modülü yüklenemedi"}
+        if h["hata"]:
+            QMessageBox.warning(self, "Radye", f"Radye eklenemedi: {h['hata']}")
+            return False
+        if not kayit["ad"]:
+            kayit["ad"] = (self.radye_kayitlari[satir]["ad"] if satir is not None
+                           else f"R{len(self.radye_kayitlari) + 1}")
+        if satir is None:
+            self.radye_kayitlari.append(kayit)
+            satir = len(self.radye_kayitlari) - 1
+        else:
+            self.radye_kayitlari[satir] = kayit
+        self._radye_degisti(secili=satir)
+        return True
+
+    def _radye_ekle(self):
+        if self._radye_listeye_yaz(None):
+            self.radye_ad_edit.clear()
+
+    def _radye_guncelle(self):
+        satir = self.radye_table.currentRow()
+        if not (0 <= satir < len(self.radye_kayitlari)):
+            QMessageBox.information(self, "Radye", "Önce listeden güncellenecek radyeyi seçin.")
+            return
+        self._radye_listeye_yaz(satir)
+
+    def _radye_sil(self):
+        satir = self.radye_table.currentRow()
+        if not (0 <= satir < len(self.radye_kayitlari)):
+            QMessageBox.information(self, "Radye", "Önce listeden silinecek radyeyi seçin.")
+            return
+        del self.radye_kayitlari[satir]
+        self._radye_degisti(secili=None)
+
+    def _radye_degisti(self, secili: Optional[int] = None):
+        """Radye listesi her değiştiğinde tek nokta: tablo + Kat Özeti."""
+        self._radye_tablo_yenile(secili)
+        if hasattr(self, "kat_ozeti_table"):
+            self._kat_ozeti_yenile()
+
+    def _radye_satir_secildi(self, satir: int, *_):
+        if 0 <= satir < len(self.radye_kayitlari):
+            self._radye_forma_yukle(self.radye_kayitlari[satir])
+
+    def _radye_tablo_yenile(self, secili: Optional[int] = None):
+        if not hasattr(self, "radye_table"):
+            return
+        tablo = self.radye_table
+        tablo.blockSignals(True)
+        try:
+            tablo.setRowCount(0)
+            for kayit in self.radye_kayitlari:
+                h = radye_kaydi_hesapla(kayit)
+                row = tablo.rowCount()
+                tablo.insertRow(row)
+                degerler = [kayit["ad"], f"{kayit['alan_m2']:.2f}", f"{kayit['kalinlik_cm']:.1f}",
+                            f"{tek_hane(h['beton_m3'])}", f"{h['dis_cevre_m']:.2f}", f"{h['ic_cevre_m']:.2f}",
+                            f"{tek_hane(h['kalip_m2'])}"]
+                for col, metin in enumerate(degerler):
+                    item = QTableWidgetItem(metin)
+                    if col:
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    if col == 5 and kayit.get("bosluklar"):
+                        item.setToolTip("\n".join(f"{b['ad']}: {b['cevre_m']:.2f} m" for b in kayit["bosluklar"]))
+                    tablo.setItem(row, col, item)
+            if secili is not None and 0 <= secili < tablo.rowCount():
+                tablo.setCurrentCell(secili, 0)
+        finally:
+            tablo.blockSignals(False)
+        t = radye_toplamlari(self.radye_kayitlari) if radye_toplamlari else None
+        if t and t["adet"]:
+            self.radye_toplam_label.setText(
+                f"TOPLAM ({t['adet']} radye) — Beton: {tek_hane(t['beton_m3'], True)} m³ | Kalıp: {tek_hane(t['kalip_m2'], True)} m²")
+        else:
+            self.radye_toplam_label.setText("Henüz radye eklenmedi.")
+
+    # -- Excel --
+    def _rapor_proje_adi(self) -> str:
+        """Ana penceredeki aktif projenin adı; yoksa bir kez sorulur (oturumda saklanır)."""
+        if getattr(self, "_rapor_proje_adi_deger", None):
+            return self._rapor_proje_adi_deger
+        ad = ""
+        ana = self.parent()
+        try:
+            pid = getattr(ana, "current_project_id", None)
+            if pid and getattr(ana, "db", None) is not None:
+                proje = ana.db.get_project(pid)
+                ad = (proje or {}).get("ad", "") or ""
+        except Exception as e:
+            logger.debug(f"[RADYE] proje adı okunamadı: {e}")
+        if not ad:
+            metin, ok = QInputDialog.getText(self, "Proje Adı", "Excel başlığına yazılacak proje adı:")
+            ad = metin.strip() if ok else ""
+        self._rapor_proje_adi_deger = ad
+        return ad
+
+    def _radye_excel(self):
+        if not any(not radye_kaydi_hesapla(k)["hata"] for k in self.radye_kayitlari):
+            QMessageBox.information(self, "Bilgi", "Dışa aktarılacak radye yok — önce 'Radye Ekle'.")
+            return
+        if radye_sayfasi_yaz is None:
+            QMessageBox.warning(self, "Uyarı", "Excel için openpyxl gerekli:\npip install openpyxl")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(self, "Excel Kaydet", "radye_beton_kalip.xlsx",
+                                                   "Excel (*.xlsx)")
+        if not file_path:
+            return
+        try:
+            from datetime import datetime
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Radye"
+            radye_sayfasi_yaz(ws, self.radye_kayitlari, self._rapor_proje_adi(),
+                              datetime.now().strftime("%d.%m.%Y"))
+            wb.save(file_path)
+            t = radye_toplamlari(self.radye_kayitlari)
+            QMessageBox.information(
+                self, "Başarılı",
+                f"Kaydedildi:\n{file_path}\nBeton: {tek_hane(t['beton_m3'], True)} m³ | Kalıp: {tek_hane(t['kalip_m2'], True)} m²")
+            logger.info(f"Radye Excel: {file_path}")
+        except Exception as e:
+            logger.error(f"[RADYE] Excel hatası: {e}", exc_info=True)
+            QMessageBox.critical(self, "Hata", f"Dosya kaydedilemedi:\n{e}")
+
+    # ── Rev-143: Perde Beton + Kalıp (Aşama 3/4 — kat ayarı + AutoCAD döngüsü + elle hesap) ──
+    # Ölçek adı -> gerçek boy / çizim boyu çarpanı
+    _PERDE_OLCEKLER = {"1:1": 1.0, "1:20": 20.0, "1:50": 50.0, "1:100": 100.0}
+    PERDE_KOLONLAR = ["Ad", "Alan (m²)", "Çevre (m)", "Düşülen (m)", "Beton (m³)", "Kalıp (m²)"]
+
+    def _perde_spin(self, maks: float, ondalik: int, sonek: str, ipucu: str) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, maks)
+        spin.setDecimals(ondalik)
+        spin.setSuffix(sonek)
+        spin.setToolTip(ipucu)
+        spin.setStyleSheet(self._RADYE_SPIN_STIL)
+        spin.setMinimumWidth(160)
+        spin.valueChanged.connect(self._perde_ayar_degisti)
+        return spin
+
+    def _perde_sekmesi_olustur(self) -> QWidget:
+        """Perde sekmesini kurar (Rev-143).
+
+        Neyi çözüyoruz? L/T/U kesitli perdelerin beton (alan × beton
+        yüksekliği) ve kalıp ((çevre − bitişik uçlar) × net yükseklik)
+        metrajı. Kat ayarı (kat yüksekliği, döşeme kalınlığı, beton esası)
+        TEK yerde ve `self.yukseklik_ayari`'nda tutulur — döşeme aracı da
+        buradan okuyacak. Perdeler AutoCAD döngüsüyle toplanır; tek perde
+        için elle hesap formu yedek olarak durur.
+        Nasıl test ederiz? scratchpad/test_perde.py (form),
+        scratchpad/test_perde_secim.py (döngü + tablo).
+        """
+        tab = QWidget()
+        dis = QVBoxLayout(tab)
+        dis.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        icerik = QWidget()
+        lay = QVBoxLayout(icerik)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(8)
+
+        bilgi = QLabel(
+            "Perde metrajı (L/T/U kesit) — Kat ayarlarını girin, \"AutoCAD'de Perdeleri Seç\" ile "
+            "her perdenin kesitini (kapalı polyline) seçin. Kolona / başka perdeye bitişen uç "
+            "çizgilerini de seçerseniz kalıptan düşülür; perde adı yazısını seçerseniz satır adı olur. "
+            "Kalıp her zaman net yükseklikle (kat − döşeme) hesaplanır."
+        )
+        bilgi.setWordWrap(True)
+        bilgi.setStyleSheet("color:#d4a017; font-size:9pt;")
+        lay.addWidget(bilgi)
+
+        grup_stil = (
+            "QGroupBox { color:#a569bd; font-weight:bold; border:1px solid #555;"
+            " border-radius:4px; margin-top:10px; padding-top:8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left:8px; padding:0 4px; }"
+            "QLabel { color:white; font-weight:normal; }"
+        )
+        combo_stil = ("QComboBox { background:#2a2a3a; color:white; border:1px solid #666;"
+                      " padding:4px; } QComboBox QAbstractItemView { background:#2a2a3a;"
+                      " color:white; }")
+
+        # ── Kat ayarları (ortak) ──
+        ortak_grup = QGroupBox("Kat Ayarları")
+        ortak_grup.setStyleSheet(grup_stil)
+        og = QGridLayout(ortak_grup)
+        self.perde_yukseklik_spin = self._perde_spin(
+            50.0, 2, " m", "Kat yüksekliği (döşeme üstünden döşeme üstüne, metre).")
+        self.perde_doseme_spin = self._perde_spin(
+            5.0, 2, " m", "Döşeme kalınlığı (metre). Kalıp yüksekliği = kat − döşeme. "
+            "Otomatik açıkken Döşeme sekmesinden gelir.")
+        # Rev-163: döşeme kalınlığı Döşeme sekmesinden otomatik — perde kalıbından düşülür
+        self.perde_doseme_otomatik_chk = QCheckBox("Döşeme sekmesinden otomatik")
+        self.perde_doseme_otomatik_chk.setChecked(True)
+        self.perde_doseme_otomatik_chk.setToolTip(
+            "Açık: bu katın Döşeme sekmesindeki döşemelerden HAKİM kalınlık (en büyük alanlı) alınır; "
+            "döşeme yoksa Döşeme sekmesinin varsayılan kalınlığı. Perde kalıbı = (kat − döşeme) × çevre. "
+            "Beton etkilenmez (Beton Esası 'Tam kat' iken). Kapalı: elle girin.")
+        self.perde_doseme_otomatik_chk.setStyleSheet("color:white;")
+        self.perde_doseme_otomatik_chk.toggled.connect(self._perde_ayar_degisti)
+        self.perde_doseme_kaynak_label = QLabel()
+        self.perde_doseme_kaynak_label.setWordWrap(True)
+        self.perde_doseme_kaynak_label.setStyleSheet("color:#48c9b0; font-size:9pt;")
+        self.perde_esas_combo = QComboBox()
+        for anahtar, ad in BETON_ESASLARI.items():
+            self.perde_esas_combo.addItem(ad, anahtar)
+        self.perde_esas_combo.setToolTip(
+            "Tam kat: perde betonu kat yüksekliğiyle (kolon aracıyla aynı; döşeme kalınlığındaki "
+            "beton döşemede de sayılırsa çift sayılır). Net: kat − döşeme (çift sayım yok).")
+        self.perde_esas_combo.setStyleSheet(combo_stil)
+        self.perde_esas_combo.currentIndexChanged.connect(self._perde_ayar_degisti)
+        self.perde_birim_combo = QComboBox()
+        self.perde_birim_combo.addItems(["Otomatik", "cm", "mm", "m"])
+        self.perde_birim_combo.setToolTip(
+            "Çizim birimi. Otomatik = AutoCAD INSUNITS, tanımsızsa cm. "
+            "Yanlışsa alan 100 / 10.000 kat hatalı çıkar — ilk perdede ayrıca teyit edilir.")
+        self.perde_birim_combo.setStyleSheet(combo_stil)
+        self.perde_olcek_combo = QComboBox()
+        self.perde_olcek_combo.addItems(list(self._PERDE_OLCEKLER))
+        self.perde_olcek_combo.setToolTip(
+            "Çizim gerçek boyutta (1:1) mi, küçültülerek mi çizildi? Çoğu çizim 1:1'dir. "
+            "Emin değilseniz 1:1 bırakın ve ilk perdede AREA ile karşılaştırın.")
+        self.perde_olcek_combo.setStyleSheet(combo_stil)
+        for combo in (self.perde_birim_combo, self.perde_olcek_combo):
+            combo.currentTextChanged.connect(self._perde_teyit_sifirla)
+        satirlar = [("Kat Yüksekliği:", self.perde_yukseklik_spin),
+                    ("Döşeme Kalınlığı:", self.perde_doseme_spin),
+                    ("Beton Esası:", self.perde_esas_combo),
+                    ("Çizim Birimi:", self.perde_birim_combo),
+                    ("Çizim Ölçeği:", self.perde_olcek_combo)]
+        for i, (etiket, w) in enumerate(satirlar):
+            og.addWidget(QLabel(etiket), i, 0)
+            og.addWidget(w, i, 1)
+        og.addWidget(self.perde_doseme_otomatik_chk, 1, 2)
+        og.addWidget(self.perde_doseme_kaynak_label, len(satirlar), 0, 1, 4)
+        og.setColumnStretch(3, 1)
+        lay.addWidget(ortak_grup)
+        self._perde_alan_teyitli = False
+
+        # ── AutoCAD döngüsü + tablo ──
+        secim_grup = QGroupBox("Perdeler (AutoCAD'den)")
+        secim_grup.setStyleSheet(grup_stil)
+        sg = QVBoxLayout(secim_grup)
+        btn_sec = QPushButton(" AutoCAD'de Perdeleri Seç")
+        btn_sec.setToolTip("AutoCAD'e geçer; her perde: kesit + [bitişik uç çizgileri] + [ad yazısı] + "
+                           "ENTER. Bitirmek için boş ENTER.")
+        btn_sec.setStyleSheet(
+            "background:#8e44ad; color:white; font-weight:bold; padding:6px 14px;"
+            " border:none; border-radius:3px;"
+        )
+        btn_sec.clicked.connect(self._perde_sec)
+        self.perde_aktif_kat_label = QLabel()
+        self.perde_aktif_kat_label.setStyleSheet("color:#f5b041; font-weight:bold;")
+        self.perde_aktif_kat_label.setToolTip(
+            "Perdeler aktif kata yazılır. Kat, Demir Metrajı sekmesindeki kat listesinden eklenir/seçilir. "
+            "Kat ayarları (yükseklik, döşeme, beton esası) her kat için ayrı saklanır.")
+        sg.addWidget(self.perde_aktif_kat_label)
+        sg.addWidget(btn_sec)
+        self.perde_esas_label = QLabel()
+        self.perde_esas_label.setWordWrap(True)
+        self.perde_esas_label.setStyleSheet("color:#5dade2; font-weight:bold;")
+        sg.addWidget(self.perde_esas_label)
+        self.perde_table = QTableWidget()
+        self.perde_table.setColumnCount(len(self.PERDE_KOLONLAR))
+        self.perde_table.setHorizontalHeaderLabels(self.PERDE_KOLONLAR)
+        self.perde_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.perde_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.perde_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.perde_table.setMinimumHeight(220)
+        self.perde_table.setStyleSheet(
+            "QTableWidget { background:#1e1e2e; color:#e0e0e0; gridline-color:#444;"
+            " border:1px solid #555; }"
+            "QHeaderView::section { background:#2d2d3d; color:#a569bd; font-weight:bold;"
+            " padding:5px; border:1px solid #444; }"
+            "QTableWidget::item:selected { background:#3a3a5a; }"
+        )
+        sg.addWidget(self.perde_table)
+        alt = QHBoxLayout()
+        btn_sil = QPushButton("Seçili Sil")
+        btn_sil.setToolTip("Seçili perdeleri siler ve çizimdeki yeşil rengi geri alır.")
+        btn_sil.setStyleSheet("background:#c0392b; color:white; font-weight:bold; padding:5px 12px;"
+                              " border:none; border-radius:3px;")
+        btn_sil.clicked.connect(self._perde_sil)
+        alt.addWidget(btn_sil)
+        btn_temizle = QPushButton("Temizle")
+        btn_temizle.setToolTip("Tüm perdeleri siler ve yeşil renkleri geri alır.")
+        btn_temizle.setStyleSheet("background:#7f8c8d; color:white; font-weight:bold; padding:5px 12px;"
+                                  " border:none; border-radius:3px;")
+        btn_temizle.clicked.connect(self._perde_temizle)
+        alt.addWidget(btn_temizle)
+        alt.addStretch()
+        btn_excel = QPushButton(" PERDE EXCEL'E AKTAR")
+        btn_excel.setToolTip("Tüm katların perdelerini, her katın hesap esasıyla birlikte Excel'e yazar.")
+        btn_excel.setStyleSheet(
+            "background:#1e8449; color:white; font-weight:bold; padding:5px 14px;"
+            " border:2px solid #2ecc71; border-radius:3px;"
+        )
+        btn_excel.clicked.connect(self._perde_excel)
+        alt.addWidget(btn_excel)
+        sg.addLayout(alt)
+        self.perde_toplam_label = QLabel()
+        self.perde_toplam_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; font-size:10pt; background:#2a2a3a;"
+            " border:1px solid #a569bd; border-radius:4px; padding:6px;"
+        )
+        sg.addWidget(self.perde_toplam_label)
+        lay.addWidget(secim_grup)
+
+        # ── Tek perde elle hesap (yedek) ──
+        elle_grup = QGroupBox("Tek Perde — Elle Hesap (AREA ile ölçülen değerlerle)")
+        elle_grup.setStyleSheet(grup_stil)
+        eg = QGridLayout(elle_grup)
+        self.perde_alan_spin = self._perde_spin(
+            10000.0, 2, " m²", "Perde kesit alanı — AutoCAD'de AREA komutuyla ölçün.")
+        self.perde_cevre_spin = self._perde_spin(
+            100000.0, 2, " m", "Kesitin toplam çevresi (metre).")
+        self.perde_dusulen_spin = self._perde_spin(
+            100000.0, 2, " m", "Kolona / başka perdeye bitişen, kalıp kurulmayan uçların toplamı (metre).")
+        self.perde_beton_label = QLabel("0.00 m³")
+        self.perde_kalip_label = QLabel("0.00 m²")
+        self.perde_kalinlik_label = QLabel("-")
+        self.perde_kalinlik_label.setToolTip(
+            "Eşdeğer kalınlık = 2 × Alan / Çevre. Perdede 0.15-0.60 m arası beklenir; "
+            "dışındaysa alan veya çevre girişini kontrol edin.")
+        elle = [("Kesit Alanı:", self.perde_alan_spin), ("Çevre:", self.perde_cevre_spin),
+                ("Düşülen Uçlar:", self.perde_dusulen_spin), ("Beton:", self.perde_beton_label),
+                ("Kalıp:", self.perde_kalip_label), ("Eşdeğer Kalınlık:", self.perde_kalinlik_label)]
+        for i, (etiket, w) in enumerate(elle):
+            eg.addWidget(QLabel(etiket), i, 0)
+            eg.addWidget(w, i, 1)
+        eg.setColumnStretch(2, 1)
+        lay.addWidget(elle_grup)
+
+        self.perde_uyari_label = QLabel()
+        self.perde_uyari_label.setWordWrap(True)
+        self.perde_uyari_label.setStyleSheet("color:#e67e22; font-weight:bold;")
+        lay.addWidget(self.perde_uyari_label)
+        self.perde_sonuc_label = QLabel()
+        self.perde_sonuc_label.setWordWrap(True)
+        self.perde_sonuc_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; font-size:11pt; background:#2a2a3a;"
+            " border:1px solid #a569bd; border-radius:4px; padding:8px;"
+        )
+        lay.addWidget(self.perde_sonuc_label)
+        lay.addStretch()
+
+        self._perde_ayar_degisti()
+        scroll.setWidget(icerik)
+        dis.addWidget(scroll)
+        return tab
+
+    # ── kat ayarı (kat başına) ──
+    def _perde_ayar_oku(self) -> "KatYukseklikAyari":
+        doseme = self.perde_doseme_spin.value()
+        if self._perde_doseme_otomatik_mi():
+            doseme = self._perde_otomatik_doseme(self.aktif_kat_adi)[0]
+        return KatYukseklikAyari(
+            self.perde_yukseklik_spin.value(),
+            doseme,
+            self.perde_esas_combo.currentData() or "tam",
+        )
+
+    def _perde_kat_ayari(self, kat: str) -> "KatYukseklikAyari":
+        """Katın kayıtlı ayarı; yoksa formdaki değerler. Rev-163: otomatik açıkken döşeme
+        kalınlığı HER ZAMAN o katın güncel Döşeme sekmesi kayıtlarından gelir."""
+        a = self.kat_yukseklik_ayarlari.get(kat) or self._perde_ayar_oku()
+        if self._perde_doseme_otomatik_mi():
+            a = dataclasses.replace(a, doseme_kalinligi_m=self._perde_otomatik_doseme(kat)[0])
+        return a
+
+    def _perde_doseme_otomatik_mi(self) -> bool:
+        chk = getattr(self, "perde_doseme_otomatik_chk", None)
+        return bool(chk is not None and chk.isChecked())
+
+    def _perde_otomatik_doseme(self, kat: str):
+        """(kalınlık_m, kaynak_metni): katın döşemelerinden hakim kalınlık; döşeme yoksa
+        Döşeme sekmesinin varsayılan kalınlığı."""
+        kayitlar = getattr(self, "_doseme_kat_kayitlari", {}).get(kat) or []
+        t = hakim_doseme_kalinligi_cm(kayitlar) if hakim_doseme_kalinligi_cm else None
+        if t is not None:
+            farkli = sorted({float(s.get("kalinlik_cm") or 0) for s in kayitlar} - {0.0})
+            ek = (f" (katta {', '.join(f'{x:g}' for x in farkli)} cm var — en büyük alanlı alındı)"
+                  if len(farkli) > 1 else "")
+            return round(t / 100.0, 4), f"Döşeme sekmesi: {len(kayitlar)} döşeme, {t:g} cm{ek}"
+        spin = getattr(self, "doseme_varsayilan_h_spin", None)
+        t = spin.value() if spin is not None else 15.0
+        return round(t / 100.0, 4), f"Bu katta henüz döşeme yok — Döşeme sekmesi varsayılanı {t:g} cm"
+
+    def _perde_doseme_otomatik_yenile(self, *_):
+        """Döşeme kayıtları / varsayılan kalınlık değişince perde hesapları tazelensin."""
+        if self._perde_doseme_otomatik_mi():
+            self._perde_ayar_degisti()
+
+    def _perde_ayar_degisti(self, *_):
+        # Form kurulurken widget'lar tek tek oluşur — hepsi hazır olmadan hesaplama
+        if not hasattr(self, "perde_sonuc_label") or KatYukseklikAyari is None:
+            return
+        # Rev-163: otomatik döşeme kalınlığını forma yansıt (spin salt okunur)
+        otomatik = self._perde_doseme_otomatik_mi()
+        self.perde_doseme_spin.setEnabled(not otomatik)
+        if otomatik:
+            deger, kaynak = self._perde_otomatik_doseme(self.aktif_kat_adi)
+            self.perde_doseme_spin.blockSignals(True)
+            self.perde_doseme_spin.setValue(deger)
+            self.perde_doseme_spin.blockSignals(False)
+            beton = ("beton etkilenmez (Beton Esası: Tam kat)"
+                     if (self.perde_esas_combo.currentData() or "tam") == "tam"
+                     else "Beton Esası 'Net' seçili — beton da net yükseklikle alınır")
+            self.perde_doseme_kaynak_label.setText(
+                f"Döşeme kalınlığı otomatik — {kaynak}. Perde kalıbından düşülür; {beton}.")
+        else:
+            self.perde_doseme_kaynak_label.setText("Döşeme kalınlığı elle girildi.")
+        # Döşeme aracı da bu nesneleri okuyacak (beton esası: çift sayım kararı)
+        self.yukseklik_ayari = self._perde_ayar_oku()
+        if self.aktif_kat_adi:
+            self.kat_yukseklik_ayarlari[self.aktif_kat_adi] = self.yukseklik_ayari
+        self._perde_hesapla_guncelle()
+        self._perde_tablo_yenile()
+        self._doseme_esas_notu_guncelle()
+        # Rev-161: kolon aracından gelen perdeler de bu kat ayarıyla hesaplanır
+        if self.aktif_kat_adi and hasattr(self, "beton_kalip_table"):
+            self._beton_kalip_kat_kolon_satirlarini_yeniden_olustur(self.aktif_kat_adi)
+            self._beton_kalip_toplamlar_guncelle()
+
+    def _aktif_kat_degisti(self):
+        """Rev-151: aktif kat değişince kata bağlı TÜM sekmeleri o kata çevirir
+        (perde ayarı + tablo, kiriş, döşeme) ve kat özetini tazeler."""
+        self._perde_aktif_kat_yukle()
+        kat = self.aktif_kat_adi or ""
+        for edit in (getattr(self, "kiris_kat_edit", None), getattr(self, "doseme_kat_edit", None),
+                     getattr(self, "merdiven_kat_edit", None)):
+            if edit is not None:
+                edit.setText(kat)
+        if hasattr(self, "kiris_table"):
+            self._kiris_tablo_yenile()
+        if hasattr(self, "doseme_table"):
+            self._doseme_tablo_yenile()
+        if hasattr(self, "merdiven_table"):
+            self._merdiven_tablo_yenile()
+        if hasattr(self, "kat_ozeti_table"):
+            self._kat_ozeti_yenile()
+
+    def _perde_aktif_kat_yukle(self):
+        """Aktif kat değişince o katın kayıtlı ayarını forma yükler (yoksa
+        formdaki değerler yeni katın ayarı olur) ve tabloyu o kata göre gösterir."""
+        if not hasattr(self, "perde_sonuc_label") or KatYukseklikAyari is None:
+            return
+        ayar = self.kat_yukseklik_ayarlari.get(self.aktif_kat_adi)
+        if ayar is not None:
+            widgetler = (self.perde_yukseklik_spin, self.perde_doseme_spin, self.perde_esas_combo)
+            for w in widgetler:
+                w.blockSignals(True)
+            try:
+                self.perde_yukseklik_spin.setValue(ayar.kat_yuksekligi_m)
+                self.perde_doseme_spin.setValue(ayar.doseme_kalinligi_m)
+                self.perde_esas_combo.setCurrentIndex(max(0, self.perde_esas_combo.findData(ayar.beton_esasi)))
+            finally:
+                for w in widgetler:
+                    w.blockSignals(False)
+        self._perde_ayar_degisti()
+
+    def _perde_teyit_sifirla(self, *_):
+        """Birim/ölçek değişince sonraki ilk perde yeniden teyit edilir."""
+        self._perde_alan_teyitli = False
+
+    def _perde_birim(self) -> str:
+        secim = self.perde_birim_combo.currentText()
+        if secim in ("mm", "cm", "m"):
+            return secim
+        birim = None
+        try:
+            birim = self.acad_connector.cizim_birimi_oku()
+        except Exception as e:
+            logger.error(f"[PERDE] INSUNITS okunamadı: {e}", exc_info=True)
+        return birim or "cm"
+
+    # ── AutoCAD döngüsü ──
+    def _perde_sec(self):
+        """Aktif katı ve kat ayarını doğrular, toplu seçim panelini açıp
+        döngüyü başlatır, sonucu (kat, poligon) anahtarıyla registry'ye işler
+        (aynı kat + aynı poligon -> güncelleme, farklı kat -> ayrı kayıt)."""
+        if not self.acad_connector or not getattr(self.acad_connector, "bagli", False):
+            QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+            return
+        kat = self.aktif_kat_adi
+        if not kat:
+            QMessageBox.warning(
+                self, "Kat Seçimi Gerekli",
+                "Önce bir kat eklemeniz/seçmeniz gerekiyor!\n\n"
+                "Demir Metrajı sekmesindeki 'Kat İsmi Girişi' bölümünden kat ekleyin veya "
+                "listeden seçin — perdeler o kata yazılır.")
+            return
+        ayar = self._perde_ayar_oku()
+        hata = ayar.dogrula()
+        if hata:
+            QMessageBox.warning(self, "Kat Ayarı", f"{hata}\n\nKat Ayarları bölümünü düzeltin.")
+            return
+        # Bu katın perdeleri bu ayarla hesaplanır — kata kilitle
+        self.kat_yukseklik_ayarlari[kat] = ayar
+        olcek_adi = self.perde_olcek_combo.currentText()
+        mevcut ={h: s for (k, h), s in self.perde_kayitlari.items() if k == kat}
+        panel = PerdeDonguPaneli(
+            self.acad_connector, self._perde_birim(), olcek_adi, self._PERDE_OLCEKLER[olcek_adi],
+            ayar, self._perde_alan_teyitli, mevcut, self,
+            ad_kayitli=lambda ad: self._kolon_kaydi_bul(kat, ad) is not None,
+            okunamayanlar=[ad for (k, ad) in self.okunamayan_elemanlar if k == kat],
+        )
+        QTimer.singleShot(0, panel._dongu)
+        sonuc = panel.exec()
+        self._perde_alan_teyitli = panel.alan_teyitli
+        if sonuc != QDialog.DialogCode.Accepted:
+            return
+        for satir in panel.sonuclar():
+            anahtar = (kat, satir["poligon_handle"])
+            eski = self.perde_kayitlari.get(anahtar)
+            kayit = dict(satir)
+            kayit.pop("yeni_boyanan", None)
+            kayit.pop("onceki_renkler", None)
+            # Rev-160 ortak ad havuzu: aynı adlı kolon-aracı kaydı / başka poligonlu perde kaydı
+            # bu kayıtla DEĞİŞTİRİLİR (mükerrer sorusu panelde soruldu); okunamayanlar listesinden düşer
+            n = eleman_ad_normalize(satir.get("ad"))
+            if n:
+                kolon_anahtar = self._kolon_kaydi_bul(kat, n)
+                if kolon_anahtar:
+                    del self.beton_kalip_kolon_kayitlari[kolon_anahtar]
+                for a in [a for a, s in self.perde_kayitlari.items()
+                          if a[0] == kat and a != anahtar and eleman_ad_normalize(s.get("ad")) == n]:
+                    del self.perde_kayitlari[a]
+                self.okunamayan_elemanlar.pop((kat, n), None)
+            self.perde_kayitlari[anahtar] = kayit
+            if eski:
+                # Güncellemede artık kullanılmayan eski handle'ların yeşilini sök
+                for h in eski.get("handleler") or []:
+                    if h not in self._perde_kullanilan_handleler(kat):
+                        self._perde_renk_geri(h)
+        # Kolon-aracı kaydı perdeye devredildiyse Beton & Kalıp tablosu da güncellensin
+        self._beton_kalip_kat_kolon_satirlarini_yeniden_olustur(kat)
+        self._beton_kalip_toplamlar_guncelle()
+        self._perde_tablo_yenile()
+        self._kat_ozeti_yenile()
+        logger.info(f"[PERDE] {len(panel.sonuclar())} perde '{kat}' katına kaydedildi "
+                    f"(katta toplam {sum(1 for a in self.perde_kayitlari if a[0] == kat)})")
+
+    # ── Rev-160: kolon aracı + perde aracı ORTAK ad havuzu (kat + ad) ──
+    def _kolon_kaydi_bul(self, kat: str, ad: str):
+        """Kolon aracı registry'sinde bu katta bu ad (normalize) var mı? Anahtar | None."""
+        n = eleman_ad_normalize(ad)
+        return next((a for a in self.beton_kalip_kolon_kayitlari
+                     if a[0] == kat and eleman_ad_normalize(a[1]) == n), None)
+
+    def _perde_kaydi_bul(self, kat: str, ad: str):
+        """Perde aracı registry'sinde bu katta bu ad var mı? Anahtar | None."""
+        n = eleman_ad_normalize(ad)
+        return next((a for a, s in self.perde_kayitlari.items()
+                     if a[0] == kat and eleman_ad_normalize(s.get("ad")) == n), None)
+
+    def _eleman_renk(self, handle, renk):
+        """Program rengi ayarla; önceki program rengini döndür (None = orijinal)."""
+        if not handle or not self.acad_connector:
+            return None
+        try:
+            return self.acad_connector.obje_rengi_ayarla(handle, renk)
+        except Exception as e:
+            logger.error(f"[KOLON] renk ayarlanamadı ({handle}): {e}", exc_info=True)
+            return None
+
+    def _perde_kullanilan_handleler(self, kat: str) -> set:
+        return {h for (k, _), s in self.perde_kayitlari.items() if k == kat
+                for h in (s.get("handleler") or [])}
+
+    def _perde_renk_geri(self, handle):
+        if not handle or not self.acad_connector:
+            return
+        try:
+            self.acad_connector.obje_isaret_geri_al(handle)
+        except Exception as e:
+            logger.error(f"[PERDE] renk geri alma hatası: {e}", exc_info=True)
+
+    @staticmethod
+    def _perde_satir_hesap(s: Dict, a: "KatYukseklikAyari") -> Dict:
+        return perde_hesapla(s["alan_m2"], s["cevre_m"], a.kat_yuksekligi_m,
+                             a.doseme_kalinligi_m, a.beton_esasi, s["dusulen_m"])
+
+    def _perde_tablo_yenile(self):
+        """Perde tablosu AKTİF katı, HER ZAMAN o katın güncel ayarıyla
+        gösterir — başlıktaki esas ile satırlar asla çelişmez. Ardından genel
+        Beton & Kalıp tablosu da senkronlanır."""
+        if not hasattr(self, "perde_table"):
+            return
+        kat = self.aktif_kat_adi
+        self.perde_aktif_kat_label.setText(
+            f"Aktif Kat: {kat}" if kat else "Aktif Kat: — (Demir Metrajı sekmesinden kat ekleyin/seçin)")
+        a = self.yukseklik_ayari
+        ayar_hata = a.dogrula()
+        self.perde_esas_label.setText(
+            f"Hesap esası — {a.esas_etiketi()}" if not ayar_hata else f"⚠ Kat ayarı: {ayar_hata}")
+        tablo = self.perde_table
+        tablo.setRowCount(0)
+        beton = kalip = 0.0
+        for (k, handle), s in self.perde_kayitlari.items():
+            if k != kat:
+                continue
+            h = self._perde_satir_hesap(s, a)
+            beton += h["beton_m3"]
+            kalip += h["kalip_m2"]
+            row = tablo.rowCount()
+            tablo.insertRow(row)
+            degerler = [s["ad"], f"{s['alan_m2']:.2f}", f"{s['cevre_m']:.2f}", f"{s['dusulen_m']:.2f}",
+                        f"{tek_hane(h['beton_m3'])}", f"{tek_hane(h['kalip_m2'])}"]
+            for col, deger in enumerate(degerler):
+                item = QTableWidgetItem(deger)
+                if s.get("uyari"):
+                    item.setToolTip(s["uyari"])
+                    item.setForeground(QColor("#f5b041"))
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, handle)
+                tablo.setItem(row, col, item)
+        g = self._perde_genel_toplam()
+        self.perde_toplam_label.setText(
+            f"{kat or '—'}: {tablo.rowCount()} perde | Beton: {tek_hane(beton, True)} m³ | Kalıp: {tek_hane(kalip, True)} m²"
+            f"   —   TÜM KATLAR: {g['adet']} perde | Beton: {tek_hane(g['beton'], True)} m³ | Kalıp: {tek_hane(g['kalip'], True)} m²")
+        self._perde_beton_kalip_senkronla()
+
+    def _perde_genel_toplam(self) -> Dict:
+        beton = kalip = 0.0
+        for (k, _), s in self.perde_kayitlari.items():
+            h = self._perde_satir_hesap(s, self._perde_kat_ayari(k))
+            beton += h["beton_m3"]
+            kalip += h["kalip_m2"]
+        return {"adet": len(self.perde_kayitlari), "beton": round(beton, 3), "kalip": round(kalip, 3)}
+
+    def _perde_sil(self):
+        kat = self.aktif_kat_adi
+        satirlar = sorted({i.row() for i in self.perde_table.selectedIndexes()})
+        if not satirlar:
+            QMessageBox.information(self, "Bilgi", "Silmek için tablodan perde seçin.")
+            return
+        for row in satirlar:
+            item = self.perde_table.item(row, 0)
+            handle = item.data(Qt.ItemDataRole.UserRole) if item else None
+            kayit = self.perde_kayitlari.pop((kat, handle), None)
+            if kayit:
+                for h in kayit.get("handleler") or []:
+                    if h not in self._perde_kullanilan_handleler(kat):
+                        self._perde_renk_geri(h)
+        self._perde_tablo_yenile()
+
+    def _perde_temizle(self):
+        """AKTİF katın perdelerini siler (diğer katlara dokunmaz)."""
+        kat = self.aktif_kat_adi
+        anahtarlar = [a for a in self.perde_kayitlari if a[0] == kat]
+        if not anahtarlar:
+            return
+        cevap = QMessageBox.question(
+            self, "Temizle", f"'{kat}' katının {len(anahtarlar)} perdesi silinecek ve yeşil renkler "
+            "geri alınacak. Emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if cevap != QMessageBox.StandardButton.Yes:
+            return
+        handleler = self._perde_kullanilan_handleler(kat)
+        for a in anahtarlar:
+            del self.perde_kayitlari[a]
+        for h in handleler:
+            self._perde_renk_geri(h)
+        self._perde_tablo_yenile()
+
+    # ── Genel Beton & Kalıp tablosuna bağlama ──
+    PERDE_BK_ETIKETI = "perde"
+
+    def _perde_beton_kalip_senkronla(self):
+        """Perdeleri genel Beton & Kalıp tablosuna yazar (Rev-143 Aşama 4).
+
+        Neyi çözüyoruz? Kolon/kiriş/perde betonu tek toplamda görünsün. Kolon
+        deseniyle aynı: "perde" etiketli satırlar silinip registry'den (her
+        katın güncel ayarıyla) YENİDEN kurulur — mükerrer birikme olmaz,
+        manuel ve kolon satırlarına dokunulmaz.
+        Nasıl test ederiz? test_perde_kat_excel.py: 2 kat -> 2 satır, esas
+        değişince satır güncellenir, silinince tablodan kalkar.
+        """
+        tablo = getattr(self, "beton_kalip_table", None)
+        if tablo is None:
+            return
+        for row in reversed(range(tablo.rowCount())):
+            item = tablo.item(row, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == self.PERDE_BK_ETIKETI:
+                tablo.removeRow(row)
+        fire_pct = self.bk_fire_spin.value() if hasattr(self, "bk_fire_spin") else 0.0
+        for (k, _), s in self.perde_kayitlari.items():
+            a = self._perde_kat_ayari(k)
+            h = self._perde_satir_hesap(s, a)
+            if h["hata"]:
+                continue
+            ad = s["ad"] if s["ad"].lower().startswith("perde") else f"Perde {s['ad']}"
+            siparis = round(h["beton_m3"] * (1 + fire_pct / 100), 3)
+            veriler = [k, ad, "1", "-", "-", f"{h['beton_yuksekligi_m']:.2f}",
+                       f"{tek_hane(h['beton_m3'])}", f"{fire_pct:.1f}", f"{tek_hane(siparis)}", f"{tek_hane(h['kalip_m2'])}"]
+            row = tablo.rowCount()
+            tablo.insertRow(row)
+            for col, deger in enumerate(veriler):
+                item = QTableWidgetItem(deger)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, self.PERDE_BK_ETIKETI)
+                    item.setToolTip(f"Perde sekmesinden (alan {s['alan_m2']:.2f} m², "
+                                    f"{BETON_ESASLARI.get(a.beton_esasi, '')}). Düzeltme Perde sekmesinde yapılır.")
+                self._bk_tam_deger(item, col, h["beton_m3"], siparis, h["kalip_m2"])
+                tablo.setItem(row, col, item)
+        if hasattr(self, "bk_toplam_beton_label"):
+            self._beton_kalip_toplamlar_guncelle()
+
+    # ── Excel ──
+    PERDE_EXCEL_KOLONLAR = ["Kat", "Ad", "Alan (m²)", "Çevre (m)", "Düşülen (m)", "Beton Yük. (m)",
+                            "Kalıp Yük. (m)", "Beton (m³)", "Kalıp (m²)"]
+
+    def _perde_excel_verisi(self):
+        """(başlık satırları, tablo satırları). Başlıkta her katın hesap esası
+        yazar; satırlar kat kat, her katın sonunda ARA TOPLAM, en altta GENEL TOPLAM."""
+        katlar = []
+        for (k, _) in self.perde_kayitlari:
+            if k not in katlar:
+                katlar.append(k)
+        basliklar = ["PERDE BETON + KALIP METRAJI", "Hesap esası (kat bazında):"]
+        satirlar = []
+        g_beton = g_kalip = 0.0
+        for k in katlar:
+            a = self._perde_kat_ayari(k)
+            basliklar.append(f"  {k}: {a.esas_etiketi()}")
+            k_beton = k_kalip = 0.0
+            for (kk, _), s in self.perde_kayitlari.items():
+                if kk != k:
+                    continue
+                h = self._perde_satir_hesap(s, a)
+                k_beton += h["beton_m3"]
+                k_kalip += h["kalip_m2"]
+                satirlar.append([k, s["ad"], s["alan_m2"], s["cevre_m"], s["dusulen_m"],
+                                 h["beton_yuksekligi_m"], h["net_yukseklik_m"], h["beton_m3"], h["kalip_m2"]])
+            satirlar.append([k, "ARA TOPLAM", "", "", "", "", "", round(k_beton, 3), round(k_kalip, 3)])
+            g_beton += k_beton
+            g_kalip += k_kalip
+        satirlar.append(["", "GENEL TOPLAM", "", "", "", "", "", round(g_beton, 3), round(g_kalip, 3)])
+        basliklar.append("Kalıp her zaman net yükseklikle (kat − döşeme) × (çevre − bitişik uçlar) hesaplanır.")
+        return basliklar, satirlar
+
+    def _perde_excel(self):
+        if not self.perde_kayitlari:
+            QMessageBox.information(self, "Bilgi", "Dışa aktarılacak perde yok.")
+            return
+        if not PANDAS_AVAILABLE:
+            QMessageBox.warning(self, "Uyarı", "Excel için pandas+openpyxl gerekli:\npip install pandas openpyxl")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(self, "Excel Kaydet", "perde_metraj.xlsx", "Excel (*.xlsx)")
+        if not file_path:
+            return
+        try:
+            basliklar, satirlar = self._perde_excel_verisi()
+            df = pd.DataFrame(satirlar, columns=self.PERDE_EXCEL_KOLONLAR)
+            with pd.ExcelWriter(file_path, engine="openpyxl") as yazici:
+                df.to_excel(yazici, index=False, sheet_name="Perde", startrow=len(basliklar) + 1)
+                sayfa = yazici.sheets["Perde"]
+                for i, metin in enumerate(basliklar, start=1):
+                    sayfa.cell(row=i, column=1, value=metin)
+                beton_kalip_sutunlari_tek_hane(sayfa)   # Rev-166
+            g = satirlar[-1]
+            QMessageBox.information(self, "Başarılı",
+                                    f"Kaydedildi:\n{file_path}\nBeton: {tek_hane(g[7])} m³ | Kalıp: {tek_hane(g[8])} m²")
+            logger.info(f"Perde Excel: {file_path}")
+        except Exception as e:
+            logger.error(f"[PERDE] Excel hatası: {e}", exc_info=True)
+            QMessageBox.critical(self, "Hata", f"Dosya kaydedilemedi:\n{e}")
+
+    # ── tek perde elle hesap ──
+    def _perde_hesap(self) -> Dict:
+        """Formdaki değerlerle perde_hesapla sonucu (UI'dan bağımsız test için ayrı)."""
+        if perde_hesapla is None:
+            return {"hata": "Hesap modülü yüklenemedi", "uyari": "", "beton_m3": 0.0,
+                    "kalip_m2": 0.0, "esdeger_kalinlik_m": 0.0}
+        a = self.yukseklik_ayari
+        return perde_hesapla(self.perde_alan_spin.value(), self.perde_cevre_spin.value(),
+                             a.kat_yuksekligi_m, a.doseme_kalinligi_m, a.beton_esasi,
+                             self.perde_dusulen_spin.value())
+
+    def _perde_hesapla_guncelle(self, *_):
+        h = self._perde_hesap()
+        self.perde_beton_label.setText(f"{tek_hane(h['beton_m3'])} m³")
+        self.perde_kalip_label.setText(f"{tek_hane(h['kalip_m2'])} m²")
+        t = h["esdeger_kalinlik_m"]
+        self.perde_kalinlik_label.setText(f"{t:.2f} m" if t > 0 else "-")
+        if h["hata"]:
+            yuk_hata = self.perde_yukseklik_spin.value() <= 0 or self.perde_alan_spin.value() <= 0
+            self.perde_uyari_label.setText("Yükseklik ve kesit alanı girin." if yuk_hata else f"⚠ {h['hata']}")
+        else:
+            self.perde_uyari_label.setText(f"⚠ {h['uyari']}" if h["uyari"] else "")
+        self.perde_sonuc_label.setText(
+            f"PERDE — Beton: {tek_hane(h['beton_m3'])} m³   |   Kalıp: {tek_hane(h['kalip_m2'])} m²"
+        )
+
+    # ── Rev-144: Döşeme (Plak) Beton + Kalıp (Aşama 1/3 — elle giriş) ──
+    DOSEME_KOLONLAR = ["No", "Döşeme Adı", "Brüt Alan (m²)", "Boşluk Alanı (m²)", "Net Alan (m²)",
+                       "Kalınlık (cm)", "Beton (m³)", "Alt Kalıp (m²)", "Kenar Kalıbı (m²)",
+                       "Toplam Kalıp (m²)", "Kaynak", "Handle", "Tip"]   # Rev-164: Tip SONDA (indeksler kaymasın)
+    DOSEME_KALINLIK_KOL = 5
+
+    def _doseme_spin(self, maks: float, ondalik: int, sonek: str, ipucu: str) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, maks)
+        spin.setDecimals(ondalik)
+        spin.setSuffix(sonek)
+        spin.setToolTip(ipucu)
+        spin.setStyleSheet(self._RADYE_SPIN_STIL)
+        spin.setMinimumWidth(160)
+        return spin
+
+    def _doseme_sekmesi_olustur(self) -> QWidget:
+        """Döşeme sekmesini kurar (Rev-144 Aşama 1).
+
+        Neyi çözüyoruz? Kirişli dolu plak döşemenin beton (net alan × h) ve
+        kalıp (alt kalıp = net alan + kenar kalıbı = (serbest kenar + boşluk
+        çevresi) × h) metrajı. Alan kiriş İÇ YÜZLERİ arasında girilir.
+        Aşama 1: elle giriş; AutoCAD köşe tıklama Aşama 2, boşluk Aşama 3.
+        Nasıl test ederiz? scratchpad/test_doseme_hesap.py (programsız),
+        scratchpad/test_doseme_ui.py (headless form + tablo).
+        """
+        tab = QWidget()
+        dis = QVBoxLayout(tab)
+        dis.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        icerik = QWidget()
+        lay = QVBoxLayout(icerik)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(8)
+
+        bilgi = QLabel(
+            "Plak döşeme (kirişli, dolu) metrajı — ALAN KİRİŞ İÇ YÜZLERİ ARASINDA ölçülür, akstan "
+            "DEĞİL (kiriş betonu tam yükseklikle sayıldığı için akstan ölçmek kesişimi iki kez sayar). "
+            "Alt kalıp = net alan; kenar kalıbı = (serbest kenar + boşluk çevresi) × kalınlık. "
+            "Serbest kenar: kirişe oturmayan kenar (konsol ucu, kirişsiz cephe)."
+        )
+        bilgi.setWordWrap(True)
+        bilgi.setStyleSheet("color:#d4a017; font-size:9pt;")
+        lay.addWidget(bilgi)
+
+        self.doseme_esas_notu_label = QLabel()
+        self.doseme_esas_notu_label.setWordWrap(True)
+        self.doseme_esas_notu_label.setStyleSheet("color:#5dade2; font-size:9pt;")
+        lay.addWidget(self.doseme_esas_notu_label)
+
+        grup_stil = (
+            "QGroupBox { color:#a569bd; font-weight:bold; border:1px solid #555;"
+            " border-radius:4px; margin-top:10px; padding-top:8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left:8px; padding:0 4px; }"
+            "QLabel { color:white; font-weight:normal; }"
+        )
+        edit_stil = "QLineEdit { background:#2a2a3a; color:white; border:1px solid #666; padding:4px; }"
+
+        ayar_grup = QGroupBox("Ayarlar")
+        ayar_grup.setStyleSheet(grup_stil)
+        ag = QGridLayout(ayar_grup)
+        self.doseme_kat_edit = QLineEdit(self.aktif_kat_adi or "")
+        self.doseme_kat_edit.setReadOnly(True)
+        self.doseme_kat_edit.setPlaceholderText("Kat seçilmedi")
+        self.doseme_kat_edit.setToolTip(
+            "Aktif kat — Demir Metrajı sekmesindeki kat listesinden seçilir. Döşemeler bu kata "
+            "kaydedilir; tablo sadece bu katın döşemelerini gösterir.")
+        self.doseme_kat_edit.setStyleSheet(edit_stil)
+        self.doseme_kat_edit.setMinimumWidth(160)
+        self.doseme_varsayilan_h_spin = self._doseme_spin(
+            500.0, 1, " cm", "Varsayılan döşeme kalınlığı (CM). Her yeni satıra bu değer gelir; "
+            "tabloda satır bazında değiştirilebilir.")
+        self.doseme_varsayilan_h_spin.setValue(15.0)
+        ag.addWidget(QLabel("Aktif Kat:"), 0, 0)
+        ag.addWidget(self.doseme_kat_edit, 0, 1)
+        ag.addWidget(QLabel("Varsayılan Kalınlık:"), 1, 0)
+        ag.addWidget(self.doseme_varsayilan_h_spin, 1, 1)
+        combo_stil = ("QComboBox { background:#2a2a3a; color:white; border:1px solid #666;"
+                      " padding:4px; } QComboBox QAbstractItemView { background:#2a2a3a;"
+                      " color:white; }")
+        self.doseme_birim_combo = QComboBox()
+        self.doseme_birim_combo.addItems(["Otomatik", "cm", "mm", "m"])
+        self.doseme_birim_combo.setToolTip(
+            "Çizim birimi. Otomatik = AutoCAD INSUNITS, tanımsızsa cm. İlk döşemede alan ayrıca teyit edilir.")
+        self.doseme_birim_combo.setStyleSheet(combo_stil)
+        self.doseme_olcek_combo = QComboBox()
+        self.doseme_olcek_combo.addItems(list(self._PERDE_OLCEKLER))
+        self.doseme_olcek_combo.setToolTip("Çizim ölçeği — çoğu çizim 1:1. İlk döşemede AREA ile karşılaştırın.")
+        self.doseme_olcek_combo.setStyleSheet(combo_stil)
+        for combo in (self.doseme_birim_combo, self.doseme_olcek_combo):
+            combo.currentTextChanged.connect(self._doseme_teyit_sifirla)
+        ag.addWidget(QLabel("Çizim Birimi:"), 2, 0)
+        ag.addWidget(self.doseme_birim_combo, 2, 1)
+        ag.addWidget(QLabel("Çizim Ölçeği:"), 3, 0)
+        ag.addWidget(self.doseme_olcek_combo, 3, 1)
+        btn_acad = QPushButton(" AutoCAD'de Döşeme Seç (köşe tıklama)")
+        btn_acad.setToolTip(
+            "AutoCAD'e geçer: her döşeme için köşeleri KİRİŞ İÇ YÜZLERİNDEN sırayla tıklayın "
+            "(nokta sınırı yok), ENTER ile kapatın. Bitirmek için 1. köşede ENTER.")
+        btn_acad.setStyleSheet(
+            "background:#8e44ad; color:white; font-weight:bold; padding:6px 14px;"
+            " border:none; border-radius:3px;"
+        )
+        btn_acad.clicked.connect(self._doseme_sec)
+        ag.addWidget(btn_acad, 4, 0, 1, 2)
+        # Rev-164: SAÇAK modu — kalınlık varsayılanı katın döşeme kalınlığından
+        self.sacak_kalinlik_spin = self._doseme_spin(
+            500.0, 1, " cm", "Saçak plağı kalınlığı (CM, sabit). Varsayılan: bu katın döşeme kalınlığı "
+            "(Döşeme tablosundaki hakim kalınlık, yoksa varsayılan kalınlık). Elle değiştirirseniz korunur.")
+        self._sacak_kalinlik_elle = False
+        self.sacak_kalinlik_spin.valueChanged.connect(self._sacak_kalinlik_elle_degisti)
+        ag.addWidget(QLabel("Saçak Kalınlığı:"), 5, 0)
+        ag.addWidget(self.sacak_kalinlik_spin, 5, 1)
+        btn_sacak = QPushButton(" AutoCAD'de Saçak Seç ([H]alka / [Ş]erit)")
+        btn_sacak.setToolTip(
+            "Saçak = kenar kirişin DIŞ yüzünden taşan konsol plak. Halka: önce saçak ucu dış köşeleri, sonra "
+            "kiriş dış yüzü köşeleri (alan = dış − iç, kalıp kenarı = dış çevre). Şerit: kiriş hattı + ENTER, "
+            "uç hattı + ENTER (kalıp kenarı = çevre − kiriş hattı). Beton = alan × kalınlık, alt kalıp = alan.")
+        btn_sacak.setStyleSheet(
+            "background:#b9770e; color:white; font-weight:bold; padding:6px 14px;"
+            " border:none; border-radius:3px;"
+        )
+        btn_sacak.clicked.connect(self._sacak_sec)
+        ag.addWidget(btn_sacak, 6, 0, 1, 2)
+        ag.setColumnStretch(2, 1)
+        lay.addWidget(ayar_grup)
+        self._doseme_alan_teyitli = False
+
+        ekle_grup = QGroupBox("Döşeme Ekle (elle)")
+        ekle_grup.setStyleSheet(grup_stil)
+        eg = QGridLayout(ekle_grup)
+        self.doseme_ad_edit = QLineEdit()
+        self.doseme_ad_edit.setPlaceholderText("boş bırakılırsa D1, D2…")
+        self.doseme_ad_edit.setStyleSheet(edit_stil)
+        self.doseme_brut_spin = self._doseme_spin(
+            100000.0, 2, " m²", "Brüt alan — kiriş İÇ YÜZLERİ arasında (AutoCAD AREA ile).")
+        self.doseme_bosluk_spin = self._doseme_spin(
+            100000.0, 2, " m²", "Boşluk alanı (merdiven, şaft, asansör) — yoksa 0.")
+        self.doseme_bosluk_cevre_spin = self._doseme_spin(
+            100000.0, 2, " m", "Boşlukların toplam çevresi — kenar kalıbına eklenir. Yoksa 0.")
+        self.doseme_serbest_spin = self._doseme_spin(
+            100000.0, 2, " m", "Kirişe oturmayan kenar uzunluğu (konsol ucu, kirişsiz cephe). Yoksa 0.")
+        self.doseme_h_spin = self._doseme_spin(500.0, 1, " cm", "Bu döşemenin kalınlığı (CM).")
+        self.doseme_h_spin.setValue(self.doseme_varsayilan_h_spin.value())
+        self.doseme_varsayilan_h_spin.valueChanged.connect(self.doseme_h_spin.setValue)
+        self.doseme_varsayilan_h_spin.valueChanged.connect(self._perde_doseme_otomatik_yenile)
+        alanlar = [("Döşeme Adı:", self.doseme_ad_edit), ("Brüt Alan:", self.doseme_brut_spin),
+                   ("Boşluk Alanı:", self.doseme_bosluk_spin),
+                   ("Boşluk Çevresi:", self.doseme_bosluk_cevre_spin),
+                   ("Serbest Kenar:", self.doseme_serbest_spin), ("Kalınlık:", self.doseme_h_spin)]
+        for i, (etiket, w) in enumerate(alanlar):
+            eg.addWidget(QLabel(etiket), i, 0)
+            eg.addWidget(w, i, 1)
+        btn_ekle = QPushButton(" + Tabloya Ekle")
+        btn_ekle.setStyleSheet(
+            "background:#8e44ad; color:white; font-weight:bold; padding:6px 14px;"
+            " border:none; border-radius:3px;"
+        )
+        btn_ekle.clicked.connect(self._doseme_elle_ekle)
+        eg.addWidget(btn_ekle, len(alanlar), 1)
+        eg.setColumnStretch(2, 1)
+        lay.addWidget(ekle_grup)
+
+        self.doseme_uyari_label = QLabel()
+        self.doseme_uyari_label.setWordWrap(True)
+        self.doseme_uyari_label.setStyleSheet("color:#e67e22; font-weight:bold;")
+        lay.addWidget(self.doseme_uyari_label)
+
+        self.doseme_table = QTableWidget()
+        self.doseme_table.setColumnCount(len(self.DOSEME_KOLONLAR))
+        self.doseme_table.setHorizontalHeaderLabels(self.DOSEME_KOLONLAR)
+        self.doseme_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.doseme_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.doseme_table.setMinimumHeight(240)
+        self.doseme_table.setToolTip("Kalınlık (cm) hücresine çift tıklayıp satır bazında değiştirebilirsiniz.")
+        self.doseme_table.setStyleSheet(
+            "QTableWidget { background:#1e1e2e; color:#e0e0e0; gridline-color:#444;"
+            " border:1px solid #555; }"
+            "QHeaderView::section { background:#2d2d3d; color:#a569bd; font-weight:bold;"
+            " padding:5px; border:1px solid #444; }"
+            "QTableWidget::item:selected { background:#3a3a5a; }"
+        )
+        self.doseme_table.itemChanged.connect(self._doseme_hucre_degisti)
+        lay.addWidget(self.doseme_table)
+
+        alt = QHBoxLayout()
+        btn_sil = QPushButton("Seçili Sil")
+        btn_sil.setStyleSheet("background:#c0392b; color:white; font-weight:bold; padding:5px 12px;"
+                              " border:none; border-radius:3px;")
+        btn_sil.clicked.connect(self._doseme_sil)
+        alt.addWidget(btn_sil)
+        btn_temizle = QPushButton("Temizle")
+        btn_temizle.setStyleSheet("background:#7f8c8d; color:white; font-weight:bold; padding:5px 12px;"
+                                  " border:none; border-radius:3px;")
+        btn_temizle.clicked.connect(self._doseme_temizle)
+        alt.addWidget(btn_temizle)
+        btn_bosluk = QPushButton("Boşluk Ekle (AutoCAD)")
+        btn_bosluk.setToolTip(
+            "Tabloda AutoCAD'den tıklanmış bir döşeme seçin: AutoCAD'e geçer, o döşemenin içine "
+            "merdiven/şaft/asansör boşluğunu köşe köşe tıklatır (birden fazla eklenebilir). "
+            "Boşluk alanı net alandan düşülür, çevresi kenar kalıbına eklenir.")
+        btn_bosluk.setStyleSheet("background:#a93226; color:white; font-weight:bold; padding:5px 12px;"
+                                 " border:none; border-radius:3px;")
+        btn_bosluk.clicked.connect(self._doseme_bosluk_ekle)
+        alt.addWidget(btn_bosluk)
+        alt.addStretch()
+        lay.addLayout(alt)
+
+        self.doseme_toplam_label = QLabel()
+        self.doseme_toplam_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; font-size:10pt; background:#2a2a3a;"
+            " border:1px solid #a569bd; border-radius:4px; padding:6px;"
+        )
+        lay.addWidget(self.doseme_toplam_label)
+        lay.addStretch()
+
+        self._doseme_tablo_yenile()
+        self._doseme_esas_notu_guncelle()
+        scroll.setWidget(icerik)
+        dis.addWidget(scroll)
+        return tab
+
+    # ── Döşeme AutoCAD köşe tıklama (Aşama 2) ──
+    def _cizim_birimi_coz(self, combo) -> str:
+        """Birim combosu: mm/cm/m aynen; 'Otomatik' -> INSUNITS, tanımsızsa cm."""
+        secim = combo.currentText()
+        if secim in ("mm", "cm", "m"):
+            return secim
+        birim = None
+        try:
+            birim = self.acad_connector.cizim_birimi_oku()
+        except Exception as e:
+            logger.error(f"INSUNITS okunamadı: {e}", exc_info=True)
+        return birim or "cm"
+
+    def _doseme_teyit_sifirla(self, *_):
+        self._doseme_alan_teyitli = False
+
+    def _doseme_sec(self):
+        """Köşe tıklama döngüsünü açar; TAMAMLANDI'da çalışma kopyası tabloya geçer."""
+        if not self.acad_connector or not getattr(self.acad_connector, "bagli", False):
+            QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+            return
+        h_cm = self.doseme_varsayilan_h_spin.value()
+        if h_cm <= 0:
+            QMessageBox.warning(self, "Kalınlık", "Önce varsayılan kalınlığı (cm) girin.")
+            return
+        olcek_adi = self.doseme_olcek_combo.currentText()
+        panel = DosemeDonguPaneli(
+            self.acad_connector, self._cizim_birimi_coz(self.doseme_birim_combo), olcek_adi,
+            self._PERDE_OLCEKLER[olcek_adi], h_cm, self._doseme_alan_teyitli, self.doseme_kayitlari, self,
+        )
+        QTimer.singleShot(0, panel._dongu)
+        sonuc = panel.exec()
+        self._doseme_alan_teyitli = panel.alan_teyitli
+        if sonuc != QDialog.DialogCode.Accepted:
+            return
+        self.doseme_kayitlari = panel.sonuclar()
+        self._doseme_tablo_yenile()
+
+    # ── Rev-164: Saçak ──
+    def _sacak_kalinlik_elle_degisti(self, *_):
+        if not getattr(self, "_sacak_kalinlik_programatik", False):
+            self._sacak_kalinlik_elle = True
+
+    def _sacak_kalinlik_varsayilan_guncelle(self):
+        """Kullanıcı elle değiştirmediyse saçak kalınlığı = katın döşeme kalınlığı (hakim)."""
+        spin = getattr(self, "sacak_kalinlik_spin", None)
+        if spin is None or self._sacak_kalinlik_elle:
+            return
+        t = hakim_doseme_kalinligi_cm(self.doseme_kayitlari) if hakim_doseme_kalinligi_cm else None
+        self._sacak_kalinlik_programatik = True
+        try:
+            spin.setValue(t if t is not None else self.doseme_varsayilan_h_spin.value())
+        finally:
+            self._sacak_kalinlik_programatik = False
+
+    def _sacak_sec(self):
+        """Saçak modunda DosemeDonguPaneli — satırlar döşeme listesine "tip": "Saçak" ile eklenir;
+        mükerrer / geri al / iptal döşemedeki gibi."""
+        if not self.acad_connector or not getattr(self.acad_connector, "bagli", False):
+            QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+            return
+        t = self.sacak_kalinlik_spin.value()
+        if t <= 0:
+            QMessageBox.warning(self, "Kalınlık", "Önce saçak kalınlığını (cm) girin.")
+            return
+        olcek_adi = self.doseme_olcek_combo.currentText()
+        panel = DosemeDonguPaneli(
+            self.acad_connector, self._cizim_birimi_coz(self.doseme_birim_combo), olcek_adi,
+            self._PERDE_OLCEKLER[olcek_adi], t, self._doseme_alan_teyitli, self.doseme_kayitlari, self,
+            mod="sacak", sacak_kalinlik_cm=t,
+        )
+        QTimer.singleShot(0, panel._dongu)
+        sonuc = panel.exec()
+        self._doseme_alan_teyitli = panel.alan_teyitli
+        if sonuc != QDialog.DialogCode.Accepted:
+            return
+        self.doseme_kayitlari = panel.sonuclar()
+        self._doseme_tablo_yenile()
+
+    def _doseme_bosluk_ekle(self):
+        """Seçili (AutoCAD'den tıklanmış) döşemeye sonradan boşluk ekler (Rev-159).
+        Aynı DosemeDonguPaneli hedef modunda açılır — kontroller, kırmızı çizim,
+        geri al / iptal AutoCAD'deki B yoluyla birebir aynı."""
+        if not self.acad_connector or not getattr(self.acad_connector, "bagli", False):
+            QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+            return
+        satirlar = sorted({i.row() for i in self.doseme_table.selectedIndexes()})
+        row = satirlar[0] if satirlar else self.doseme_table.currentRow()
+        kayitlar = self.doseme_kayitlari
+        if not (0 <= row < len(kayitlar)):
+            QMessageBox.warning(self, "Boşluk Ekle", "Önce tabloda boşluk eklenecek döşemeyi seçin.")
+            return
+        if sacak_mi(kayitlar[row]):
+            QMessageBox.warning(self, "Boşluk Ekle", f"{kayitlar[row]['ad']} bir saçak — saçağa boşluk eklenmez.")
+            return
+        if not kayitlar[row].get("koseler"):
+            QMessageBox.warning(
+                self, "Boşluk Ekle",
+                f"{kayitlar[row]['ad']} elle girilmiş — çizimde poligonu yok, boşluğun içinde olup olmadığı "
+                "denetlenemez.\n\nElle satırda boşluğu 'Döşeme Ekle (elle)' formundaki 'Boşluk Alanı' ve "
+                "'Boşluk Çevresi' alanlarıyla girin ya da döşemeyi AutoCAD'den tıklayın.")
+            return
+        olcek_adi = self.doseme_olcek_combo.currentText()
+        panel = DosemeDonguPaneli(
+            self.acad_connector, self._cizim_birimi_coz(self.doseme_birim_combo), olcek_adi,
+            self._PERDE_OLCEKLER[olcek_adi], self.doseme_varsayilan_h_spin.value(), True, kayitlar, self,
+            hedef_idx=row,
+        )
+        QTimer.singleShot(0, panel._dongu)
+        if panel.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.doseme_kayitlari = panel.sonuclar()
+        self._doseme_tablo_yenile()
+
+    def _doseme_poligon_sil(self, s: Dict):
+        """Satırın AutoCAD poligonunu siler (bağlı değilse sessizce geçer)."""
+        handleler = ([s.get("handle"), s.get("ic_handle")]
+                     + [b.get("handle") for b in s.get("bosluklar") or []])
+        if any(handleler) and self.acad_connector and getattr(self.acad_connector, "bagli", False):
+            try:
+                for h in handleler:
+                    if h:
+                        self.acad_connector.obje_sil(h)
+            except Exception as e:
+                logger.error(f"[DOSEME] poligon silinemedi: {e}", exc_info=True)
+
+    def _doseme_esas_notu_guncelle(self):
+        """Perdede "Net" beton esası seçilmiş kat varsa kesişim betonu notu."""
+        if not hasattr(self, "doseme_esas_notu_label"):
+            return
+        net_katlar = [k for k, a in getattr(self, "kat_yukseklik_ayarlari", {}).items()
+                      if getattr(a, "beton_esasi", "") == "net"]
+        self.doseme_esas_notu_label.setText(
+            f"ℹ Perde betonu şu katlarda NET yükseklikle hesaplandı: {', '.join(net_katlar)} — "
+            "döşeme kalınlığındaki perde kesişim betonu hiçbir araçta sayılmıyor olabilir."
+            if net_katlar else "")
+
+    def _doseme_yeni_ad(self) -> str:
+        adlar = {s["ad"] for s in self.doseme_kayitlari}
+        n = 1
+        while f"D{n}" in adlar:
+            n += 1
+        return f"D{n}"
+
+    def _doseme_elle_ekle(self):
+        """Formdaki değerlerle döşeme satırı ekler; geçersizse reddeder."""
+        h = doseme_hesapla(self.doseme_brut_spin.value(), self.doseme_h_spin.value(),
+                           self.doseme_bosluk_spin.value(), self.doseme_bosluk_cevre_spin.value(),
+                           self.doseme_serbest_spin.value())
+        if h["hata"]:
+            self.doseme_uyari_label.setText(f"⚠ Eklenmedi: {h['hata']}")
+            QMessageBox.warning(self, "Döşeme Eklenmedi", h["hata"])
+            return
+        ad = self.doseme_ad_edit.text().strip() or self._doseme_yeni_ad()
+        self.doseme_kayitlari.append({
+            "ad": ad,
+            "brut_alan_m2": h["brut_alan_m2"],
+            "bosluk_alan_m2": h["bosluk_alan_m2"],
+            "bosluk_cevre_m": h["bosluk_cevre_m"],
+            "serbest_kenar_m": h["serbest_kenar_m"],
+            "kalinlik_cm": h["kalinlik_cm"],
+            "kaynak": "Elle",
+            "handle": "",
+        })
+        self.doseme_uyari_label.setText(f"⚠ {ad}: {h['uyari']}" if h["uyari"] else "")
+        self.doseme_ad_edit.clear()
+        for spin in (self.doseme_brut_spin, self.doseme_bosluk_spin,
+                     self.doseme_bosluk_cevre_spin, self.doseme_serbest_spin):
+            spin.setValue(0.0)
+        self.doseme_h_spin.setValue(self.doseme_varsayilan_h_spin.value())
+        self._doseme_tablo_yenile()
+
+    @staticmethod
+    def _doseme_satir_hesap(s: Dict) -> Dict:
+        return doseme_hesapla(s["brut_alan_m2"], s["kalinlik_cm"], s["bosluk_alan_m2"],
+                              s["bosluk_cevre_m"], s["serbest_kenar_m"])
+
+    def _doseme_tablo_yenile(self):
+        tablo = self.doseme_table
+        tablo.blockSignals(True)
+        net = beton = kalip = 0.0
+        sc = {"adet": 0, "alan": 0.0, "beton": 0.0, "kalip": 0.0}
+        try:
+            tablo.setRowCount(0)
+            for i, s in enumerate(self.doseme_kayitlari):
+                h = self._doseme_satir_hesap(s)
+                sacak = sacak_mi(s)
+                if sacak:
+                    sc["adet"] += 1
+                    sc["alan"] += h["net_alan_m2"]
+                    sc["beton"] += h["beton_m3"]
+                    sc["kalip"] += h["toplam_kalip_m2"]
+                else:
+                    net += h["net_alan_m2"]
+                    beton += h["beton_m3"]
+                    kalip += h["toplam_kalip_m2"]
+                tablo.insertRow(i)
+                tip = f"Saçak ({s.get('sacak_tipi', '')})" if sacak else "Döşeme"
+                degerler = [str(i + 1), s["ad"], f"{h['brut_alan_m2']:.2f}", f"{h['bosluk_alan_m2']:.2f}",
+                            f"{h['net_alan_m2']:.2f}", f"{s['kalinlik_cm']:g}", f"{tek_hane(h['beton_m3'])}",
+                            f"{tek_hane(h['alt_kalip_m2'])}", f"{tek_hane(h['kenar_kalip_m2'])}",
+                            f"{tek_hane(h['toplam_kalip_m2'])}", s["kaynak"], s.get("handle", ""), tip]
+                ipucu = ((f"Saçak ({s.get('sacak_tipi', '')}): kalıba giren kenar {s['serbest_kenar_m']:g} m "
+                          f"(kiriş tarafı {s.get('kiris_m', 0):g} m hariç)") if sacak else
+                         f"Boşluk çevresi {s['bosluk_cevre_m']:g} m, serbest kenar {s['serbest_kenar_m']:g} m") \
+                    + (f"\n⚠ {h['uyari']}" if h["uyari"] else "")
+                for col, deger in enumerate(degerler):
+                    item = QTableWidgetItem(deger)
+                    if col != self.DOSEME_KALINLIK_KOL:
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setToolTip(ipucu)
+                    if sacak:
+                        item.setBackground(QColor("#3d3214"))
+                    if h["uyari"]:
+                        item.setForeground(QColor("#f5b041"))
+                    tablo.setItem(i, col, item)
+        finally:
+            tablo.blockSignals(False)
+        self.doseme_toplam_label.setText(
+            f"{self.aktif_kat_adi or 'Kat seçilmedi'} — DÖŞEME: {len(self.doseme_kayitlari) - sc['adet']} adet | "
+            f"Net Alan: {net:,.2f} m² | Beton: {tek_hane(beton, True)} m³ | Toplam Kalıp: {tek_hane(kalip, True)} m²"
+            + (f"\nSAÇAK: {sc['adet']} adet | Alan: {sc['alan']:,.2f} m² | Beton: {tek_hane(sc['beton'], True)} m³ | "
+               f"Toplam Kalıp: {tek_hane(sc['kalip'], True)} m²" if sc["adet"] else ""))
+        self._sacak_kalinlik_varsayilan_guncelle()
+        # Rev-163: perde kalıbındaki otomatik döşeme kalınlığı bu katın döşemelerinden gelir
+        self._perde_doseme_otomatik_yenile()
+
+    def _doseme_hucre_degisti(self, item):
+        """Satır bazında kalınlık düzeltme — geçersizse eski değere döner."""
+        if item.column() != self.DOSEME_KALINLIK_KOL:
+            return
+        row = item.row()
+        if not (0 <= row < len(self.doseme_kayitlari)):
+            return
+        s = self.doseme_kayitlari[row]
+        try:
+            yeni = float(item.text().replace(",", ".").replace("cm", "").strip())
+        except ValueError:
+            yeni = None
+        h = doseme_hesapla(s["brut_alan_m2"], yeni, s["bosluk_alan_m2"],
+                           s["bosluk_cevre_m"], s["serbest_kenar_m"]) if yeni is not None else None
+        if h is None or h["hata"]:
+            self.doseme_uyari_label.setText(
+                f"⚠ {s['ad']}: geçersiz kalınlık '{item.text()}' — eski değer ({s['kalinlik_cm']:g} cm) korundu.")
+        else:
+            s["kalinlik_cm"] = yeni
+            self.doseme_uyari_label.setText(f"⚠ {s['ad']}: {h['uyari']}" if h["uyari"] else "")
+        self._doseme_tablo_yenile()
+
+    def _doseme_sil(self):
+        satirlar = sorted({i.row() for i in self.doseme_table.selectedIndexes()}, reverse=True)
+        if not satirlar:
+            QMessageBox.information(self, "Bilgi", "Silmek için tablodan döşeme seçin.")
+            return
+        for row in satirlar:
+            if 0 <= row < len(self.doseme_kayitlari):
+                self._doseme_poligon_sil(self.doseme_kayitlari[row])
+                del self.doseme_kayitlari[row]
+        self._doseme_tablo_yenile()
+
+    def _doseme_temizle(self):
+        if not self.doseme_kayitlari:
+            return
+        cevap = QMessageBox.question(
+            self, "Temizle", f"{len(self.doseme_kayitlari)} döşeme silinecek. Emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if cevap == QMessageBox.StandardButton.Yes:
+            for s in self.doseme_kayitlari:
+                self._doseme_poligon_sil(s)
+            self.doseme_kayitlari.clear()
+            self._doseme_tablo_yenile()
+
+    # ── Rev-150: Kiriş (normal) Beton + Kalıp (Aşama 1/2 — elle giriş) ──
+    KIRIS_KOLONLAR = ["No", "Kiriş Adı", "b (cm)", "h (cm)", "L1 (m)", "L2 (m)", "Tip", "t (cm)",
+                      "Beton (m³)", "Kalıp (m²)", "Kaynak", "Handle'lar"]
+    KIRIS_TIP_KOL = 6
+    KIRIS_T_KOL = 7
+
+    def _kiris_sekmesi_olustur(self) -> QWidget:
+        """Kiriş sekmesini kurar (Rev-150 Aşama 1).
+
+        Neyi çözüyoruz? Döşeme altı düz kirişin beton (b×h×L_net, h TAM) ve
+        kalıp (alt + yanlar; döşeme tarafında h−t) metrajı. İç kiriş iki
+        tarafı döşemeli, kenar kiriş bir tarafı döşemesiz. Aşama 2 = AutoCAD'den
+        yazı + kenar çizgileri (temel kirişi toplu modu gibi).
+        Nasıl test ederiz? scratchpad/test_kiris_hesap.py (programsız),
+        scratchpad/test_kiris_ui.py (headless form + tablo).
+        """
+        tab = QWidget()
+        dis = QVBoxLayout(tab)
+        dis.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        icerik = QWidget()
+        lay = QVBoxLayout(icerik)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(8)
+
+        bilgi = QLabel(
+            "Döşeme altı düz kiriş metrajı — h TAM kiriş yüksekliğidir (döşeme DÜŞÜLMEZ; döşeme alanı "
+            "kiriş iç yüzlerinden ölçüldüğü için kesişim betonu yalnız kirişte sayılır). L_net kolon/perde "
+            "yüzleri arasıdır (düğüm betonu kolonda sayılır). Kalıp: alt yüz + döşeme tarafındaki yan "
+            "(h − t) + döşemesiz yan (h). İç kiriş: iki tarafı döşemeli. Kenar kiriş: cephe / boşluk kenarı."
+        )
+        bilgi.setWordWrap(True)
+        bilgi.setStyleSheet("color:#d4a017; font-size:9pt;")
+        lay.addWidget(bilgi)
+
+        grup_stil = (
+            "QGroupBox { color:#16a085; font-weight:bold; border:1px solid #555;"
+            " border-radius:4px; margin-top:10px; padding-top:8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left:8px; padding:0 4px; }"
+            "QLabel { color:white; font-weight:normal; }"
+        )
+        edit_stil = "QLineEdit { background:#2a2a3a; color:white; border:1px solid #666; padding:4px; }"
+        combo_stil = ("QComboBox { background:#2a2a3a; color:white; border:1px solid #666;"
+                      " padding:4px; } QComboBox QAbstractItemView { background:#2a2a3a;"
+                      " color:white; }")
+
+        ayar_grup = QGroupBox("Ayarlar")
+        ayar_grup.setStyleSheet(grup_stil)
+        ag = QGridLayout(ayar_grup)
+        self.kiris_kat_edit = QLineEdit(self.aktif_kat_adi or "")
+        self.kiris_kat_edit.setReadOnly(True)
+        self.kiris_kat_edit.setPlaceholderText("Kat seçilmedi")
+        self.kiris_kat_edit.setToolTip(
+            "Aktif kat — Demir Metrajı sekmesindeki kat listesinden seçilir. Kirişler bu kata "
+            "kaydedilir; tablo sadece bu katın kirişlerini gösterir.")
+        self.kiris_kat_edit.setStyleSheet(edit_stil)
+        self.kiris_kat_edit.setMinimumWidth(160)
+        self.kiris_varsayilan_t_spin = self._doseme_spin(
+            100.0, 1, " cm", "Varsayılan döşeme kalınlığı t (CM). Her yeni satıra gelir, tabloda "
+            "satır bazında değiştirilebilir. 0 = döşemesiz kiriş (yan yüzler tam h).")
+        self.kiris_varsayilan_t_spin.setValue(12.0)
+        ag.addWidget(QLabel("Aktif Kat:"), 0, 0)
+        ag.addWidget(self.kiris_kat_edit, 0, 1)
+        ag.addWidget(QLabel("Varsayılan Döşeme Kalınlığı t:"), 1, 0)
+        ag.addWidget(self.kiris_varsayilan_t_spin, 1, 1)
+        self.kiris_birim_combo = QComboBox()
+        self.kiris_birim_combo.addItems(["Otomatik", "cm", "mm", "m"])
+        self.kiris_birim_combo.setToolTip(
+            "Çizim birimi. Otomatik = AutoCAD INSUNITS, tanımsızsa cm. İlk kirişte uzunluk ayrıca teyit edilir.")
+        self.kiris_birim_combo.setStyleSheet(combo_stil)
+        self.kiris_olcek_combo = QComboBox()
+        self.kiris_olcek_combo.addItems(list(self._PERDE_OLCEKLER))
+        self.kiris_olcek_combo.setToolTip("Çizim ölçeği — çoğu çizim 1:1. İlk kirişte LIST ile karşılaştırın.")
+        self.kiris_olcek_combo.setStyleSheet(combo_stil)
+        for combo in (self.kiris_birim_combo, self.kiris_olcek_combo):
+            combo.currentTextChanged.connect(self._kiris_teyit_sifirla)
+        ag.addWidget(QLabel("Çizim Birimi:"), 2, 0)
+        ag.addWidget(self.kiris_birim_combo, 2, 1)
+        ag.addWidget(QLabel("Çizim Ölçeği:"), 3, 0)
+        ag.addWidget(self.kiris_olcek_combo, 3, 1)
+        butonlar = QHBoxLayout()
+        for metin, tip, renk, ipucu in (
+                (" İç Kiriş Seç", KIRIS_TIPLERI[0], "#e67e22", "İki tarafı döşemeli kirişler — turuncuya boyanır."),
+                (" Kenar Kiriş Seç", KIRIS_TIPLERI[1], "#2471a3",
+                 "Bir tarafında döşeme olmayan kirişler (cephe, boşluk kenarı) — maviye boyanır.")):
+            btn = QPushButton(metin)
+            btn.setToolTip("AutoCAD'e geçer: her kiriş için etiket yazısı + iki kenar çizgisi + ENTER. "
+                           "Bitirmek için boş ENTER. " + ipucu)
+            btn.setStyleSheet(f"background:{renk}; color:white; font-weight:bold; padding:6px 14px;"
+                              " border:none; border-radius:3px;")
+            btn.clicked.connect(lambda _=False, t=tip: self._kiris_sec(t))
+            butonlar.addWidget(btn)
+        ag.addLayout(butonlar, 4, 0, 1, 2)
+        ag.setColumnStretch(2, 1)
+        lay.addWidget(ayar_grup)
+        self._kiris_teyitli = False
+
+        ekle_grup = QGroupBox("Kiriş Ekle (elle)")
+        ekle_grup.setStyleSheet(grup_stil)
+        eg = QGridLayout(ekle_grup)
+        self.kiris_ad_edit = QLineEdit()
+        self.kiris_ad_edit.setPlaceholderText("örn. K101 — boş bırakılırsa K1, K2…")
+        self.kiris_ad_edit.setStyleSheet(edit_stil)
+        self.kiris_b_spin = self._doseme_spin(500.0, 1, " cm", "Kiriş genişliği b (CM).")
+        self.kiris_h_spin = self._doseme_spin(500.0, 1, " cm", "Kiriş TAM yüksekliği h (CM) — döşeme düşülmez.")
+        self.kiris_l_spin = self._doseme_spin(
+            1000.0, 2, " m", "Net uzunluk L_net (METRE) — kolon/perde yüzleri arası.")
+        self.kiris_tip_combo = QComboBox()
+        self.kiris_tip_combo.addItems(list(KIRIS_TIPLERI))
+        self.kiris_tip_combo.setToolTip(
+            "İç: iki tarafı döşemeli. Kenar: bir tarafında döşeme yok (cephe, boşluk kenarı).")
+        self.kiris_tip_combo.setStyleSheet(combo_stil)
+        self.kiris_t_spin = self._doseme_spin(100.0, 1, " cm", "Bu kirişe bitişik döşeme kalınlığı t (CM).")
+        self.kiris_t_spin.setValue(self.kiris_varsayilan_t_spin.value())
+        self.kiris_varsayilan_t_spin.valueChanged.connect(self.kiris_t_spin.setValue)
+        alanlar = [("Kiriş Adı:", self.kiris_ad_edit), ("Genişlik b:", self.kiris_b_spin),
+                   ("Yükseklik h:", self.kiris_h_spin), ("Net Uzunluk L_net:", self.kiris_l_spin),
+                   ("Tip:", self.kiris_tip_combo), ("Döşeme Kalınlığı t:", self.kiris_t_spin)]
+        for i, (etiket, w) in enumerate(alanlar):
+            eg.addWidget(QLabel(etiket), i, 0)
+            eg.addWidget(w, i, 1)
+        btn_ekle = QPushButton(" + Tabloya Ekle")
+        btn_ekle.setStyleSheet(
+            "background:#16a085; color:white; font-weight:bold; padding:6px 14px;"
+            " border:none; border-radius:3px;"
+        )
+        btn_ekle.clicked.connect(self._kiris_elle_ekle)
+        eg.addWidget(btn_ekle, len(alanlar), 1)
+        eg.setColumnStretch(2, 1)
+        lay.addWidget(ekle_grup)
+
+        self.kiris_uyari_label = QLabel()
+        self.kiris_uyari_label.setWordWrap(True)
+        self.kiris_uyari_label.setStyleSheet("color:#e67e22; font-weight:bold;")
+        lay.addWidget(self.kiris_uyari_label)
+
+        self.kiris_table = QTableWidget()
+        self.kiris_table.setColumnCount(len(self.KIRIS_KOLONLAR))
+        self.kiris_table.setHorizontalHeaderLabels(self.KIRIS_KOLONLAR)
+        self.kiris_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.kiris_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.kiris_table.setMinimumHeight(240)
+        self.kiris_table.setToolTip(
+            "Tip (İç / Kenar) ve t (cm) hücrelerine çift tıklayıp satır bazında değiştirebilirsiniz.")
+        self.kiris_table.setStyleSheet(
+            "QTableWidget { background:#1e1e2e; color:#e0e0e0; gridline-color:#444;"
+            " border:1px solid #555; }"
+            "QHeaderView::section { background:#2d2d3d; color:#16a085; font-weight:bold;"
+            " padding:5px; border:1px solid #444; }"
+            "QTableWidget::item:selected { background:#3a3a5a; }"
+        )
+        self.kiris_table.itemChanged.connect(self._kiris_hucre_degisti)
+        lay.addWidget(self.kiris_table)
+
+        alt = QHBoxLayout()
+        btn_sil = QPushButton("Seçili Sil")
+        btn_sil.setStyleSheet("background:#c0392b; color:white; font-weight:bold; padding:5px 12px;"
+                              " border:none; border-radius:3px;")
+        btn_sil.clicked.connect(self._kiris_sil)
+        alt.addWidget(btn_sil)
+        btn_temizle = QPushButton("Temizle")
+        btn_temizle.setStyleSheet("background:#7f8c8d; color:white; font-weight:bold; padding:5px 12px;"
+                                  " border:none; border-radius:3px;")
+        btn_temizle.clicked.connect(self._kiris_temizle)
+        alt.addWidget(btn_temizle)
+        alt.addStretch()
+        lay.addLayout(alt)
+
+        self.kiris_toplam_label = QLabel()
+        self.kiris_toplam_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; font-size:10pt; background:#2a2a3a;"
+            " border:1px solid #16a085; border-radius:4px; padding:6px;"
+        )
+        lay.addWidget(self.kiris_toplam_label)
+        lay.addStretch()
+
+        self._kiris_tablo_yenile()
+        scroll.setWidget(icerik)
+        dis.addWidget(scroll)
+        return tab
+
+    def _kiris_teyit_sifirla(self, *_):
+        self._kiris_teyitli = False
+
+    def _kiris_sec(self, mod: str):
+        """Mod bazlı AutoCAD döngüsünü açar; TAMAMLANDI'da çalışma kopyası tabloya geçer."""
+        if not self.acad_connector or not getattr(self.acad_connector, "bagli", False):
+            QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+            return
+        olcek_adi = self.kiris_olcek_combo.currentText()
+        panel = KirisDonguPaneli(
+            self.acad_connector, self._cizim_birimi_coz(self.kiris_birim_combo), olcek_adi,
+            self._PERDE_OLCEKLER[olcek_adi], self.kiris_varsayilan_t_spin.value(), mod,
+            self._kiris_teyitli, self.kiris_kayitlari, self,
+        )
+        QTimer.singleShot(0, panel._dongu)
+        sonuc = panel.exec()
+        self._kiris_teyitli = panel.teyitli
+        if sonuc != QDialog.DialogCode.Accepted:
+            return
+        self.kiris_kayitlari = panel.sonuclar()
+        self._kiris_tablo_yenile()
+
+    def _kiris_renk_islemi(self, s: Dict, geri_al: bool = False):
+        """Satırın çizim nesnelerini tipine göre boyar veya eski rengine döndürür
+        (bağlı değilse / elle satırsa sessizce geçer)."""
+        handleler = s.get("handleler") or []
+        if not handleler or not self.acad_connector or not getattr(self.acad_connector, "bagli", False):
+            return
+        for hnd in handleler:
+            try:
+                if geri_al:
+                    self.acad_connector.obje_isaret_geri_al(hnd)
+                else:
+                    self.acad_connector.obje_renklendir_hizli(hnd, KIRIS_RENKLERI[s["tip"]])
+            except Exception as e:
+                logger.error(f"[KIRIS] renk işlemi hata ({hnd}): {e}", exc_info=True)
+
+    def _kiris_yeni_ad(self) -> str:
+        adlar = {s["ad"] for s in self.kiris_kayitlari}
+        n = 1
+        while f"K{n}" in adlar:
+            n += 1
+        return f"K{n}"
+
+    @staticmethod
+    def _kiris_satir_hesap(s: Dict) -> Dict:
+        # Rev-158: d1/d2 = bölünmüş kenarın dolu uzunluğu (yan kalıp); elle/eski kayıtta yok -> kapsam
+        return kiris_hesapla(s["b_cm"], s["h_cm"], s["l1_m"], s["tip"], s["t_cm"], s["l2_m"],
+                             s.get("d1_m"), s.get("d2_m"))
+
+    @staticmethod
+    def _kiris_not_metni(ad: str, h: Dict) -> str:
+        notlar = [n for n in (h["uyari"], h["bilgi"]) if n]
+        return f"⚠ {ad}: " + " | ".join(notlar) if notlar else ""
+
+    def _kiris_elle_ekle(self):
+        """Formdaki değerlerle kiriş satırı ekler; geçersizse reddeder."""
+        tip = self.kiris_tip_combo.currentText()
+        h = kiris_hesapla(self.kiris_b_spin.value(), self.kiris_h_spin.value(),
+                          self.kiris_l_spin.value(), tip, self.kiris_t_spin.value())
+        if h["hata"]:
+            self.kiris_uyari_label.setText(f"⚠ Eklenmedi: {h['hata']}")
+            QMessageBox.warning(self, "Kiriş Eklenmedi", h["hata"])
+            return
+        ad = self.kiris_ad_edit.text().strip() or self._kiris_yeni_ad()
+        self.kiris_kayitlari.append({
+            "ad": ad, "b_cm": h["b_cm"], "h_cm": h["h_cm"], "l1_m": h["l1_m"], "l2_m": h["l2_m"],
+            "tip": tip, "t_cm": h["t_cm"], "kaynak": "Elle", "handleler": [],
+        })
+        self.kiris_uyari_label.setText(self._kiris_not_metni(ad, h))
+        self.kiris_ad_edit.clear()
+        self.kiris_l_spin.setValue(0.0)
+        self.kiris_t_spin.setValue(self.kiris_varsayilan_t_spin.value())
+        self._kiris_tablo_yenile()
+
+    def _kiris_tablo_yenile(self):
+        tablo = self.kiris_table
+        tablo.blockSignals(True)
+        l_top = beton = kalip = 0.0
+        try:
+            tablo.setRowCount(0)
+            for i, s in enumerate(self.kiris_kayitlari):
+                h = self._kiris_satir_hesap(s)
+                l_top += h["l_net_m"]
+                beton += h["beton_m3"]
+                kalip += h["toplam_kalip_m2"]
+                tablo.insertRow(i)
+                degerler = [str(i + 1), s["ad"], f"{s['b_cm']:g}", f"{s['h_cm']:g}",
+                            f"{h['l1_m']:.2f}", f"{h['l2_m']:.2f}", s["tip"], f"{s['t_cm']:g}",
+                            f"{tek_hane(h['beton_m3'])}", f"{tek_hane(h['toplam_kalip_m2'])}", s["kaynak"],
+                            ", ".join(s.get("handleler") or [])]
+                notlar = self._kiris_not_metni(s["ad"], h)
+                ipucu = (f"Alt kalıp {tek_hane(h['alt_kalip_m2'])} m² + yan kalıp {tek_hane(h['yan_kalip_m2'])} m²"
+                         + (f"\n{notlar}" if notlar else ""))
+                for col, deger in enumerate(degerler):
+                    item = QTableWidgetItem(deger)
+                    if col not in (self.KIRIS_TIP_KOL, self.KIRIS_T_KOL):
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setToolTip(ipucu)
+                    if h["uyari"] or h["bilgi"]:
+                        item.setForeground(QColor("#f5b041"))
+                    tablo.setItem(i, col, item)
+        finally:
+            tablo.blockSignals(False)
+        self.kiris_toplam_label.setText(
+            f"{self.aktif_kat_adi or 'Kat seçilmedi'} — TOPLAM: {len(self.kiris_kayitlari)} kiriş | "
+            f"L_ort: {l_top:,.2f} m | "
+            f"Beton: {tek_hane(beton, True)} m³ | Kalıp: {tek_hane(kalip, True)} m²")
+
+    def _kiris_hucre_degisti(self, item):
+        """Satır bazında Tip / t düzeltme — geçersizse eski değer korunur."""
+        col, row = item.column(), item.row()
+        if col not in (self.KIRIS_TIP_KOL, self.KIRIS_T_KOL) or not (0 <= row < len(self.kiris_kayitlari)):
+            return
+        s = self.kiris_kayitlari[row]
+        yeni = dict(s)
+        metin = item.text().strip()
+        if col == self.KIRIS_TIP_KOL:
+            ilk = metin[:1].lower()
+            yeni["tip"] = (KIRIS_TIPLERI[0] if ilk in ("i", "ı", "İ".lower())
+                           else KIRIS_TIPLERI[1] if ilk == "k" else metin)
+        else:
+            try:
+                yeni["t_cm"] = float(metin.replace(",", ".").replace("cm", "").strip())
+            except ValueError:
+                yeni["t_cm"] = None
+        h = self._kiris_satir_hesap(yeni) if yeni["t_cm"] is not None else {"hata": "sayı değil"}
+        if h["hata"]:
+            self.kiris_uyari_label.setText(
+                f"⚠ {s['ad']}: geçersiz değer '{metin}' ({h['hata']}) — eski değer korundu.")
+        else:
+            tip_degisti = yeni["tip"] != s["tip"]
+            s.update(tip=yeni["tip"], t_cm=yeni["t_cm"])
+            self.kiris_uyari_label.setText(self._kiris_not_metni(s["ad"], h))
+            if tip_degisti:
+                self._kiris_renk_islemi(s)
+        self._kiris_tablo_yenile()
+
+    def _kiris_sil(self):
+        satirlar = sorted({i.row() for i in self.kiris_table.selectedIndexes()}, reverse=True)
+        if not satirlar:
+            QMessageBox.information(self, "Bilgi", "Silmek için tablodan kiriş seçin.")
+            return
+        for row in satirlar:
+            if 0 <= row < len(self.kiris_kayitlari):
+                self._kiris_renk_islemi(self.kiris_kayitlari.pop(row), geri_al=True)
+        self._kiris_tablo_yenile()
+
+    def _kiris_temizle(self):
+        if not self.kiris_kayitlari:
+            return
+        cevap = QMessageBox.question(
+            self, "Temizle", f"{len(self.kiris_kayitlari)} kiriş silinecek. Emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if cevap == QMessageBox.StandardButton.Yes:
+            for s in self.kiris_kayitlari:
+                self._kiris_renk_islemi(s, geri_al=True)
+            self.kiris_kayitlari.clear()
+            self._kiris_tablo_yenile()
+
+    # ── Rev-152: Merdiven (plak merdiven kolu + ara sahanlık) Beton + Kalıp ──
+    MERDIVEN_KOLONLAR = ["No", "Tip", "Ad", "n", "h (cm)", "a (cm)", "L (m)", "H (m)", "s (m)", "B / En (m)",
+                         "Boy (m)", "t (cm)", "Yan Taraf", "Beton (m³)", "Alt Yüz (m²)", "Rıht (m²)",
+                         "Yan (m²)", "Kenar (m²)", "Toplam Kalıp (m²)"]
+    MERDIVEN_T_KOL = 11
+    MERDIVEN_YAN_KOL = 12
+    MERDIVEN_AYAR_ANAHTARI = "merdiven_kalip_esasi"
+
+    def _merdiven_sekmesi_olustur(self) -> QWidget:
+        """Merdiven sekmesi (Rev-152, tek aşama — elle giriş).
+
+        Neyi çözüyoruz? Plak merdiven kolu ve ARA sahanlığın beton + kalıp
+        metrajı; girdiler merdiven detayında yazılı. Kalıp kalemleri ayrı
+        sütunlarda; rıht/yan kalıbının toplama katılması idareye göre seçilir.
+        Nasıl test ederiz? scratchpad/test_merdiven_hesap.py (programsız, brief M1-M7),
+        scratchpad/test_merdiven_ui.py (headless form + tablo + kat özeti).
+        """
+        tab = QWidget()
+        dis = QVBoxLayout(tab)
+        dis.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        icerik = QWidget()
+        lay = QVBoxLayout(icerik)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(8)
+
+        bilgi = QLabel(
+            "Plak (eğik plaklı) merdiven: kol + ARA sahanlık. Girdiler merdiven detayından okunur. "
+            "Kol profili = eğik plak (s × t, t plağa DİK) + basamak üçgenleri. "
+            "Konsol basamaklı / zigzag merdiven ve merdiven demiri bu araçta yok."
+        )
+        bilgi.setWordWrap(True)
+        bilgi.setStyleSheet("color:#d4a017; font-size:9pt;")
+        lay.addWidget(bilgi)
+        not_lbl = QLabel("⚠ Kat sahanlığını DÖŞEME aracında alın; burada yalnızca ARA sahanlık girin.")
+        not_lbl.setWordWrap(True)
+        not_lbl.setStyleSheet("color:#e74c3c; font-weight:bold; font-size:10pt; padding:4px;"
+                              " border:1px solid #e74c3c; border-radius:4px;")
+        lay.addWidget(not_lbl)
+
+        grup_stil = (
+            "QGroupBox { color:#16a085; font-weight:bold; border:1px solid #555;"
+            " border-radius:4px; margin-top:10px; padding-top:8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left:8px; padding:0 4px; }"
+            "QLabel { color:white; font-weight:normal; } QCheckBox { color:white; }"
+        )
+        edit_stil = "QLineEdit { background:#2a2a3a; color:white; border:1px solid #666; padding:4px; }"
+        combo_stil = ("QComboBox { background:#2a2a3a; color:white; border:1px solid #666;"
+                      " padding:4px; } QComboBox QAbstractItemView { background:#2a2a3a;"
+                      " color:white; }")
+
+        # ── Ayarlar ──
+        ayar_grup = QGroupBox("Ayarlar")
+        ayar_grup.setStyleSheet(grup_stil)
+        ag = QGridLayout(ayar_grup)
+        self.merdiven_kat_edit = QLineEdit(self.aktif_kat_adi or "")
+        self.merdiven_kat_edit.setReadOnly(True)
+        self.merdiven_kat_edit.setPlaceholderText("Kat seçilmedi")
+        self.merdiven_kat_edit.setToolTip(
+            "Aktif kat — Demir Metrajı sekmesindeki kat listesinden seçilir. Merdivenler bu kata kaydedilir.")
+        self.merdiven_kat_edit.setStyleSheet(edit_stil)
+        self.merdiven_kat_edit.setMinimumWidth(160)
+        ag.addWidget(QLabel("Aktif Kat:"), 0, 0)
+        ag.addWidget(self.merdiven_kat_edit, 0, 1)
+        kayitli = autocad_ayari_oku(self.MERDIVEN_AYAR_ANAHTARI, {}) or {}
+        self.merdiven_riht_check = QCheckBox("Rıht kalıbını toplama kat")
+        self.merdiven_riht_check.setChecked(bool(kayitli.get("riht", True)))
+        self.merdiven_riht_check.setToolTip(
+            "Bazı idareler merdiven kalıbında yalnız alt yüzü sayar — işareti kaldırırsanız rıht kalıbı "
+            "tabloda görünür ama toplama katılmaz. Seçim kalıcı olarak saklanır.")
+        self.merdiven_yan_check = QCheckBox("Yan kalıbı toplama kat")
+        self.merdiven_yan_check.setChecked(bool(kayitli.get("yan", True)))
+        self.merdiven_yan_check.setToolTip(
+            "İşareti kaldırırsanız kolun yan (profil) kalıbı toplama katılmaz. Seçim kalıcı olarak saklanır.")
+        for chk in (self.merdiven_riht_check, self.merdiven_yan_check):
+            chk.toggled.connect(self._merdiven_kalip_secimi_degisti)
+        ag.addWidget(self.merdiven_riht_check, 1, 0, 1, 2)
+        ag.addWidget(self.merdiven_yan_check, 2, 0, 1, 2)
+        ag.setColumnStretch(2, 1)
+        lay.addWidget(ayar_grup)
+
+        # ── Kol ekle ──
+        kol_grup = QGroupBox("Merdiven Kolu Ekle")
+        kol_grup.setStyleSheet(grup_stil)
+        kg = QGridLayout(kol_grup)
+        self.merdiven_kol_ad_edit = QLineEdit()
+        self.merdiven_kol_ad_edit.setPlaceholderText("örn. Kol-1 — boş bırakılırsa otomatik")
+        self.merdiven_kol_ad_edit.setStyleSheet(edit_stil)
+        self.merdiven_n_spin = QSpinBox()
+        self.merdiven_n_spin.setRange(0, 200)
+        self.merdiven_n_spin.setSuffix(" adet")
+        self.merdiven_n_spin.setToolTip("Basamak (rıht) sayısı — detaydaki rıht adedi.")
+        self.merdiven_n_spin.setStyleSheet(self._RADYE_SPIN_STIL)
+        self.merdiven_n_spin.setMinimumWidth(160)
+        self.merdiven_h_spin = self._doseme_spin(500.0, 1, " cm", "Rıht yüksekliği h (CM) — olağan 12–22 cm.")
+        self.merdiven_a_spin = self._doseme_spin(500.0, 1, " cm", "Basamak genişliği a (CM) — olağan 22–35 cm.")
+        self.merdiven_b_spin = self._doseme_spin(20.0, 2, " m", "Kol genişliği B (METRE) — planda kolun eni.")
+        self.merdiven_t_spin = self._doseme_spin(
+            100.0, 1, " cm", "Plak kalınlığı t (CM) — plağa DİK ölçü (detayda eğik plağın kalınlığı).")
+        self.merdiven_t_spin.setValue(15.0)
+        self.merdiven_yan_combo = QComboBox()
+        self.merdiven_yan_combo.addItems(["2", "1", "0"])
+        self.merdiven_yan_combo.setToolTip(
+            "Yan kalıp taraf sayısı: iki tarafı boşta 2, bir tarafı perdeye/duvara dayanıyorsa 1, "
+            "iki tarafı da dayanıyorsa 0.")
+        self.merdiven_yan_combo.setStyleSheet(combo_stil)
+        self.merdiven_lh_elle_check = QCheckBox("L ve H'yi elle düzelt")
+        self.merdiven_lh_elle_check.setToolTip(
+            "Detaydaki yatay izdüşüm / kot farkı n × a, n × h'den farklıysa (örn. son rıht sahanlığa "
+            "çıkıyorsa) işaretleyip L ve H'yi detaydan girin.")
+        self.merdiven_l_spin = self._doseme_spin(100.0, 2, " m", "Yatay izdüşüm L (METRE) — varsayılan n × a.")
+        self.merdiven_hkot_spin = self._doseme_spin(50.0, 2, " m", "Kot farkı H (METRE) — varsayılan n × h.")
+        alanlar = [("Kol Adı:", self.merdiven_kol_ad_edit), ("Basamak sayısı n:", self.merdiven_n_spin),
+                   ("Rıht h:", self.merdiven_h_spin), ("Basamak a:", self.merdiven_a_spin),
+                   ("Kol eni B:", self.merdiven_b_spin), ("Plak kalınlığı t:", self.merdiven_t_spin),
+                   ("Yan kalıp taraf sayısı:", self.merdiven_yan_combo),
+                   ("", self.merdiven_lh_elle_check),
+                   ("Yatay izdüşüm L:", self.merdiven_l_spin), ("Kot farkı H:", self.merdiven_hkot_spin)]
+        for i, (etiket, w) in enumerate(alanlar):
+            kg.addWidget(QLabel(etiket), i, 0)
+            kg.addWidget(w, i, 1)
+        self.merdiven_kol_onizleme_label = QLabel()
+        self.merdiven_kol_onizleme_label.setWordWrap(True)
+        self.merdiven_kol_onizleme_label.setStyleSheet("color:#5dade2; font-weight:bold;")
+        kg.addWidget(self.merdiven_kol_onizleme_label, len(alanlar), 0, 1, 3)
+        btn_kol = QPushButton(" + Kolu Tabloya Ekle")
+        btn_kol.setStyleSheet("background:#16a085; color:white; font-weight:bold; padding:6px 14px;"
+                              " border:none; border-radius:3px;")
+        btn_kol.clicked.connect(self._merdiven_kol_ekle)
+        kg.addWidget(btn_kol, len(alanlar) + 1, 1)
+        kg.setColumnStretch(2, 1)
+        lay.addWidget(kol_grup)
+        for spin in (self.merdiven_n_spin, self.merdiven_h_spin, self.merdiven_a_spin):
+            spin.valueChanged.connect(self._merdiven_lh_otomatik)
+        for spin in (self.merdiven_b_spin, self.merdiven_t_spin, self.merdiven_l_spin, self.merdiven_hkot_spin):
+            spin.valueChanged.connect(self._merdiven_kol_onizle)
+        self.merdiven_yan_combo.currentTextChanged.connect(self._merdiven_kol_onizle)
+        self.merdiven_lh_elle_check.toggled.connect(self._merdiven_lh_elle_degisti)
+
+        # ── Ara sahanlık ekle ──
+        sah_grup = QGroupBox("Ara Sahanlık Ekle")
+        sah_grup.setStyleSheet(grup_stil)
+        sg = QGridLayout(sah_grup)
+        self.merdiven_sah_ad_edit = QLineEdit()
+        self.merdiven_sah_ad_edit.setPlaceholderText("örn. Sahanlık-1 — boş bırakılırsa otomatik")
+        self.merdiven_sah_ad_edit.setStyleSheet(edit_stil)
+        self.merdiven_sah_en_spin = self._doseme_spin(50.0, 2, " m", "Sahanlık eni (METRE).")
+        self.merdiven_sah_boy_spin = self._doseme_spin(50.0, 2, " m", "Sahanlık boyu (METRE).")
+        self.merdiven_sah_t_spin = self._doseme_spin(100.0, 1, " cm", "Sahanlık plak kalınlığı (CM).")
+        self.merdiven_sah_t_spin.setValue(15.0)
+        self.merdiven_sah_serbest_spin = self._doseme_spin(
+            100.0, 2, " m", "Serbest kenar (METRE) — perdeye/kirişe dayanmayan, kenar kalıbı gereken uzunluk.")
+        s_alanlar = [("Sahanlık Adı:", self.merdiven_sah_ad_edit), ("En:", self.merdiven_sah_en_spin),
+                     ("Boy:", self.merdiven_sah_boy_spin), ("Kalınlık:", self.merdiven_sah_t_spin),
+                     ("Serbest kenar:", self.merdiven_sah_serbest_spin)]
+        for i, (etiket, w) in enumerate(s_alanlar):
+            sg.addWidget(QLabel(etiket), i, 0)
+            sg.addWidget(w, i, 1)
+        btn_sah = QPushButton(" + Sahanlığı Tabloya Ekle")
+        btn_sah.setStyleSheet("background:#16a085; color:white; font-weight:bold; padding:6px 14px;"
+                              " border:none; border-radius:3px;")
+        btn_sah.clicked.connect(self._merdiven_sahanlik_ekle)
+        sg.addWidget(btn_sah, len(s_alanlar), 1)
+        sg.setColumnStretch(2, 1)
+        lay.addWidget(sah_grup)
+
+        self.merdiven_uyari_label = QLabel()
+        self.merdiven_uyari_label.setWordWrap(True)
+        self.merdiven_uyari_label.setStyleSheet("color:#e67e22; font-weight:bold;")
+        lay.addWidget(self.merdiven_uyari_label)
+
+        self.merdiven_esas_label = QLabel()
+        self.merdiven_esas_label.setStyleSheet("color:#f39c12; font-weight:bold;")
+        lay.addWidget(self.merdiven_esas_label)
+
+        self.merdiven_table = QTableWidget()
+        self.merdiven_table.setColumnCount(len(self.MERDIVEN_KOLONLAR))
+        self.merdiven_table.setHorizontalHeaderLabels(self.MERDIVEN_KOLONLAR)
+        self.merdiven_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.merdiven_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.merdiven_table.setMinimumHeight(240)
+        self.merdiven_table.setToolTip(
+            "t (cm) ve Yan Taraf (kol) hücrelerine çift tıklayıp satır bazında değiştirebilirsiniz.")
+        self.merdiven_table.setStyleSheet(
+            "QTableWidget { background:#1e1e2e; color:#e0e0e0; gridline-color:#444; border:1px solid #555; }"
+            "QHeaderView::section { background:#2d2d3d; color:#16a085; font-weight:bold;"
+            " padding:5px; border:1px solid #444; }"
+            "QTableWidget::item:selected { background:#3a3a5a; }"
+        )
+        self.merdiven_table.itemChanged.connect(self._merdiven_hucre_degisti)
+        lay.addWidget(self.merdiven_table)
+
+        alt = QHBoxLayout()
+        btn_sil = QPushButton("Seçili Sil")
+        btn_sil.setStyleSheet("background:#c0392b; color:white; font-weight:bold; padding:5px 12px;"
+                              " border:none; border-radius:3px;")
+        btn_sil.clicked.connect(self._merdiven_sil)
+        alt.addWidget(btn_sil)
+        btn_temizle = QPushButton("Temizle")
+        btn_temizle.setToolTip("Aktif katın merdiven satırlarını siler (diğer katlara dokunmaz).")
+        btn_temizle.setStyleSheet("background:#7f8c8d; color:white; font-weight:bold; padding:5px 12px;"
+                                  " border:none; border-radius:3px;")
+        btn_temizle.clicked.connect(self._merdiven_temizle)
+        alt.addWidget(btn_temizle)
+        alt.addStretch()
+        lay.addLayout(alt)
+
+        self.merdiven_toplam_label = QLabel()
+        self.merdiven_toplam_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; font-size:10pt; background:#2a2a3a;"
+            " border:1px solid #16a085; border-radius:4px; padding:6px;")
+        lay.addWidget(self.merdiven_toplam_label)
+        lay.addStretch()
+
+        self._merdiven_lh_elle_degisti(False)
+        self._merdiven_tablo_yenile()
+        scroll.setWidget(icerik)
+        dis.addWidget(scroll)
+        return tab
+
+    # ── merdiven: form yardımcıları ──
+    def _merdiven_kalip_secimi(self):
+        """(rıht dahil, yan dahil) — sekme kurulmadıysa kayıtlı ayar."""
+        if hasattr(self, "merdiven_riht_check"):
+            return self.merdiven_riht_check.isChecked(), self.merdiven_yan_check.isChecked()
+        kayitli = autocad_ayari_oku(self.MERDIVEN_AYAR_ANAHTARI, {}) or {}
+        return bool(kayitli.get("riht", True)), bool(kayitli.get("yan", True))
+
+    def _merdiven_kalip_secimi_degisti(self, *_):
+        riht, yan = self._merdiven_kalip_secimi()
+        autocad_ayari_yaz(self.MERDIVEN_AYAR_ANAHTARI, {"riht": riht, "yan": yan})
+        self._merdiven_tablo_yenile()
+
+    def _merdiven_lh_elle_degisti(self, elle: bool):
+        self.merdiven_l_spin.setEnabled(elle)
+        self.merdiven_hkot_spin.setEnabled(elle)
+        self._merdiven_lh_otomatik()
+
+    def _merdiven_lh_otomatik(self, *_):
+        """Elle modu kapalıyken L = n×a, H = n×h."""
+        if not self.merdiven_lh_elle_check.isChecked():
+            n = self.merdiven_n_spin.value()
+            for spin, deger in ((self.merdiven_l_spin, n * self.merdiven_a_spin.value() / 100.0),
+                                (self.merdiven_hkot_spin, n * self.merdiven_h_spin.value() / 100.0)):
+                spin.blockSignals(True)
+                spin.setValue(deger)
+                spin.blockSignals(False)
+        self._merdiven_kol_onizle()
+
+    def _merdiven_form_kol_hesap(self) -> Dict:
+        elle = self.merdiven_lh_elle_check.isChecked()
+        return merdiven_kol_hesapla(
+            self.merdiven_n_spin.value(), self.merdiven_h_spin.value(), self.merdiven_a_spin.value(),
+            self.merdiven_b_spin.value(), self.merdiven_t_spin.value(), int(self.merdiven_yan_combo.currentText()),
+            self.merdiven_l_spin.value() if elle else None, self.merdiven_hkot_spin.value() if elle else None)
+
+    def _merdiven_kol_onizle(self, *_):
+        if not hasattr(self, "merdiven_kol_onizleme_label") or merdiven_kol_hesapla is None:
+            return
+        h = self._merdiven_form_kol_hesap()
+        if h["hata"]:
+            self.merdiven_kol_onizleme_label.setText("Önizleme: n, h, a, B ve t girin.")
+            return
+        riht, yan = self._merdiven_kalip_secimi()
+        self.merdiven_kol_onizleme_label.setText(
+            f"L = {h['L_m']:.2f} m · H = {h['H_m']:.2f} m · s = {h['s_m']:.3f} m · profil = {h['profil_m2']:.3f} m² "
+            f"→ Beton {tek_hane(h['beton_m3'])} m³ · Kalıp {tek_hane(merdiven_toplam_kalip(h, riht, yan))} m²"
+            + (f"\n⚠ {h['uyari']}" if h["uyari"] else ""))
+
+    def _merdiven_yeni_ad(self, onek: str) -> str:
+        adlar = {s["ad"] for s in self.merdiven_kayitlari}
+        n = 1
+        while f"{onek}-{n}" in adlar:
+            n += 1
+        return f"{onek}-{n}"
+
+    @staticmethod
+    def _merdiven_satir_hesap(s: Dict) -> Dict:
+        if s["tip"] == MERDIVEN_TIP_SAHANLIK:
+            return merdiven_sahanlik_hesapla(s["en_m"], s["boy_m"], s["t_cm"], s["serbest_m"])
+        return merdiven_kol_hesapla(s["n"], s["h_cm"], s["a_cm"], s["b_m"], s["t_cm"], s["yan"],
+                                    s.get("l_m"), s.get("h_kot_m"))
+
+    def _merdiven_kol_ekle(self):
+        h = self._merdiven_form_kol_hesap()
+        if h["hata"]:
+            self.merdiven_uyari_label.setText(f"⚠ Eklenmedi: {h['hata']}")
+            QMessageBox.warning(self, "Kol Eklenmedi", h["hata"])
+            return
+        elle = self.merdiven_lh_elle_check.isChecked()
+        ad = self.merdiven_kol_ad_edit.text().strip() or self._merdiven_yeni_ad("Kol")
+        self.merdiven_kayitlari.append({
+            "tip": MERDIVEN_TIP_KOL, "ad": ad, "n": self.merdiven_n_spin.value(),
+            "h_cm": self.merdiven_h_spin.value(), "a_cm": self.merdiven_a_spin.value(),
+            "b_m": self.merdiven_b_spin.value(), "t_cm": self.merdiven_t_spin.value(),
+            "yan": int(self.merdiven_yan_combo.currentText()),
+            "l_m": self.merdiven_l_spin.value() if elle else None,
+            "h_kot_m": self.merdiven_hkot_spin.value() if elle else None,
+        })
+        self.merdiven_uyari_label.setText(f"⚠ {ad}: {h['uyari']}" if h["uyari"] else "")
+        self.merdiven_kol_ad_edit.clear()
+        self._merdiven_tablo_yenile()
+
+    def _merdiven_sahanlik_ekle(self):
+        h = merdiven_sahanlik_hesapla(self.merdiven_sah_en_spin.value(), self.merdiven_sah_boy_spin.value(),
+                                      self.merdiven_sah_t_spin.value(), self.merdiven_sah_serbest_spin.value())
+        if h["hata"]:
+            self.merdiven_uyari_label.setText(f"⚠ Eklenmedi: {h['hata']}")
+            QMessageBox.warning(self, "Sahanlık Eklenmedi", h["hata"])
+            return
+        ad = self.merdiven_sah_ad_edit.text().strip() or self._merdiven_yeni_ad("Sahanlık")
+        self.merdiven_kayitlari.append({
+            "tip": MERDIVEN_TIP_SAHANLIK, "ad": ad, "en_m": self.merdiven_sah_en_spin.value(),
+            "boy_m": self.merdiven_sah_boy_spin.value(), "t_cm": self.merdiven_sah_t_spin.value(),
+            "serbest_m": self.merdiven_sah_serbest_spin.value(),
+        })
+        self.merdiven_uyari_label.setText(f"⚠ {ad}: {h['uyari']}" if h["uyari"] else "")
+        self.merdiven_sah_ad_edit.clear()
+        self._merdiven_tablo_yenile()
+
+    def _merdiven_tablo_yenile(self):
+        if not hasattr(self, "merdiven_table") or merdiven_kol_hesapla is None:
+            return
+        riht, yan = self._merdiven_kalip_secimi()
+        esas = kalip_esas_metni(riht, yan)
+        self.merdiven_esas_label.setText(esas)
+        tablo = self.merdiven_table
+        tablo.blockSignals(True)
+        beton = kalip = 0.0
+        try:
+            tablo.setRowCount(0)
+            for i, s in enumerate(self.merdiven_kayitlari):
+                h = self._merdiven_satir_hesap(s)
+                toplam = merdiven_toplam_kalip(h, riht, yan)
+                beton += h["beton_m3"]
+                kalip += toplam
+                kol = s["tip"] == MERDIVEN_TIP_KOL
+                degerler = [
+                    str(i + 1), s["tip"], s["ad"],
+                    str(s["n"]) if kol else "", f"{s['h_cm']:g}" if kol else "", f"{s['a_cm']:g}" if kol else "",
+                    f"{h['L_m']:.2f}" if kol else "", f"{h['H_m']:.2f}" if kol else "",
+                    f"{h['s_m']:.3f}" if kol else "",
+                    f"{s['b_m']:.2f}" if kol else f"{s['en_m']:.2f}", "" if kol else f"{s['boy_m']:.2f}",
+                    f"{s['t_cm']:g}", str(s["yan"]) if kol else "",
+                    f"{tek_hane(h['beton_m3'])}", f"{tek_hane(h['alt_m2'])}",
+                    f"{tek_hane(h['riht_m2'])}" if kol else "", f"{tek_hane(h['yan_m2'])}" if kol else "",
+                    "" if kol else f"{tek_hane(h['kenar_m2'])}", f"{tek_hane(toplam)}",
+                ]
+                ipucu = (f"Profil alanı {h['profil_m2']:.4f} m²" + (" (L/H elle)" if s.get("l_m") else "")
+                         if kol else f"Serbest kenar {s['serbest_m']:g} m")
+                if h["uyari"]:
+                    ipucu += f"\n⚠ {h['uyari']}"
+                tablo.insertRow(i)
+                for col, deger in enumerate(degerler):
+                    item = QTableWidgetItem(deger)
+                    duzenlenir = col == self.MERDIVEN_T_KOL or (kol and col == self.MERDIVEN_YAN_KOL)
+                    if not duzenlenir:
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setToolTip(ipucu)
+                    if h["uyari"]:
+                        item.setForeground(QColor("#f5b041"))
+                    tablo.setItem(i, col, item)
+        finally:
+            tablo.blockSignals(False)
+        self.merdiven_toplam_label.setText(
+            f"{self.aktif_kat_adi or 'Kat seçilmedi'} — TOPLAM: {len(self.merdiven_kayitlari)} satır | "
+            f"Beton: {tek_hane(beton, True)} m³ | Toplam Kalıp: {tek_hane(kalip, True)} m²   ({esas})")
+
+    def _merdiven_hucre_degisti(self, item):
+        """Satır bazında t (cm) / yan taraf düzeltme — geçersizse eski değer korunur."""
+        col, row = item.column(), item.row()
+        if col not in (self.MERDIVEN_T_KOL, self.MERDIVEN_YAN_KOL) or not (0 <= row < len(self.merdiven_kayitlari)):
+            return
+        s = self.merdiven_kayitlari[row]
+        yeni = dict(s)
+        metin = item.text().strip()
+        try:
+            deger = float(metin.replace(",", ".").replace("cm", "").strip())
+        except ValueError:
+            deger = None
+        if deger is not None:
+            if col == self.MERDIVEN_T_KOL:
+                yeni["t_cm"] = deger
+            else:
+                yeni["yan"] = int(deger) if deger == int(deger) else deger
+        h = self._merdiven_satir_hesap(yeni) if deger is not None else {"hata": "sayı değil"}
+        if h["hata"]:
+            self.merdiven_uyari_label.setText(
+                f"⚠ {s['ad']}: geçersiz değer '{metin}' ({h['hata']}) — eski değer korundu.")
+        else:
+            s.update(yeni)
+            self.merdiven_uyari_label.setText(f"⚠ {s['ad']}: {h['uyari']}" if h["uyari"] else "")
+        self._merdiven_tablo_yenile()
+
+    def _merdiven_sil(self):
+        satirlar = sorted({i.row() for i in self.merdiven_table.selectedIndexes()}, reverse=True)
+        if not satirlar:
+            QMessageBox.information(self, "Bilgi", "Silmek için tablodan satır seçin.")
+            return
+        for row in satirlar:
+            if 0 <= row < len(self.merdiven_kayitlari):
+                del self.merdiven_kayitlari[row]
+        self._merdiven_tablo_yenile()
+
+    def _merdiven_temizle(self):
+        if not self.merdiven_kayitlari:
+            return
+        cevap = QMessageBox.question(
+            self, "Temizle",
+            f"'{self.aktif_kat_adi or 'Kat seçilmedi'}' katının {len(self.merdiven_kayitlari)} merdiven satırı "
+            "silinecek. Emin misiniz?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if cevap == QMessageBox.StandardButton.Yes:
+            self.merdiven_kayitlari.clear()
+            self._merdiven_tablo_yenile()
+
+    # ── Rev-151: Kat Özeti (kat bazlı beton + kalıp) ──
+    KAT_OZETI_KOLONLAR = ["Kat", "Eleman", "Adet", "Beton (m³)", "Kalıp (m²)"]
+
+    def _kat_ozeti_sekmesi_olustur(self) -> QWidget:
+        """Kat Özeti sekmesi.
+
+        Neyi çözüyoruz? Beton/kalıp sekmelerde dağınık; müteahhit kat kat
+        tek tabloda görmek, betonu kat bazında sipariş etmek ister. Değerler
+        her sekmenin KENDİ formülünden gelir, burada sadece toplanır.
+        Nasıl test ederiz? scratchpad/test_kat_ozeti.py (saf çekirdek + headless pencere).
+        """
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(6, 6, 6, 6)
+        bilgi = QLabel(
+            "Kolon, Perde, Kiriş, Döşeme ve Merdiven sekmelerindeki kayıtlar kat kat toplanır; radye ve temel "
+            "kirişi 'Temel' satırındadır. Beton & Kalıp sekmesine elle eklenen satırlar '(elle)' "
+            "ekiyle ayrıca görünür. Değerler NET betondur (fire hariç). Sekme her açıldığında güncellenir."
+        )
+        bilgi.setWordWrap(True)
+        bilgi.setStyleSheet("color:#d4a017; font-size:9pt;")
+        lay.addWidget(bilgi)
+
+        self.kat_ozeti_table = QTableWidget()
+        self.kat_ozeti_table.setColumnCount(len(self.KAT_OZETI_KOLONLAR))
+        self.kat_ozeti_table.setHorizontalHeaderLabels(self.KAT_OZETI_KOLONLAR)
+        self.kat_ozeti_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.kat_ozeti_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.kat_ozeti_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.kat_ozeti_table.setMinimumHeight(300)
+        self.kat_ozeti_table.setStyleSheet(
+            "QTableWidget { background:#1e1e2e; color:#e0e0e0; gridline-color:#444; border:1px solid #555; }"
+            "QHeaderView::section { background:#2d2d3d; color:#f39c12; font-weight:bold;"
+            " padding:5px; border:1px solid #444; }"
+            "QTableWidget::item:selected { background:#3a3a5a; }"
+        )
+        lay.addWidget(self.kat_ozeti_table)
+
+        alt = QHBoxLayout()
+        btn_yenile = QPushButton("Yenile")
+        btn_yenile.setToolTip("Tüm sekmelerdeki güncel kayıtlarla özeti yeniden oluşturur.")
+        btn_yenile.setStyleSheet("background:#2471a3; color:white; font-weight:bold; padding:5px 14px;"
+                                 " border:none; border-radius:3px;")
+        btn_yenile.clicked.connect(self._kat_ozeti_yenile)
+        alt.addWidget(btn_yenile)
+        alt.addStretch()
+        btn_excel = QPushButton(" Excel'e Aktar")
+        btn_excel.setToolTip("Kat özetini Excel dosyasına kaydeder (kat satırları + eleman toplamları).")
+        btn_excel.setStyleSheet("background:#1e8449; color:white; font-weight:bold; padding:5px 14px;"
+                                " border:none; border-radius:3px;")
+        btn_excel.clicked.connect(self._kat_ozeti_excel)
+        alt.addWidget(btn_excel)
+        lay.addLayout(alt)
+
+        self.kat_ozeti_toplam_label = QLabel()
+        self.kat_ozeti_toplam_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; font-size:10pt; background:#2a2a3a;"
+            " border:1px solid #f39c12; border-radius:4px; padding:6px;")
+        lay.addWidget(self.kat_ozeti_toplam_label)
+        self._kat_ozeti_yenile()
+        return tab
+
+    def _kat_ozeti_kalemleri(self) -> List[Dict]:
+        """Tüm sekmelerden ham kalemler: {kat, eleman, adet, beton_m3, kalip_m2}.
+        Hesap her sekmenin kendi fonksiyonuyla yapılır (tek formül kaynağı)."""
+        kalemler: List[Dict] = []
+        for (kat, _ad), k in getattr(self, "beton_kalip_kolon_kayitlari", {}).items():
+            # Rev-160: kolon aracında oranla (≥6) Perde sınıflanan eleman Perde satırına gider;
+            # Rev-161: güncel kat ayarıyla (perde kalıbı net yükseklik)
+            h = self._kolon_kayit_hesap(kat, k)
+            if not h.get("hata"):
+                kalemler.append({"kat": kat, "eleman": k.get("tip", "Kolon"), "adet": 1,
+                                 "beton_m3": h["beton_m3"], "kalip_m2": h["kalip_m2"]})
+        for (kat, _h), s in getattr(self, "perde_kayitlari", {}).items():
+            h = self._perde_satir_hesap(s, self._perde_kat_ayari(kat))
+            if not h.get("hata"):
+                kalemler.append({"kat": kat, "eleman": "Perde", "adet": 1,
+                                 "beton_m3": h["beton_m3"], "kalip_m2": h["kalip_m2"]})
+        if kiris_hesapla is not None:
+            for kat, liste in self._kiris_kat_kayitlari.items():
+                for s in liste:
+                    h = self._kiris_satir_hesap(s)
+                    if not h["hata"]:
+                        kalemler.append({"kat": kat, "eleman": "Kiriş", "adet": 1,
+                                         "beton_m3": h["beton_m3"], "kalip_m2": h["toplam_kalip_m2"]})
+        if doseme_hesapla is not None:
+            for kat, liste in self._doseme_kat_kayitlari.items():
+                for s in liste:
+                    h = self._doseme_satir_hesap(s)
+                    if not h["hata"]:
+                        # Rev-164: saçak ayrı "Saçak" satırına
+                        kalemler.append({"kat": kat, "eleman": SACAK_TIPI if sacak_mi(s) else "Döşeme", "adet": 1,
+                                         "beton_m3": h["beton_m3"], "kalip_m2": h["toplam_kalip_m2"]})
+        for s in getattr(self, "temel_kirisi_kayitlari", {}).values():
+            kalemler.append({"kat": TEMEL_KAT, "eleman": "Temel Kirişi", "adet": 1,
+                             "beton_m3": s.get("beton_m3", 0.0), "kalip_m2": s.get("kalip_m2", 0.0)})
+        if merdiven_kol_hesapla is not None:
+            riht, yan = self._merdiven_kalip_secimi()
+            for kat, liste in self._merdiven_kat_kayitlari.items():
+                for s in liste:
+                    h = self._merdiven_satir_hesap(s)
+                    if not h["hata"]:
+                        kalemler.append({"kat": kat, "eleman": "Merdiven", "adet": 1, "beton_m3": h["beton_m3"],
+                                         "kalip_m2": merdiven_toplam_kalip(h, riht, yan)})
+        # Rev-157: radye kayıt listesi (katsız -> Temel grubu, SBH ile aynı grup)
+        if radye_kaydi_hesapla is not None:
+            for s in getattr(self, "radye_kayitlari", []):
+                h = radye_kaydi_hesapla(s)
+                if not h["hata"]:
+                    kalemler.append({"kat": TEMEL_KAT, "eleman": "Radye", "adet": 1,
+                                     "beton_m3": h["beton_m3"], "kalip_m2": h["kalip_m2"]})
+        # Beton & Kalıp sekmesine elle eklenen satırlar (etiketsiz olanlar)
+        tablo = getattr(self, "beton_kalip_table", None)
+        if tablo is not None:
+            for row in range(tablo.rowCount()):
+                ilk = tablo.item(row, 0)
+                if ilk is None or ilk.data(Qt.ItemDataRole.UserRole):
+                    continue
+                try:
+                    kat = ilk.text().strip()
+                    kalemler.append({
+                        "kat": "" if kat == "-" else kat,
+                        "eleman": f"{tablo.item(row, 1).text()} (elle)",
+                        "adet": float(tablo.item(row, 2).text()),
+                        "beton_m3": float(tablo.item(row, 6).text()),
+                        "kalip_m2": float(tablo.item(row, 9).text()),
+                    })
+                except (AttributeError, ValueError):
+                    continue
+        return kalemler
+
+    def _kat_ozeti_hesapla(self) -> Optional[Dict]:
+        if kat_ozeti_olustur is None:
+            return None
+        kat_sirasi = [k["kat_adi"] for k in getattr(self, "demir_kat_verileri", [])]
+        return kat_ozeti_olustur(self._kat_ozeti_kalemleri(), kat_sirasi)
+
+    def _kat_ozeti_yenile(self, *_):
+        if not hasattr(self, "kat_ozeti_table"):
+            return
+        ozet = self._kat_ozeti_hesapla()
+        tablo = self.kat_ozeti_table
+        tablo.setRowCount(0)
+        if ozet is None:
+            self.kat_ozeti_toplam_label.setText("Özet modülü yüklenemedi.")
+            return
+        renkler = {"ara": ("#2a2a3a", "#f39c12"), "eleman": ("#1f2d3a", "#5dade2"),
+                   "genel": ("#1e3a24", "#2ecc71")}
+        kalin = QFont()
+        kalin.setBold(True)
+        for satir in ozet_tablo_satirlari(ozet):
+            tur = satir[5]
+            row = tablo.rowCount()
+            tablo.insertRow(row)
+            for col, deger in enumerate(satir[:5]):
+                metin = f"{tek_hane(deger, True)}" if isinstance(deger, float) else str(deger)   # Rev-165: tek hane
+                item = QTableWidgetItem(metin)
+                if col >= 2:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if tur in renkler:
+                    zemin, yazi = renkler[tur]
+                    item.setBackground(QColor(zemin))
+                    item.setForeground(QColor(yazi))
+                    item.setFont(kalin)
+                tablo.setItem(row, col, item)
+        if ozet["katlar"]:
+            self.kat_ozeti_toplam_label.setText(
+                f"GENEL TOPLAM ({len(ozet['katlar'])} kat/bölüm) — Beton: {tek_hane(ozet['beton_m3'], True)} m³ | "
+                f"Kalıp: {tek_hane(ozet['kalip_m2'], True)} m²")
+        else:
+            self.kat_ozeti_toplam_label.setText(
+                "Henüz kayıt yok — Kolon, Perde, Kiriş, Döşeme veya temel sekmelerinden eleman ekleyin.")
+
+    def _kat_ozeti_excel(self):
+        ozet = self._kat_ozeti_hesapla()
+        if not ozet or not ozet["katlar"]:
+            QMessageBox.information(self, "Bilgi", "Dışa aktarılacak kayıt yok.")
+            return
+        if not PANDAS_AVAILABLE:
+            QMessageBox.warning(self, "Uyarı", "Excel için pandas+openpyxl gerekli:\npip install pandas openpyxl")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(self, "Excel Kaydet", "kat_ozeti_beton_kalip.xlsx",
+                                                   "Excel (*.xlsx)")
+        if not file_path:
+            return
+        try:
+            satirlar = [s[:5] for s in ozet_tablo_satirlari(ozet)]
+            df = pd.DataFrame(satirlar, columns=self.KAT_OZETI_KOLONLAR)
+            basliklar = ["KAT BAZLI BETON + KALIP ÖZETİ",
+                         "Beton değerleri NET (fire hariç). Radye ve temel kirişi 'Temel' satırında."]
+            if kalip_esas_metni is not None and any(self._merdiven_kat_kayitlari.values()):
+                basliklar.append("Merdiven " + kalip_esas_metni(*self._merdiven_kalip_secimi()).lower())
+            with pd.ExcelWriter(file_path, engine="openpyxl") as yazici:
+                df.to_excel(yazici, index=False, sheet_name="Kat Özeti", startrow=len(basliklar) + 1)
+                sayfa = yazici.sheets["Kat Özeti"]
+                for i, metin in enumerate(basliklar, start=1):
+                    sayfa.cell(row=i, column=1, value=metin)
+                beton_kalip_sutunlari_tek_hane(sayfa)   # Rev-166
+                # Rev-157: radye varsa aynı dosyada ayrıntılı "Radye" sayfası (formüllü)
+                radyeler = [k for k in getattr(self, "radye_kayitlari", [])
+                            if radye_kaydi_hesapla is not None and not radye_kaydi_hesapla(k)["hata"]]
+                if radyeler and radye_sayfasi_yaz is not None:
+                    from datetime import datetime
+                    radye_sayfasi_yaz(yazici.book.create_sheet("Radye"), radyeler,
+                                      self._rapor_proje_adi(), datetime.now().strftime("%d.%m.%Y"))
+            QMessageBox.information(
+                self, "Başarılı",
+                f"Kaydedildi:\n{file_path}\nBeton: {tek_hane(ozet['beton_m3'], True)} m³ | Kalıp: {tek_hane(ozet['kalip_m2'], True)} m²")
+            logger.info(f"Kat özeti Excel: {file_path}")
+        except Exception as e:
+            logger.error(f"[KAT_OZETI] Excel hatası: {e}", exc_info=True)
+            QMessageBox.critical(self, "Hata", f"Dosya kaydedilemedi:\n{e}")
+
+    def _temel_kirisi_sekmesi_olustur(self) -> QWidget:
+        """Temel Kirişi sekmesini kurar (Rev-137).
+
+        Neyi çözüyoruz? SBH temel kirişlerinin beton (g×y×L) ve kalıp
+        (2×y×L, alt yüz yok) metrajı ayrı bir tabloda toplanır; uzunluk kenar
+        çizgisinden otomatik okunur, tablodan elle düzeltilebilir.
+        Nasıl test ederiz? scratchpad/test_temel_kirisi_ui.py (headless).
+        """
+        tab = QWidget()
+        dis = QVBoxLayout(tab)
+        dis.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        icerik = QWidget()
+        lay = QVBoxLayout(icerik)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(6)
+
+        bilgi = QLabel(
+            "Temel kirişi (SBH) metrajı — TOPLU SEÇİM: butona basın, birimi seçin, "
+            "AutoCAD'de her kiriş için 'SBH-1 (20/165)' yazısı + iki kenarın TÜM çizgileri (kesişen "
+            "kirişle bölünen kenarın bütün parçaları) + ENTER. Uzunluk = iki kenarın baştan sona "
+            "kapsamının ortalaması (boşluklar dahil); yan kalıp her yüzün dolu (parça toplamı) "
+            "uzunluğuyla. Kenarlar 2×genişlikten fazla farklıysa 'eksik parça' sorulur. Bitirmek için "
+            "boş ENTER. Kalıp sadece 2 yan yüz (alt yüz grobetona oturur). Uzunluk hücresine çift "
+            "tıklayıp düzeltebilirsiniz (elle düzeltmede kalıp 2 × yükseklik × L olur).\n"
+            "DEMİR: aynı satırdan filiz (düşey, her aralıkta bir, 2 yüz) + tevzi (yatay, kiriş boyunca, "
+            "12 m'yi aşarsa bindirmeli) hesaplanır. Parametreler SBH TİPİ başına bir kez girilir "
+            "(yeni tip seçilince pencere açılır; sonradan 'SBH Demir Parametreleri' ile düzenlenir)."
+        )
+        bilgi.setWordWrap(True)
+        bilgi.setStyleSheet("color:#d4a017; font-size:9pt;")
+        lay.addWidget(bilgi)
+
+        ust = QHBoxLayout()
+        lbl_birim = QLabel("Çizim Birimi:")
+        lbl_birim.setStyleSheet("color:white;")
+        ust.addWidget(lbl_birim)
+        self.tk_birim_combo = QComboBox()
+        self.tk_birim_combo.addItems(["Otomatik (INSUNITS)", "mm", "cm", "m"])
+        self.tk_birim_combo.setToolTip(
+            "Kenar çizgisi uzunluğu çizim biriminde okunur. Seçim başında birim bir kez "
+            "sorulur; buradaki değer (Otomatik = AutoCAD INSUNITS) o sorunun varsayılanıdır."
+        )
+        self.tk_birim_combo.setStyleSheet(
+            "QComboBox { background:#2a2a3a; color:white; border:1px solid #666; padding:4px; }"
+            "QComboBox QAbstractItemView { background:#2a2a3a; color:white; }"
+        )
+        ust.addWidget(self.tk_birim_combo)
+        ust.addStretch()
+        self.btn_tk_sec = QPushButton(" TEMEL KİRİŞİ SEÇ (AutoCAD)")
+        self.btn_tk_sec.setToolTip("Yazı + kenar çizgisi ile döngüsel temel kirişi seçimini başlatır.")
+        self.btn_tk_sec.setStyleSheet(
+            "QPushButton { background:#8e44ad; color:white; font-weight:bold; padding:8px 16px;"
+            " border:2px solid #a569bd; border-radius:4px; }"
+            "QPushButton:hover { background:#a569bd; }"
+        )
+        self.btn_tk_sec.clicked.connect(self._temel_kirisi_sec)
+        ust.addWidget(self.btn_tk_sec)
+        lay.addLayout(ust)
+
+        self.temel_kirisi_table = QTableWidget()
+        self.temel_kirisi_table.setColumnCount(len(self.TK_KOLONLAR))
+        self.temel_kirisi_table.setHorizontalHeaderLabels(self.TK_KOLONLAR)
+        self.temel_kirisi_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.temel_kirisi_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.temel_kirisi_table.setMinimumHeight(260)
+        self.temel_kirisi_table.setStyleSheet(
+            "QTableWidget { background:#1e1e2e; color:#e0e0e0; gridline-color:#444;"
+            " border:1px solid #555; }"
+            "QHeaderView::section { background:#2d2d3d; color:#a569bd; font-weight:bold;"
+            " padding:5px; border:1px solid #444; }"
+            "QTableWidget::item:selected { background:#3a3a5a; }"
+        )
+        self.temel_kirisi_table.itemChanged.connect(self._temel_kirisi_hucre_degisti)
+        lay.addWidget(self.temel_kirisi_table)
+
+        alt = QHBoxLayout()
+        btn_sil = QPushButton("Seçili Sil")
+        btn_sil.setToolTip("Seçili kirişleri siler ve çizimdeki yeşil rengi geri alır.")
+        btn_sil.setStyleSheet(
+            "background:#c0392b; color:white; font-weight:bold; padding:5px 12px;"
+            " border:none; border-radius:3px;"
+        )
+        btn_sil.clicked.connect(self._temel_kirisi_sil)
+        alt.addWidget(btn_sil)
+        btn_temizle = QPushButton("Temizle")
+        btn_temizle.setStyleSheet(
+            "background:#7f8c8d; color:white; font-weight:bold; padding:5px 12px;"
+            " border:none; border-radius:3px;"
+        )
+        btn_temizle.clicked.connect(self._temel_kirisi_temizle)
+        alt.addWidget(btn_temizle)
+        btn_tk_param = QPushButton("SBH Demir Parametreleri")
+        btn_tk_param.setToolTip("Bir SBH tipinin filiz/tevzi parametrelerini düzenler; o tipteki tüm "
+                                "satırların demiri yeniden hesaplanır.")
+        btn_tk_param.setStyleSheet("background:#2471a3; color:white; font-weight:bold; padding:5px 12px;"
+                                   " border:none; border-radius:3px;")
+        btn_tk_param.clicked.connect(self._temel_kirisi_parametre_duzenle)
+        alt.addWidget(btn_tk_param)
+        alt.addStretch()
+        btn_tk_kesim = QPushButton(" DEMİRİ KESİM LİSTESİNE AKTAR")
+        btn_tk_kesim.setToolTip(
+            "Filiz ve tevzi parçalarını Kesim Listesi'ne aktarır. 12 m'yi aşan tevzi çubuğu bindirmeli "
+            "boyuyla stok boyuna bölünür (kesim aracı bindirme eklemez — bindirme bir kez sayılır).")
+        btn_tk_kesim.setStyleSheet("background:#b9770e; color:white; font-weight:bold; padding:5px 14px;"
+                                   " border:none; border-radius:3px;")
+        btn_tk_kesim.clicked.connect(self._temel_kirisi_kesime_aktar)
+        alt.addWidget(btn_tk_kesim)
+        btn_excel = QPushButton(" TEMEL KİRİŞİ EXCEL'E AKTAR")
+        btn_excel.setStyleSheet(
+            "background:#1e8449; color:white; font-weight:bold; padding:5px 14px;"
+            " border:2px solid #2ecc71; border-radius:3px;"
+        )
+        btn_excel.clicked.connect(self._temel_kirisi_excel)
+        alt.addWidget(btn_excel)
+        lay.addLayout(alt)
+
+        self.tk_toplam_label = QLabel()
+        self.tk_toplam_label.setStyleSheet(
+            "color:#2ecc71; font-weight:bold; font-size:10pt; background:#2a2a3a;"
+            " border:1px solid #a569bd; border-radius:4px; padding:6px;"
+        )
+        lay.addWidget(self.tk_toplam_label)
+        self.tk_demir_label = QLabel()
+        self.tk_demir_label.setWordWrap(True)
+        self.tk_demir_label.setStyleSheet(
+            "color:#f5b041; font-weight:bold; font-size:10pt; background:#2a2a3a;"
+            " border:1px solid #b9770e; border-radius:4px; padding:6px;"
+        )
+        lay.addWidget(self.tk_demir_label)
+        self._temel_kirisi_tablo_yenile()
+
+        scroll.setWidget(icerik)
+        dis.addWidget(scroll)
+        return tab
+
+    def _temel_kirisi_birim(self) -> str:
+        secim = self.tk_birim_combo.currentText()
+        if secim in ("mm", "cm", "m"):
+            return secim
+        birim = None
+        try:
+            birim = self.acad_connector.cizim_birimi_oku()
+        except Exception as e:
+            logger.error(f"[TEMEL KIRISI] _temel_kirisi_birim hata: {e}", exc_info=True)
+        logger.info(f"[TEMEL KIRISI] kullanılan çizim birimi: {birim or 'cm'} "
+                    f"(combo={secim}, INSUNITS={birim})")
+        return birim or "cm"
+
+    def _temel_kirisi_birim_sor(self) -> Optional[str]:
+        """Birim seçim başında BİR KEZ sorulur (her kirişte teyit yok)."""
+        varsayilan = self._temel_kirisi_birim()
+        secenekler = ["cm", "mm", "m"]
+        birim, tamam = QInputDialog.getItem(
+            self, "Çizim Birimi",
+            "Kenar çizgisi uzunlukları hangi birimde çizildi?\n"
+            "(Bu seçim tüm kirişlerde kullanılır — yanlışsa uzunluklar 10/100 kat hatalı çıkar.)",
+            secenekler, secenekler.index(varsayilan), False,
+        )
+        if not tamam:
+            return None
+        self.tk_birim_combo.setCurrentText(birim)
+        logger.info(f"[TEMEL KIRISI] kullanıcının seçtiği birim: {birim}")
+        return birim
+
+    def _temel_kirisi_sec(self):
+        """Birimi bir kez sorar, toplu seçim panelini açıp döngüyü hemen
+        başlatır (kullanıcı doğrudan AutoCAD'e geçer), sonucu registry'ye işler."""
+        if not self.acad_connector or not getattr(self.acad_connector, "bagli", False):
+            QMessageBox.warning(self, "Uyarı", "Önce AutoCAD'e bağlanın!")
+            return
+        birim = self._temel_kirisi_birim_sor()
+        if birim is None:
+            return
+        panel = TemelKirisiDonguPaneli(
+            self.acad_connector, birim, self.temel_kirisi_kayitlari, self
+        )
+        # Panel görünür olur olmaz toplu döngü başlar — ekstra tıklama yok
+        QTimer.singleShot(0, panel._dongu)
+        if panel.exec() != QDialog.DialogCode.Accepted:
+            return
+        for satir in panel.sonuclar():
+            eski = self.temel_kirisi_kayitlari.get(satir["yazi_handle"])
+            if eski:
+                # Güncellemede artık kullanılmayan eski çizgilerin yeşilini sök
+                for h in eski.get("cizgi_handleler") or []:
+                    if h not in satir["cizgi_handleler"]:
+                        self._temel_kirisi_renk_geri(h)
+            kayit = dict(satir)
+            kayit.pop("yeni_boyanan", None)
+            self.temel_kirisi_kayitlari[satir["yazi_handle"]] = kayit
+        # Rev-153: parametresi olmayan yeni SBH tipleri — döngü BİTTİKTEN sonra, tip başına
+        # bir kez sorulur (döngü içinde Qt penceresi açmak AutoCAD↔program geçişi = takılma, Rev-137)
+        for tip in dict.fromkeys(s["ad"] for s in panel.sonuclar()):
+            if tip not in self._tk_demir_tipleri():
+                self._temel_kirisi_tip_parametresi_sor(tip, yeni_tip=True)
+        self._temel_kirisi_tablo_yenile()
+
+    # ── Rev-153: SBH demir tip parametreleri ──
+    def _tk_demir_tipleri(self) -> Dict[str, Dict]:
+        """Kayıtlı tip parametreleri (kalıcı dosyadan, oturumda önbellekli)."""
+        if not hasattr(self, "_tk_demir_tip_onbellek"):
+            self._tk_demir_tip_onbellek = dict(autocad_ayari_oku(self.SBH_DEMIR_AYAR_ANAHTARI, {}) or {})
+        return self._tk_demir_tip_onbellek
+
+    def _tk_tip_parametresi(self, tip: str) -> Dict:
+        return self._tk_demir_tipleri().get(tip) or {}
+
+    def _temel_kirisi_tip_parametresi_sor(self, tip: str, yeni_tip: bool = False) -> bool:
+        """Parametre penceresi; Kaydet -> kalıcı yazar. Vazgeç -> bu oturumda varsayılanlar
+        (kalıcı yazılmaz, sonraki seçimde tekrar sorulur)."""
+        dialog = SbhDemirTipDialog(tip, self._tk_tip_parametresi(tip), yeni_tip, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._tk_demir_tipleri()[tip] = dialog.parametreler()
+            autocad_ayari_yaz(self.SBH_DEMIR_AYAR_ANAHTARI, self._tk_demir_tipleri())
+            logger.info(f"[TEMEL KIRISI] {tip} demir parametreleri kaydedildi: {dialog.parametreler()}")
+            return True
+        self._tk_demir_tipleri().setdefault(tip, {})
+        return False
+
+    def _temel_kirisi_parametre_duzenle(self):
+        tipler = list(dict.fromkeys(
+            [s["ad"] for s in self.temel_kirisi_kayitlari.values()] + list(self._tk_demir_tipleri())))
+        if not tipler:
+            QMessageBox.information(self, "Bilgi", "Henüz SBH tipi yok — önce temel kirişi seçin.")
+            return
+        tip, tamam = QInputDialog.getItem(self, "SBH Demir Parametreleri",
+                                          "Düzenlenecek SBH tipi:", tipler, 0, False)
+        if tamam and tip and self._temel_kirisi_tip_parametresi_sor(tip):
+            self._temel_kirisi_tablo_yenile()
+
+    def _temel_kirisi_demir(self, s: Dict) -> Dict:
+        """Satırın demiri — her gösterimde güncel tip parametresiyle (düzenleme anında yansır)."""
+        if temel_kirisi_demir_hesapla is None:
+            return {"hata": "Demir modülü yüklenemedi"}
+        return temel_kirisi_demir_hesapla(s["uzunluk_m"], s["yukseklik_cm"], self._tk_tip_parametresi(s["ad"]))
+
+    def _temel_kirisi_kesime_aktar(self):
+        if not self.temel_kirisi_kayitlari:
+            QMessageBox.information(self, "Bilgi", "Aktarılacak temel kirişi yok.")
+            return
+        toplu: Dict[tuple, int] = {}
+        for s in self.temel_kirisi_kayitlari.values():
+            d = self._temel_kirisi_demir(s)
+            for cap, boy_cm, adet in temel_kirisi_kesim_parcalari(d, self._tk_tip_parametresi(s["ad"])):
+                toplu[(cap, boy_cm)] = toplu.get((cap, boy_cm), 0) + adet
+        kalemler = [(cap, boy, adet, "Temel") for (cap, boy), adet in sorted(toplu.items())]
+        self._kesim_penceresine_ekle(kalemler, "Temel kirişi demiri")
+
+    def _temel_kirisi_renk_geri(self, handle):
+        if not handle or not self.acad_connector:
+            return
+        try:
+            self.acad_connector.obje_isaret_geri_al(handle)
+        except Exception as e:
+            logger.error(f"[TEMEL KIRISI] _temel_kirisi_renk_geri hata: {e}", exc_info=True)
+            logger.debug(f"Temel kirişi renk geri alma hatası: {e}")
+
+    def _temel_kirisi_tablo_yenile(self):
+        tablo = self.temel_kirisi_table
+        tablo.blockSignals(True)
+        try:
+            tablo.setRowCount(0)
+            demirler = []
+            for handle, s in self.temel_kirisi_kayitlari.items():
+                row = tablo.rowCount()
+                tablo.insertRow(row)
+                d = self._temel_kirisi_demir(s)
+                demirler.append(d)
+                degerler = [
+                    s["ad"], f"{s['genislik_cm']:g}", f"{s['yukseklik_cm']:g}",
+                    f"{s['uzunluk_m']:.2f}", f"{tek_hane(s['beton_m3'])}",
+                    f"{tek_hane(s['kalip_m2'])}", s.get("kaynak", ""),
+                ]
+                if d.get("hata"):
+                    degerler += ["⚠"] + [""] * 8
+                else:
+                    degerler += [str(d["filiz_adet"]), f"{d['filiz_uzunluk_m']:.2f}", f"{d['filiz_kg']:.2f}",
+                                 str(d["tevzi_cubuk"]), str(d["tevzi_k"]), f"{d['tevzi_boy_m']:.2f}",
+                                 f"{d['tevzi_uzunluk_m']:.2f}", f"{d['tevzi_kg']:.2f}", f"{d['toplam_kg']:.2f}"]
+                ipucu = (f"⚠ Demir hesaplanamadı: {d['hata']}" if d.get("hata") else
+                         f"Filiz {d['filiz_yuz_adet']}/yüz · tevzi {d['tevzi_sira']} sıra/yüz, "
+                         f"ham boy {d['tevzi_ham_boy_m']:.2f} m")
+                for col, deger in enumerate(degerler):
+                    item = QTableWidgetItem(deger)
+                    if col != self.TK_UZUNLUK_KOL:
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    if col == 0:
+                        item.setData(Qt.ItemDataRole.UserRole, handle)
+                    if col >= 7:
+                        item.setToolTip(ipucu)
+                        if d.get("hata"):
+                            item.setForeground(QColor("#e74c3c"))
+                    tablo.setItem(row, col, item)
+        finally:
+            tablo.blockSignals(False)
+        beton = sum(s["beton_m3"] for s in self.temel_kirisi_kayitlari.values())
+        kalip = sum(s["kalip_m2"] for s in self.temel_kirisi_kayitlari.values())
+        self.tk_toplam_label.setText(
+            f"TOPLAM: {len(self.temel_kirisi_kayitlari)} temel kirişi | "
+            f"Beton: {tek_hane(beton, True)} m³ | Kalıp: {tek_hane(kalip, True)} m²"
+        )
+        if hasattr(self, "tk_demir_label"):
+            gecerli = [d for d in demirler if not d.get("hata")]
+            caplar = cap_bazli_topla(gecerli) if cap_bazli_topla else {}
+            metin = (f"DEMİR — Filiz: {sum(d['filiz_kg'] for d in gecerli):,.2f} kg | "
+                     f"Tevzi: {sum(d['tevzi_kg'] for d in gecerli):,.2f} kg | "
+                     f"Toplam: {sum(d['toplam_kg'] for d in gecerli):,.2f} kg   —   ÇAP BAZLI: "
+                     + (" | ".join(f"Ø{c}: {kg:,.2f} kg" for c, kg in caplar.items()) or "-"))
+            hatali = len(demirler) - len(gecerli)
+            if hatali:
+                metin += f"\n⚠ {hatali} satırın demiri hesaplanamadı (hücre ipucuna bakın) — toplama katılmadı."
+            self.tk_demir_label.setText(metin)
+
+    def _temel_kirisi_handle(self, row: int):
+        item = self.temel_kirisi_table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _temel_kirisi_hucre_degisti(self, item):
+        """Uzunluk hücresi elle düzeltilince beton/kalıp yeniden hesaplanır."""
+        if item.column() != self.TK_UZUNLUK_KOL:
+            return
+        handle = self._temel_kirisi_handle(item.row())
+        kayit = self.temel_kirisi_kayitlari.get(handle)
+        if kayit is None:
+            return
+        try:
+            yeni_l = float(item.text().replace(",", "."))
+        except ValueError as e:
+            logger.error(f"[TEMEL KIRISI] _temel_kirisi_hucre_degisti hata: {e}", exc_info=True)
+            yeni_l = -1
+        hesap = temel_kirisi_hesapla(kayit["genislik_cm"], kayit["yukseklik_cm"], yeni_l)
+        if hesap["hata"]:
+            QMessageBox.warning(self, "Geçersiz Uzunluk", "Uzunluk pozitif bir sayı olmalı (m).")
+        else:
+            if hesap["uyari"]:
+                QMessageBox.warning(self, "Uzunluk Kontrolü", hesap["uyari"])
+            # Rev-158: elle düzeltilen L ile çizimden okunan yan dolu uzunluklar artık
+            # tutarsız -> düşülür, kalıp 2 × y × L (iki tam yan yüz)
+            kayit.pop("yan_dolu_m", None)
+            kayit.pop("kenar_kapsam_m", None)
+            kayit.update({
+                "uzunluk_m": hesap["uzunluk_m"],
+                "beton_m3": hesap["beton_m3"],
+                "kalip_m2": hesap["kalip_m2"],
+                "kaynak": "Elle (düzeltildi)",
+            })
+        self._temel_kirisi_tablo_yenile()
+
+    def _temel_kirisi_sil(self):
+        satirlar = sorted({i.row() for i in self.temel_kirisi_table.selectedIndexes()})
+        if not satirlar:
+            QMessageBox.information(self, "Bilgi", "Silmek için satır seçin.")
+            return
+        for row in satirlar:
+            handle = self._temel_kirisi_handle(row)
+            kayit = self.temel_kirisi_kayitlari.pop(handle, None)
+            if kayit:
+                for h in [kayit.get("yazi_handle")] + (kayit.get("cizgi_handleler") or []):
+                    self._temel_kirisi_renk_geri(h)
+        self._temel_kirisi_tablo_yenile()
+
+    def _temel_kirisi_temizle(self):
+        if not self.temel_kirisi_kayitlari:
+            return
+        cevap = QMessageBox.question(
+            self, "Temizle",
+            "Tüm temel kirişi satırları silinecek ve çizimdeki yeşil renkler geri "
+            "alınacak. Devam edilsin mi?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if cevap != QMessageBox.StandardButton.Yes:
+            return
+        for kayit in self.temel_kirisi_kayitlari.values():
+            for h in [kayit.get("yazi_handle")] + (kayit.get("cizgi_handleler") or []):
+                self._temel_kirisi_renk_geri(h)
+        self.temel_kirisi_kayitlari.clear()
+        self._temel_kirisi_tablo_yenile()
+
+    def _temel_kirisi_excel(self):
+        if not self.temel_kirisi_kayitlari:
+            QMessageBox.information(self, "Bilgi", "Dışa aktarılacak temel kirişi yok.")
+            return
+        if not PANDAS_AVAILABLE:
+            QMessageBox.warning(self, "Uyarı",
+                                "Excel için pandas+openpyxl gerekli:\npip install pandas openpyxl")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Excel Kaydet", "temel_kirisi_metraj.xlsx", "Excel (*.xlsx)"
+        )
+        if not file_path:
+            return
+        try:
+            df = pd.DataFrame(
+                self._temel_kirisi_excel_satirlari(), columns=self.TK_KOLONLAR
+            )
+            caplar = cap_bazli_topla([self._temel_kirisi_demir(s)
+                                      for s in self.temel_kirisi_kayitlari.values()]) if cap_bazli_topla else {}
+            cap_df = pd.DataFrame([[f"Ø{c}", kg, round(kg / 1000, 4)] for c, kg in caplar.items()]
+                                  + [["TOPLAM", round(sum(caplar.values()), 3), round(sum(caplar.values()) / 1000, 4)]],
+                                  columns=["Çap", "Ağırlık (kg)", "Ağırlık (ton)"])
+            with pd.ExcelWriter(file_path, engine="openpyxl") as yazici:
+                df.to_excel(yazici, index=False, sheet_name="Temel Kirisi")
+                beton_kalip_sutunlari_tek_hane(yazici.sheets["Temel Kirisi"])   # Rev-166
+                cap_df.to_excel(yazici, index=False, sheet_name="Demir Cap Ozeti")
+            QMessageBox.information(self, "Başarılı", f"Kaydedildi:\n{file_path}")
+            logger.info(f"Temel kirişi Excel: {file_path}")
+        except Exception as e:
+            logger.error(f"[TEMEL KIRISI] _temel_kirisi_excel hata: {e}", exc_info=True)
+            QMessageBox.critical(self, "Hata", f"Dosya kaydedilemedi:\n{e}")
+
+    def _temel_kirisi_excel_satirlari(self) -> List[list]:
+        """Excel satırları (sayısal değerler float) + en altta TOPLAM satırı."""
+        satirlar = []
+        for s in self.temel_kirisi_kayitlari.values():
+            d = self._temel_kirisi_demir(s)
+            demir = ([""] * 9 if d.get("hata") else
+                     [d["filiz_adet"], d["filiz_uzunluk_m"], d["filiz_kg"], d["tevzi_cubuk"], d["tevzi_k"],
+                      d["tevzi_boy_m"], d["tevzi_uzunluk_m"], d["tevzi_kg"], d["toplam_kg"]])
+            satirlar.append([s["ad"], s["genislik_cm"], s["yukseklik_cm"], s["uzunluk_m"],
+                             s["beton_m3"], s["kalip_m2"], s.get("kaynak", "")] + demir)
+
+        def _topla(i):
+            return round(sum(r[i] for r in satirlar if isinstance(r[i], (int, float))), 3)
+
+        satirlar.append(["TOPLAM", "", "", "", _topla(4), _topla(5), "",
+                         _topla(7), _topla(8), _topla(9), _topla(10), "", "", _topla(13), _topla(14), _topla(15)])
+        return satirlar
 
 
     def _alan_turu_degistir(self, net_secili: bool):
@@ -5873,8 +12351,48 @@ class MetrajAnalizWindow(QMainWindow):
                     "Önce 'AutoCAD'e Bağlan' butonuna tıklayın."
                 )
                 return
+
+            import os as _os
+            import sys as _sys
+            if getattr(_sys, 'frozen', False):
+                _lisp_dir = _os.path.join(_sys._MEIPASS, "app", "lisp")
+            else:
+                _lisp_dir = _os.path.join(
+                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                    "lisp",
+                )
+            lsp_yolu = _os.path.join(_lisp_dir, f"{tur}.lsp")
+
+            if not _os.path.exists(lsp_yolu):
+                QMessageBox.critical(
+                    self, "LISP Dosyası Bulunamadı",
+                    f"LISP dosyası bulunamadı:\n{lsp_yolu}"
+                )
+                return
+
             try:
-                self.acad_connector.lisp_calistir(tur, {"kat_yuksekligi": kat_yuk})
+                # Kat yüksekliği LISP'in *IMP_KAT_YUKSEKLIGI* globaline SAYI
+                # olarak (tırnaksız) yazılıyor — aksi halde LISP tarafında
+                # 3.0 varsayılanı sessizce kullanılır (bkz. CLAUDE.md Rev-133 bug).
+                self.acad_connector.sayisal_degisken_set(
+                    {"*IMP_KAT_YUKSEKLIGI*": kat_yuk}
+                )
+                basarili = self.acad_connector.lisp_calistir(lsp_yolu, bekle=1.0)
+                if not basarili:
+                    QMessageBox.critical(
+                        self, "LISP Hatası",
+                        "LISP komutu AutoCAD'e gönderilemedi.\n"
+                        "AutoCAD bağlantısını kontrol edin (detay: error_log.txt)."
+                    )
+                    return
+                QMessageBox.information(
+                    self, "LISP Gönderildi",
+                    f"'{tur}' komutu AutoCAD'e gönderildi "
+                    f"(Kat Yüksekliği: {kat_yuk:.2f} m).\n\n"
+                    "Şimdi AutoCAD penceresine geçip seçim/istemleri "
+                    "tamamlayın, ardından buraya dönüp "
+                    "'Sonucu Oku' butonuna tıklayın."
+                )
             except Exception as e:
                 QMessageBox.critical(self, "LISP Hatası", f"LISP komutu çalıştırılamadı:\n{e}")
 
@@ -5995,19 +12513,25 @@ class MetrajAnalizWindow(QMainWindow):
             satirlar += [
                 f" Kolon Sayisi : {sonuc.get('kolon_sayisi', 0)}",
                 f" Kat Yuk. : {sonuc.get('kat_yuksekligi', 0):.2f} m",
-                f" TOPLAM HACIM: {sonuc.get('toplam_hacim', 0):.3f} m3",
+                f" TOPLAM HACIM: {tek_hane(sonuc.get('toplam_hacim', 0))} m3",
             ]
+            atlanan = sonuc.get('atlanan_sayisi', 0)
+            if atlanan:
+                satirlar.append(
+                    f" UYARI: {atlanan} obje alan=0 nedeniyle atlandi "
+                    f"(Closed=Yes olmayabilir, AutoCAD komut satirina bakin)"
+                )
         elif tur == "kiris_hacim":
             satirlar += [
                 f" Toplam Uzunluk : {sonuc.get('toplam_uzunluk', 0):.3f} m",
                 f" Kesit bxh : {sonuc.get('kiris_b', 0):.3f}x{sonuc.get('kiris_h', 0):.3f} m",
-                f" TOPLAM HACIM : {sonuc.get('toplam_hacim', 0):.3f} m3",
+                f" TOPLAM HACIM : {tek_hane(sonuc.get('toplam_hacim', 0))} m3",
             ]
         elif tur == "kalip_alan":
             satirlar += [
-                f" Kolon Kalip : {sonuc.get('kolon_kalip', 0):.3f} m2",
-                f" Kiris Kalip : {sonuc.get('kiris_kalip', 0):.3f} m2",
-                f" Doseme Kalip : {sonuc.get('doseme_kalip', 0):.3f} m2",
+                f" Kolon Kalip : {tek_hane(sonuc.get('kolon_kalip', 0))} m2",
+                f" Kiris Kalip : {tek_hane(sonuc.get('kiris_kalip', 0))} m2",
+                f" Doseme Kalip : {tek_hane(sonuc.get('doseme_kalip', 0))} m2",
                 f" TOPLAM KALIP : {sonuc.get('toplam', 0):.3f} m2",
             ]
         else:

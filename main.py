@@ -50,9 +50,60 @@ setup_logging()
 
 # Şimdi diğer modülleri import et (hafif olanlar)
 from PyQt6.QtWidgets import QApplication, QSplashScreen, QMessageBox
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QObject, QEvent
 from PyQt6.QtGui import QPixmap, QIcon
 from app.ui.styles import apply_dark_theme
+
+
+class GlobalKlavyeFilter(QObject):
+    """
+    Uygulama genelinde Enter / Tab / Space klavye desteği.
+    - Enter  → QLineEdit: sonraki alana geç | QPushButton: tıkla
+    - Tab    → QTextEdit'te (AI sohbet hariç) odak ilerlet
+    - Space  → Qt zaten destekliyor, ek işlem yok
+    """
+
+    def eventFilter(self, obj, event):
+        if event.type() != QEvent.Type.KeyPress:
+            return False
+
+        key = event.key()
+        from PyQt6.QtWidgets import (
+            QLineEdit, QPushButton, QTextEdit,
+            QAbstractSpinBox, QComboBox, QAbstractButton,
+        )
+
+        # ── Enter / Return ────────────────────────────────────────────────────
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+
+            if isinstance(obj, QLineEdit):
+                # returnPressed bağlıysa önce onu tetikle
+                obj.returnPressed.emit()
+                # Sonra bir sonraki widget'a odaklan
+                obj.focusNextChild()
+                return True
+
+            if isinstance(obj, QAbstractButton):
+                if obj.isEnabled():
+                    obj.click()
+                return True
+
+            if isinstance(obj, QAbstractSpinBox):
+                obj.focusNextChild()
+                return True
+
+        # ── Tab → QTextEdit (AI sohbet kutusu hariç) ─────────────────────────
+        if key == Qt.Key.Key_Tab:
+            if isinstance(obj, QTextEdit):
+                # AI sohbet inputu ise Tab'ı yutma — kendi kullanır
+                nesne_adi = obj.objectName()
+                if nesne_adi in ("mesaj_input", "chat_input", "ai_input"):
+                    return False
+                # Diğer QTextEdit'lerde Tab → odak ilerlet
+                obj.focusNextChild()
+                return True
+
+        return False
 
 # MainWindow lazy import edilir - splash screen gösterildikten sonra yüklenir
 logging.info("Temel moduller import edildi - Uygulama hazir")
@@ -121,6 +172,10 @@ def gui_uygulamasi():
         app = QApplication(sys.argv)
         app.setApplicationName("QuantixPro")
         app.setOrganizationName("QuantixPro")
+
+        # Global klavye desteği — Enter / Tab / Space
+        _klavye_filter = GlobalKlavyeFilter(app)
+        app.installEventFilter(_klavye_filter)
 
         # Uygulama ikonu
         icon_path = Path(__file__).parent / "assets" / "quantix_logo.png"

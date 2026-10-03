@@ -585,7 +585,8 @@ class StartupDialog(QDialog):
 
         # Başlat
         self._btn_start = QPushButton(" ▶ UYGULAMAYI BAŞLAT")
-        self._btn_start.setFixedSize(230, 42)
+        self._btn_start.setMinimumWidth(230)
+        self._btn_start.setFixedHeight(42)
         self._btn_start.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._btn_start.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self._btn_start.clicked.connect(self.accept)

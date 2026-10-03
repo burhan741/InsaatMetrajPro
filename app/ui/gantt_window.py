@@ -189,7 +189,7 @@ class GanttChartView(QGraphicsView):
         self._draw_month_headers(start, total_days)
         self._draw_day_grid(start, total_days, len(tasks))
         self._draw_task_bars(tasks, start)
-        if len(tasks) <= 50:
+        if len(tasks) <= 200:
             self._draw_dependency_arrows(tasks, start, total_days)
         self._draw_today_line(start, total_days, len(tasks))
 
@@ -1000,11 +1000,17 @@ class TaskDialog(QDialog):
         ],
     }
 
-    def __init__(self, task_data: Optional[Dict] = None, parent=None):
+    def __init__(self, task_data: Optional[Dict] = None,
+                 tasks_list: Optional[List[Dict]] = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("İş Ekle" if not task_data else "İş Düzenle")
-        self.setMinimumSize(560, 620)
+        self.setMinimumSize(600, 720)
         self._task = task_data or {}
+        self._all_tasks = [
+            t for t in (tasks_list or [])
+            if t.get("id") != (task_data or {}).get("id")
+        ]
+        self._dep_rows: List[Dict] = []
         self._build_ui()
         if task_data:
             self._load_data(task_data)
@@ -1058,7 +1064,7 @@ class TaskDialog(QDialog):
         miktar_row.addWidget(self.birim_combo)
 
         auto_btn = QPushButton("🔄 Süre")
-        auto_btn.setFixedWidth(72)
+        auto_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         auto_btn.setToolTip("Miktar / (Verimlilik × Usta Sayısı) → Süre otomatik hesapla")
         auto_btn.clicked.connect(self._auto_sure)
         miktar_row.addWidget(auto_btn)
@@ -1152,6 +1158,67 @@ class TaskDialog(QDialog):
         form.addRow("Açıklama:", self.aciklama_input)
 
         layout.addLayout(form)
+
+        # ------------------------------------------------------------------
+        # Önceki İşler (Bağımlılık) — sadece tasks_list verilmişse göster
+        # ------------------------------------------------------------------
+        if self._all_tasks:
+            from PyQt6.QtWidgets import QGroupBox
+            grp = QGroupBox("Önceki İşler (Bağımlılık)")
+            grp_layout = QVBoxLayout(grp)
+            grp_layout.setContentsMargins(6, 6, 6, 6)
+            grp_layout.addWidget(QLabel(
+                "Önce bitmesi gereken işleri işaretleyin (FS = Bitiş→Başlangıç)."
+            ))
+            self._dep_table = QTableWidget(len(self._all_tasks), 4)
+            self._dep_table.setHorizontalHeaderLabels(
+                ["Seç", "Görev Adı", "Tip", "Lag (Gün)"]
+            )
+            self._dep_table.horizontalHeader().setSectionResizeMode(
+                0, QHeaderView.ResizeMode.ResizeToContents
+            )
+            self._dep_table.horizontalHeader().setSectionResizeMode(
+                1, QHeaderView.ResizeMode.Stretch
+            )
+            self._dep_table.horizontalHeader().setSectionResizeMode(
+                2, QHeaderView.ResizeMode.ResizeToContents
+            )
+            self._dep_table.horizontalHeader().setSectionResizeMode(
+                3, QHeaderView.ResizeMode.ResizeToContents
+            )
+            self._dep_table.verticalHeader().setVisible(False)
+            self._dep_table.setMaximumHeight(160)
+
+            for row, t in enumerate(self._all_tasks):
+                chk = QCheckBox()
+                chk_widget = QWidget()
+                chk_layout = QHBoxLayout(chk_widget)
+                chk_layout.addWidget(chk)
+                chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                chk_layout.setContentsMargins(0, 0, 0, 0)
+                self._dep_table.setCellWidget(row, 0, chk_widget)
+                self._dep_rows.append({"chk": chk})
+
+                self._dep_table.setItem(
+                    row, 1,
+                    QTableWidgetItem(f"[{t.get('id')}] {t.get('ad', '')}")
+                )
+
+                tip_combo = QComboBox()
+                tip_combo.addItems(["FS", "SS", "FF", "SF"])
+                self._dep_table.setCellWidget(row, 2, tip_combo)
+                self._dep_rows[row]["tip"] = tip_combo
+
+                lag_spin = QSpinBox()
+                lag_spin.setRange(-30, 30)
+                lag_spin.setSuffix(" gün")
+                self._dep_table.setCellWidget(row, 3, lag_spin)
+                self._dep_rows[row]["lag"] = lag_spin
+
+            grp_layout.addWidget(self._dep_table)
+            layout.addWidget(grp)
+        else:
+            self._dep_table = None
 
         btn_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -1283,6 +1350,22 @@ class TaskDialog(QDialog):
         self.kaynak_input.setText(task.get("kaynak", ""))
         self.milestone_chk.setChecked(task.get("milestone", False))
         self.aciklama_input.setText(task.get("aciklama", ""))
+        # Mevcut bağımlılıkları dep_table'a yükle
+        if self._dep_table is not None:
+            existing = {
+                d["id"]: d
+                for d in task.get("bagimliliklar_detay", [])
+            }
+            for row, t in enumerate(self._all_tasks):
+                tid = t.get("id")
+                ex = existing.get(tid)
+                if ex:
+                    self._dep_rows[row]["chk"].setChecked(True)
+                    tip_idx = ["FS", "SS", "FF", "SF"].index(
+                        ex.get("tip", "FS")
+                    ) if ex.get("tip", "FS") in ["FS", "SS", "FF", "SF"] else 0
+                    self._dep_rows[row]["tip"].setCurrentIndex(tip_idx)
+                    self._dep_rows[row]["lag"].setValue(ex.get("lag", 0))
 
     # ------------------------------------------------------------------
     # Hesaplama Yardımcıları
@@ -1315,6 +1398,17 @@ class TaskDialog(QDialog):
     def get_task_data(self) -> Dict:
         baslangic_qdate = self.baslangic_input.date()
         bitis_qdate = self.bitis_input.date()
+        # Seçilen bağımlılıkları topla
+        bagimliliklar_detay = []
+        bagimliliklar = []
+        if self._dep_table is not None:
+            for row, t in enumerate(self._all_tasks):
+                if self._dep_rows[row]["chk"].isChecked():
+                    tid = t.get("id")
+                    tip = self._dep_rows[row]["tip"].currentText()
+                    lag = self._dep_rows[row]["lag"].value()
+                    bagimliliklar_detay.append({"id": tid, "tip": tip, "lag": lag})
+                    bagimliliklar.append(tid)
         return {
             "ad": self.ad_input.text().strip(),
             "sure": self.sure_input.value(),
@@ -1337,6 +1431,8 @@ class TaskDialog(QDialog):
             "kaynak": self.kaynak_input.text().strip(),
             "milestone": self.milestone_chk.isChecked(),
             "aciklama": self.aciklama_input.toPlainText().strip(),
+            "bagimliliklar": bagimliliklar,
+            "bagimliliklar_detay": bagimliliklar_detay,
         }
 
 
@@ -2514,12 +2610,12 @@ class GanttWindow(QWidget):
     # ------------------------------------------------------------------
     def ekle_is(self) -> None:
         self._push_undo()
-        dlg = TaskDialog(parent=self)
+        dlg = TaskDialog(tasks_list=self._is_list, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_task_data()
             new_id = max((t.get("id", 0) for t in self._is_list), default=0) + 1
             data["id"] = new_id
-            data["bagimliliklar"] = []
+            # bagimliliklar ve bagimliliklar_detay TaskDialog'dan geliyor
             self._is_list.append(data)
             self._yukle_is_listesi()
             self._status_label.setText(f"İş eklendi: {data['ad']}")
@@ -2531,11 +2627,15 @@ class GanttWindow(QWidget):
             return
         self._push_undo()
         task = self._is_list[row]
-        dlg = TaskDialog(task_data=task, parent=self)
+        dlg = TaskDialog(task_data=task, tasks_list=self._is_list, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             updated = dlg.get_task_data()
             updated["id"] = task["id"]
-            updated["bagimliliklar"] = task.get("bagimliliklar", [])
+            # bagimliliklar ve bagimliliklar_detay TaskDialog'dan geliyor;
+            # eğer boşsa (tasks_list yoktu) eski değeri koru
+            if not updated.get("bagimliliklar_detay") and not updated.get("bagimliliklar"):
+                updated["bagimliliklar"] = task.get("bagimliliklar", [])
+                updated["bagimliliklar_detay"] = task.get("bagimliliklar_detay", [])
             self._is_list[row] = updated
             self._yukle_is_listesi()
             self._status_label.setText(f"İş güncellendi: {updated['ad']}")

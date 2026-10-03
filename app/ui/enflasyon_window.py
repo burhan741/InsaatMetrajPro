@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QGroupBox, QFormLayout,
     QLineEdit, QComboBox, QDateEdit, QTextEdit, QMessageBox,
-    QHeaderView, QDoubleSpinBox
+    QHeaderView, QDoubleSpinBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QColor
@@ -76,13 +76,13 @@ class EnflasyonWindow(QWidget):
 
         # Göster/Gizle butonu
         self.api_show_btn = QPushButton("Göster")
-        self.api_show_btn.setFixedWidth(60)
+        self.api_show_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.api_show_btn.clicked.connect(self._toggle_api_key_visibility)
         layout.addWidget(self.api_show_btn)
 
         # Kaydet butonu
         save_btn = QPushButton("Kaydet")
-        save_btn.setFixedWidth(80)
+        save_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         save_btn.clicked.connect(self._save_api_key)
         layout.addWidget(save_btn)
 

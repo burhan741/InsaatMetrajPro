@@ -1,0 +1,9 @@
+{
+  "pythonVersion": "3.11",
+  "venvPath": "..",
+  "venv": ".venv",
+  "reportMissingModuleSource": "none",
+  "reportInvalidTypeForm": "none",
+  "reportMissingImports": "none",
+  "reportMissingTypeStubs": "none"
+}

@@ -24,7 +24,8 @@
                         i ent uzunluk alan cevre
                         kat_yuk kiris_b kiris_h
                         kolon_kalip kiris_kalip doseme_kalip toplam_kalip
-                        dosya sonuc_str sonuc_yolu girdilen)
+                        dosya sonuc_str sonuc_yolu girdilen
+                        atlanan gcSonuc vlaSonuc alanSonuc)
 
   ;; Katman değişkenleri (Python override edilebilir)
   (if (not (boundp '*IMP_KATMAN_KOLON*))   (setq *IMP_KATMAN_KOLON*   "KOLON"))
@@ -133,16 +134,36 @@
   (if ss_doseme
     (progn
       (setq i 0)
+      (setq atlanan 0)
       (while (< i (sslength ss_doseme))
         (setq ent (ssname ss_doseme i))
-        (setq alan
-          (if (vl-catch-all-error-p
-                (vl-catch-all-apply 'vlax-curve-getArea (list ent)))
-            0.0
-            (abs (vlax-curve-getArea ent))))
-        (setq doseme_kalip (+ doseme_kalip alan))
+        (setq alan 0.0)
+
+        ;; 1. yöntem: vlax-curve-getArea (sadece Closed=Yes eğrilerde çalışır)
+        (setq gcSonuc (vl-catch-all-apply 'vlax-curve-getArea (list ent)))
+        (if (not (vl-catch-all-error-p gcSonuc))
+          (setq alan (abs gcSonuc)))
+
+        ;; 2. yöntem (fallback): vla-get-Area COM özelliği
+        (if (<= alan 0)
+          (progn
+            (setq vlaSonuc (vl-catch-all-apply 'vlax-ename->vla-object (list ent)))
+            (if (not (vl-catch-all-error-p vlaSonuc))
+              (progn
+                (setq alanSonuc (vl-catch-all-apply 'vla-get-Area (list vlaSonuc)))
+                (if (not (vl-catch-all-error-p alanSonuc))
+                  (setq alan (abs alanSonuc)))))))
+
+        (if (> alan 0)
+          (setq doseme_kalip (+ doseme_kalip alan))
+          (progn
+            (setq atlanan (1+ atlanan))
+            (prompt (strcat "\n  ATLANDI (alan=0): " (cdr (assoc 0 (entget ent)))
+                            " — KAPALI (Closed=Yes) olmayabilir"))))
         (setq i (1+ i)))
-      (prompt (strcat "\n  Döşeme Kalıp: " (rtos doseme_kalip 2 3) " m²")))
+      (prompt (strcat "\n  Döşeme Kalıp: " (rtos doseme_kalip 2 3) " m²"))
+      (if (> atlanan 0)
+        (prompt (strcat "\n  ⚠ " (itoa atlanan) " döşeme objesi alan=0 nedeniyle atlandı."))))
     (prompt "\n  Döşeme seçimi atlandı."))
 
   ;; ══════════════════════════════════════════

@@ -1,17 +1,19 @@
 """
 Devlet İhalesi Ana Konteyner Widget
 ====================================
-4734 Kamu İhale Kanunu kapsamındaki tüm alt araçları bir QTabWidget
-altında toplar. Araçlar lazy loading ile yüklenir.
+4734 Kamu İhale Kanunu kapsamındaki tüm alt araçları QTabWidget altında toplar.
+Sekmeler lazy-load + try/except ile yüklenir — bir sekme bozuksa diğerleri etkilenmez.
 
 Alt sekmeler:
- 0 — Yaklaşık Maliyet ve Keşif Özeti
- 1 — Hakediş Kesinti ve Mahsup Hesabı
- 2 — SGK Asgari İşçilik Hesabı
- 3 — Fiyat Farkı Hesabı
- 4 — Birim Fiyat Analiz Cetveli
- 5 — Gecikme Cezası / Süre Uzatımı
- 6 — Teminat Yönetimi
+  0 — Yaklaşık Maliyet ve Keşif Özeti
+  1 — Hakediş Kesinti ve Mahsup Hesabı
+  2 — SGK Asgari İşçilik Hesabı
+  3 — Fiyat Farkı Hesabı
+  4 — Birim Fiyat Analiz Cetveli
+  5 — Gecikme Cezası / Süre Uzatımı
+  6 — Teminat Yönetimi
+
+Rev-79 (2026-04-26): Lazy-load + try/except koruma eklendi.
 """
 from __future__ import annotations
 
@@ -19,21 +21,35 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 DARK_BG = "#1a1a2e"
-ACCENT = "#00BFFF"
+ACCENT  = "#00BFFF"
+
+_SEKME_ISIMLERI = [
+    "Yaklaşık Maliyet",
+    "Hakediş Kesintileri",
+    "SGK İşçilik",
+    "Fiyat Farkı",
+    "Birim Fiyat Analizi",
+    "Gecikme Cezası",
+    "Teminat Yönetimi",
+]
 
 
 class _PlaceholderTab(QWidget):
-    """Henüz eklenmemiş araç için geçici sekme."""
+    """Yükleme sırasında veya hata durumunda gösterilen geçici sekme."""
 
-    def __init__(self, araç_adi: str, parent: QWidget | None = None) -> None:
+    def __init__(self, mesaj: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl = QLabel(f"🚧 {araç_adi}\nGeliştirme aşamasında…")
-        lbl.setFont(QFont("Segoe UI", 14))
+        lbl = QLabel(mesaj or "Yükleniyor…")
+        lbl.setFont(QFont("Segoe UI", 13))
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setWordWrap(True)
         lbl.setStyleSheet("color: #555; padding: 40px;")
         layout.addWidget(lbl)
         self.setStyleSheet(f"background-color: {DARK_BG};")
@@ -43,18 +59,17 @@ class DevletIhalesiWidget(QWidget):
     """
     Devlet İhalesi ana sekmesinin kök widget'ı.
 
-    main_window.py'de lazy-load ile oluşturulur ve index 12'ye yerleştirilir.
+    Her alt sekme ilk tıklandığında lazy-load edilir.
+    Import hatası olursa o sekme hata mesajı gösterir — diğerleri etkilenmez.
     """
 
     def __init__(self, db=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.db = db
-        self._alt_tabs_created: dict[int, bool] = {}
+        self._yuklendi: dict[int, bool] = {}
         self._build_ui()
 
-    # ------------------------------------------------------------------
-    # UI
-    # ------------------------------------------------------------------
+    # ── UI ──────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -63,7 +78,7 @@ class DevletIhalesiWidget(QWidget):
 
         self.alt_tabs = QTabWidget()
         self.alt_tabs.setTabPosition(QTabWidget.TabPosition.North)
-        self.alt_tabs.currentChanged.connect(self._on_alt_tab_changed)
+        self.alt_tabs.currentChanged.connect(self._lazy_yukle)
         self.alt_tabs.setStyleSheet(f"""
             QTabWidget::pane {{
                 border: none;
@@ -88,58 +103,100 @@ class DevletIhalesiWidget(QWidget):
             }}
         """)
 
-        # Sekme 0 — Yaklaşık Maliyet (hemen yükle)
-        from app.ui.yaklasik_maliyet_window import YaklasikMaliyetWindow
-        yaklasik_widget = YaklasikMaliyetWindow(self.db)
-        self.alt_tabs.addTab(yaklasik_widget, "Yaklaşık Maliyet")
-        self._alt_tabs_created[0] = True
-
-        # Sekme 1 — Hakediş Kesintileri (hemen yükle)
-        from app.ui.hakedis_kesinti_window import HakedisKesintWindow
-        hakedis_widget = HakedisKesintWindow(self.db)
-        self.alt_tabs.addTab(hakedis_widget, "Hakediş Kesintileri")
-        self._alt_tabs_created[1] = True
-
-        # Sekme 2 — SGK Asgari İşçilik (hemen yükle)
-        from app.ui.sgk_iscilik_window import SgkIscilkWindow
-        sgk_widget = SgkIscilkWindow(self.db)
-        self.alt_tabs.addTab(sgk_widget, "SGK İşçilik")
-        self._alt_tabs_created[2] = True
-
-        # Sekme 3 — Fiyat Farkı Hesabı (hemen yükle)
-        from app.ui.fiyat_farki_window import FiyatFarkiWindow
-        ff_widget = FiyatFarkiWindow(self.db)
-        self.alt_tabs.addTab(ff_widget, "Fiyat Farkı")
-        self._alt_tabs_created[3] = True
-
-        # Sekme 4 — Birim Fiyat Analiz Cetveli (hemen yükle)
-        from app.ui.birim_fiyat_analiz_window import BirimFiyatAnalizWindow
-        bfa_widget = BirimFiyatAnalizWindow(self.db)
-        self.alt_tabs.addTab(bfa_widget, "Birim Fiyat Analizi")
-        self._alt_tabs_created[4] = True
-
-        # Sekme 5 — Gecikme Cezası (hemen yükle)
-        from app.ui.gecikme_ceza_window import GecikmeCezaWindow
-        gecikme_widget = GecikmeCezaWindow(self.db)
-        self.alt_tabs.addTab(gecikme_widget, "Gecikme Cezası")
-        self._alt_tabs_created[5] = True
-
-        # Sekme 6 — Teminat Yönetimi (hemen yükle)
-        from app.ui.teminat_window import TeminatWindow
-        teminat_widget = TeminatWindow(self.db)
-        self.alt_tabs.addTab(teminat_widget, "Teminat Yönetimi")
-        self._alt_tabs_created[6] = True
+        # Tüm sekmeler placeholder olarak eklenir
+        for isim in _SEKME_ISIMLERI:
+            self.alt_tabs.addTab(_PlaceholderTab("Yükleniyor…"), isim)
 
         root.addWidget(self.alt_tabs)
         self.setStyleSheet(f"background-color: {DARK_BG};")
 
-    # ------------------------------------------------------------------
-    # Lazy loading (ilerideki araçlar için)
-    # ------------------------------------------------------------------
+        # İlk sekmeyi hemen yükle
+        self._lazy_yukle(0)
 
-    def _on_alt_tab_changed(self, index: int) -> None:
-        """
-        Şu an tüm sekmeler hemen yüklendiği için burada ek işlem yok.
-        İleride yeni araçlar lazy-load ile buraya eklenebilir.
-        """
-        pass
+    # ── Lazy load çekirdeği ──────────────────────────────────────────────────
+
+    def _lazy_yukle(self, index: int) -> None:
+        if self._yuklendi.get(index):
+            return
+        _YUKLEYICILER = {
+            0: self._yukle_yaklasik_maliyet,
+            1: self._yukle_hakedis_kesinti,
+            2: self._yukle_sgk,
+            3: self._yukle_fiyat_farki,
+            4: self._yukle_birim_fiyat,
+            5: self._yukle_gecikme,
+            6: self._yukle_teminat,
+        }
+        yukleyici = _YUKLEYICILER.get(index)
+        if yukleyici:
+            yukleyici()
+        self._yuklendi[index] = True
+
+    def _sekme_degistir(self, index: int, widget: QWidget) -> None:
+        """Placeholder'ı gerçek widget ile değiştirir."""
+        self.alt_tabs.blockSignals(True)
+        isim = self.alt_tabs.tabText(index)
+        self.alt_tabs.removeTab(index)
+        self.alt_tabs.insertTab(index, widget, isim)
+        self.alt_tabs.setCurrentIndex(index)
+        self.alt_tabs.blockSignals(False)
+
+    def _hata_goster(self, index: int, hata: Exception) -> None:
+        logger.error("Sekme %d yüklenemedi: %s", index, hata)
+        isim = _SEKME_ISIMLERI[index] if index < len(_SEKME_ISIMLERI) else f"Sekme {index}"
+        w = _PlaceholderTab(
+            f"🚧 {isim}\nYüklenemedi — modül bozuk veya eksik.\n\n"
+            f"Hata: {type(hata).__name__}: {str(hata)[:120]}"
+        )
+        self._sekme_degistir(index, w)
+
+    # ── Bireysel yükleyiciler ────────────────────────────────────────────────
+
+    def _yukle_yaklasik_maliyet(self) -> None:
+        try:
+            from app.ui.yaklasik_maliyet_window import YaklasikMaliyetWindow
+            self._sekme_degistir(0, YaklasikMaliyetWindow(self.db))
+        except Exception as e:
+            self._hata_goster(0, e)
+
+    def _yukle_hakedis_kesinti(self) -> None:
+        try:
+            from app.ui.hakedis_kesinti_window import HakedisKesintWindow
+            self._sekme_degistir(1, HakedisKesintWindow(self.db))
+        except Exception as e:
+            self._hata_goster(1, e)
+
+    def _yukle_sgk(self) -> None:
+        try:
+            from app.ui.sgk_iscilik_window import SgkIscilkWindow
+            self._sekme_degistir(2, SgkIscilkWindow(self.db))
+        except Exception as e:
+            self._hata_goster(2, e)
+
+    def _yukle_fiyat_farki(self) -> None:
+        try:
+            from app.ui.fiyat_farki_window import FiyatFarkiWindow
+            self._sekme_degistir(3, FiyatFarkiWindow(self.db))
+        except Exception as e:
+            self._hata_goster(3, e)
+
+    def _yukle_birim_fiyat(self) -> None:
+        try:
+            from app.ui.birim_fiyat_analiz_window import BirimFiyatAnalizWindow
+            self._sekme_degistir(4, BirimFiyatAnalizWindow(self.db))
+        except Exception as e:
+            self._hata_goster(4, e)
+
+    def _yukle_gecikme(self) -> None:
+        try:
+            from app.ui.gecikme_ceza_window import GecikmeCezaWindow
+            self._sekme_degistir(5, GecikmeCezaWindow(self.db))
+        except Exception as e:
+            self._hata_goster(5, e)
+
+    def _yukle_teminat(self) -> None:
+        try:
+            from app.ui.teminat_window import TeminatWindow
+            self._sekme_degistir(6, TeminatWindow(self.db))
+        except Exception as e:
+            self._hata_goster(6, e)

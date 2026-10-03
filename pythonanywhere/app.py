@@ -3,16 +3,39 @@ Puantaj API - PythonAnywhere versiyonu
 Tek dosya, bagimsiz calisir
 """
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, send_file
 from datetime import datetime, date, timedelta
+from io import BytesIO
 import sqlite3
 import os
+import shutil
+import glob
 
 app = Flask(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'puantaj.db')
 
+def _gunluk_otomatik_yedek():
+    # NEYI COZUYORUZ: puantaj.db'nin hicbir yedegi yoktu, tek bir dosya
+    # bozulursa/silinirse TUM veri kaybolurdu. Uygulama her basladiginda
+    # (gunde en fazla 1 kez, ayni gun tekrar tetiklenmez) backups/ altina
+    # tarihli bir kopya alinir, en fazla son 14 gun tutulur.
+    backup_dir = os.path.join(os.path.dirname(DB_PATH), 'backups')
+    os.makedirs(backup_dir, exist_ok=True)
+    hedef = os.path.join(backup_dir, 'puantaj_' + date.today().isoformat() + '.db')
+    if not os.path.exists(hedef):
+        shutil.copy2(DB_PATH, hedef)
+    yedekler = sorted(glob.glob(os.path.join(backup_dir, 'puantaj_*.db')))
+    fazla = len(yedekler) - 14
+    for eski in yedekler[:max(fazla, 0)]:
+        try:
+            os.remove(eski)
+        except OSError:
+            pass
+
+
 def init_db():
+    ilk_calistirma = not os.path.exists(DB_PATH)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS isci (
@@ -39,6 +62,14 @@ def init_db():
         conn.commit()
     except Exception:
         pass
+    # Rev-107 tek seferlik backfill (kullanici onayli): migration-oncesi
+    # eski puantaj kayitlarinda gunluk_ucret NULL - guncel isci.gunluk_ucret
+    # ile doldurulur. Idempotent: sadece NULL kalanlari hedefler, ilk
+    # calistirmadan sonra hicbir etkisi kalmaz.
+    c.execute('''UPDATE puantaj SET gunluk_ucret = (
+                    SELECT gunluk_ucret FROM isci WHERE isci.id = puantaj.isci_id
+                 ) WHERE gunluk_ucret IS NULL''')
+    conn.commit()
     c.execute('''CREATE TABLE IF NOT EXISTS ek_gider (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ad TEXT NOT NULL,
@@ -89,13 +120,26 @@ def init_db():
         fiyat REAL NOT NULL,
         gecerli_tarih DATE NOT NULL UNIQUE
     )''')
+    # NEYI COZUYORUZ: Mobil vinc isinden kazanilan/harcanan paralar isci-
+    # puantaj hesaplarindan TAMAMEN AYRI, bagimsiz bir gelir-gider defteri
+    # istendi (Giderler sekmesinin yerine, ek_gider tablosuyla ilgisi yok).
+    c.execute('''CREATE TABLE IF NOT EXISTS vinc_defter (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tarih DATE DEFAULT CURRENT_DATE,
+        tip TEXT NOT NULL,
+        aciklama TEXT,
+        miktar REAL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
     conn.commit()
     conn.close()
+    if not ilk_calistirma:
+        _gunluk_otomatik_yedek()
 
 init_db()
 
 
-HTML_TEMPLATE = '''<!DOCTYPE html>
+HTML_TEMPLATE = r'''<!DOCTYPE html>
 <html lang="tr">
 <head>
 <meta charset="UTF-8">
@@ -118,6 +162,7 @@ body{font-family:-apple-system,Arial,sans-serif;background:var(--bg);color:var(-
 .stat .lbl{font-size:11px;color:#a0a0a0;margin-top:2px}
 .stat.ok .num{color:var(--ok)}
 .stat.wr .num{color:var(--wr)}
+.stat.er .num{color:var(--er)}
 .tabs{display:flex;padding:0 8px;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch}
 .tab{padding:8px 14px;border:none;border-radius:10px;background:var(--card);color:#a0a0a0;font-size:13px;white-space:nowrap;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .tab.aktif{background:var(--pr);color:#fff;font-weight:600}
@@ -210,7 +255,7 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   <button class="tab aktif" onclick="sekme('puantaj',this)">Puantaj</button>
   <button class="tab" onclick="sekme('ozet',this)">Ozet</button>
   <button class="tab" onclick="sekme('aylik',this)">Aylik</button>
-  <button class="tab" onclick="sekme('gider',this)">Giderler</button>
+  <button class="tab" onclick="sekme('vinc',this)">Mobil Vinc</button>
   <button class="tab" onclick="sekme('isciler',this)">Isciler</button>
   <button class="tab" onclick="sekme('ayarlar',this)">Ayarlar</button>
 </div>
@@ -222,6 +267,7 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
 
 <!-- ÖZET PANELİ -->
 <div id="panel-ozet" class="panel">
+  <button class="btn btn-ok" style="margin-bottom:10px" onclick="window.open('/api/pdf/haftalik')">Haftalik PDF Indir</button>
   <div id="ozetList"><div class="empty">Yukleniyor...</div></div>
 </div>
 
@@ -230,14 +276,23 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   <div style="padding:0 0 10px;display:flex;gap:8px;align-items:center">
     <input type="month" id="aylikAy" style="flex:1;padding:10px;border:none;border-radius:10px;background:var(--inp);color:var(--tx);font-size:15px">
     <button class="btn btn-pr" style="width:auto;padding:10px 16px;margin:0" onclick="loadAylik()">Goster</button>
+    <button class="btn btn-ok" style="width:auto;padding:10px 16px;margin:0" onclick="pdfAylikIndir()">PDF Indir</button>
   </div>
   <div id="aylikList"><div class="empty">Ay secin</div></div>
 </div>
 
-<!-- GİDER PANELİ -->
-<div id="panel-gider" class="panel">
-  <button class="btn btn-pr" onclick="giderEkleModal()">+ Gider Ekle</button>
-  <div id="giderList" style="margin-top:10px"><div class="empty">Yukleniyor...</div></div>
+<!-- MOBİL VİNÇ PANELİ -->
+<div id="panel-vinc" class="panel">
+  <div class="stats" style="padding:0 0 10px">
+    <div class="stat ok"><div class="num" id="vinc-gelir">-</div><div class="lbl">Toplam Gelir</div></div>
+    <div class="stat er"><div class="num" id="vinc-gider">-</div><div class="lbl">Toplam Gider</div></div>
+    <div class="stat" id="vinc-net-stat"><div class="num" id="vinc-net">-</div><div class="lbl">Net Kar/Zarar</div></div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-ok" style="flex:1" onclick="vincGelirEkleModal()">+ Gelir Ekle</button>
+    <button class="btn btn-er" style="flex:1" onclick="vincGiderEkleModal()">+ Gider Ekle</button>
+  </div>
+  <div id="vincList" style="margin-top:10px"><div class="empty">Yukleniyor...</div></div>
 </div>
 
 <!-- İŞÇİLER PANELİ -->
@@ -262,6 +317,12 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
     <button class="btn btn-pr" onclick="hatirlatmaEkleModal()" style="margin-bottom:10px">+ Hatirlatma Ekle</button>
     <div id="hatirlatma-list"></div>
   </div>
+  <div class="ozet-kart" style="margin-top:10px">
+    <h3>Yedekleme</h3>
+    <p style="font-size:12px;color:#a0a0a0;margin-bottom:10px">Tum verilerinizin yedegini bilgisayariniza indirin.</p>
+    <button class="btn btn-ok" onclick="window.open('/api/yedek/indir')" style="margin-bottom:8px">Veritabanini Indir</button>
+    <button class="btn btn-pr" onclick="window.open('/api/yedek/json')">JSON Yedek Al</button>
+  </div>
 </div>
 
 
@@ -276,8 +337,8 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1)}
   <button class="nav-btn" onclick="sekme('aylik',this)" id="nav-aylik">
     <span class="ico">&#128197;</span><span>Aylik</span>
   </button>
-  <button class="nav-btn" onclick="sekme('gider',this)" id="nav-gider">
-    <span class="ico">&#128181;</span><span>Giderler</span>
+  <button class="nav-btn" onclick="sekme('vinc',this)" id="nav-vinc">
+    <span class="ico">&#x1F3D7;</span><span>Vinc</span>
   </button>
   <button class="nav-btn" onclick="sekme('isciler',this)" id="nav-isciler">
     <span class="ico">&#128104;</span><span>Isciler</span>
@@ -310,6 +371,19 @@ function fmt(n) {
 function fmtTL(n) {
   if (n === null || n === undefined) return '0 TL';
   return Number(n).toLocaleString('tr-TR') + ' TL';
+}
+function escHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// Turkce sayi girisini (binlik nokta, ondalik virgul) parseFloat icin normalize eder.
+// TR locale kurali: nokta HER ZAMAN binlik ayiraci, virgul HER ZAMAN ondalik ayiraci.
+// "1.500" -> 1500 | "1500,50" -> 1500.50 | "1.500,50" -> 1500.50
+function parseTLInput(s) {
+  if (s === null || s === undefined) return NaN;
+  s = String(s).trim().replace(/\./g, '').replace(',', '.');
+  return parseFloat(s);
 }
 function toast(m, t) {
   var el = document.getElementById('toast');
@@ -370,7 +444,7 @@ function sekme(id, btn) {
 
   if (id === 'ozet') loadOzet();
   if (id === 'aylik') loadAylik();
-  if (id === 'gider') loadGider();
+  if (id === 'vinc') loadVinc();
   if (id === 'isciler') loadIsciler();
   if (id === 'ayarlar') loadAyarlar();
 }
@@ -442,7 +516,7 @@ function renderPuantaj(t) {
     html += '<div style="display:flex;align-items:center;gap:10px;padding:12px 14px">';
     html += '<div class="avt" style="cursor:pointer" onclick="kartAc(' + isc.id + ')">' + ilk + '</div>';
     html += '<div style="flex:1;min-width:0;cursor:pointer" onclick="kartAc(' + isc.id + ')">';
-    html += '<div style="font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + isc.ad_soyad + '</div>';
+    html += '<div style="font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(isc.ad_soyad) + '</div>';
     html += '<div style="font-size:12px;color:#a0a0a0">' + (isc.ustalik || '') + ' &bull; ' + fmtTL(isc.gunluk_ucret) + '/gun</div>';
     html += '</div>';
     // Hızlı durum butonları
@@ -460,7 +534,7 @@ function renderPuantaj(t) {
     html += '<div class="form-row" style="flex:1"><label>Cikis</label><input type="time" id="cik-' + isc.id + '" value="' + cikis + '"></div>';
     html += '</div>';
     html += '<div class="form-row"><label>Mesai (Saat)</label><input type="number" id="mes-' + isc.id + '" value="' + mesai + '" step="0.5" min="0" max="12"></div>';
-    html += '<div class="form-row"><label>Yapilan Is</label><textarea id="yis-' + isc.id + '">' + yis + '</textarea></div>';
+    html += '<div class="form-row"><label>Yapilan Is</label><textarea id="yis-' + isc.id + '">' + escHtml(yis) + '</textarea></div>';
     html += '<button class="btn btn-ok" onclick="kaydet(' + isc.id + ')">Saat / Not Kaydet</button>';
     if (p) {
       html += '<button class="btn btn-er" style="margin-top:6px" onclick="puSil(' + isc.id + ')">Kaydi Sil</button>';
@@ -602,9 +676,9 @@ function loadOzet(koruyScroll) {
       }
     }
     if (d.civi_toplam > 0) {
-      html += '<div class="ozet-row"><span>Civi Alimi</span><span class="tutar ' + (d.civi_kalan > 0 ? 'er' : 'ok') + '">' + fmtTL(d.civi_kalan) + ' kalan / ' + fmtTL(d.civi_toplam) + ' toplam</span></div>';
+      html += '<div class="ozet-row"><span>Civi Alimi</span><span class="tutar er">' + fmtTL(d.civi_toplam) + '</span></div>';
     }
-    var buHaftaToplam = (d.toplam_kalan || 0) + Math.max(yNet, 0) + (d.civi_kalan || 0);
+    var buHaftaToplam = (d.toplam_kalan || 0) + Math.max(yNet, 0) + (d.civi_toplam || 0);
     html += '<div class="ozet-row" style="border-top:2px solid #ffffff25;margin-top:6px;padding-top:8px"><span><strong>Bu Haftaki Toplam</strong></span><span style="color:var(--pr);font-weight:700;font-size:16px">' + fmtTL(buHaftaToplam) + '</span></div>';
     html += '</div>';
 
@@ -644,7 +718,7 @@ function loadOzet(koruyScroll) {
       var isc = d.isciler[j];
       ISCI_AD_MAP[isc.id] = isc.ad_soyad;
       html += '<div class="isci-ozet-kart">';
-      html += '<div class="ad">' + isc.ad_soyad + '</div>';
+      html += '<div class="ad">' + escHtml(isc.ad_soyad) + '</div>';
       html += '<div class="satirlar">';
       html += '<span>Bu Hafta Gelen Gun</span><strong>' + (isc.bu_hafta_gun || 0) + ' gun</strong>';
       html += '<span>Kalan Yevmiye (Toplam Borc)</span><strong>' + (isc.yevmiye || 0) + ' gun</strong>';
@@ -674,7 +748,7 @@ function odemeYap(isciId, kalan) {
   var ad = ISCI_AD_MAP[isciId] || 'Isci';
   var miktar = prompt(ad + ' icin odeme miktari (TL):', Math.round(kalan));
   if (!miktar) return;
-  miktar = parseFloat(miktar);
+  miktar = parseTLInput(miktar);
   if (isNaN(miktar) || miktar <= 0) { toast('Gecersiz miktar'); return; }
   apiFetch('/api/odeme', {
     method: 'POST',
@@ -702,25 +776,25 @@ function isciDetay(isciId) {
       var g = p.calisma_durumu === 'bir_bucuk_gun' ? 1.5 : (p.calisma_durumu === 'tam_gun' ? 1 : (p.calisma_durumu === 'yarim_gun' ? 0.5 : 0));
       ayGun[ay] += g;
     }
-    var metin = d.ad_soyad + ' - Gunluk Ucret: ' + fmtTL(d.gunluk_ucret) + '\\n\\n';
-    metin += 'AYLIK CALISMA (gun):\\n';
+    var metin = d.ad_soyad + ' - Gunluk Ucret: ' + fmtTL(d.gunluk_ucret) + '\n\n';
+    metin += 'AYLIK CALISMA (gun):\n';
     var aylar = Object.keys(ayGun).sort();
     for (var k = 0; k < aylar.length; k++) {
-      metin += '  ' + aylar[k] + ': ' + ayGun[aylar[k]] + ' gun\\n';
+      metin += '  ' + aylar[k] + ': ' + ayGun[aylar[k]] + ' gun\n';
     }
-    metin += '\\nODEMELER:\\n';
+    metin += '\nODEMELER:\n';
     if (d.odemeler.length === 0) {
-      metin += '  (hic odeme yok)\\n';
+      metin += '  (hic odeme yok)\n';
     }
     for (var m = 0; m < d.odemeler.length; m++) {
       var o = d.odemeler[m];
-      metin += '  ' + o.tarih + ': ' + fmtTL(o.miktar) + (o.aciklama ? ' (' + o.aciklama + ')' : '') + '\\n';
+      metin += '  ' + o.tarih + ': ' + fmtTL(o.miktar) + (o.aciklama ? ' (' + o.aciklama + ')' : '') + '\n';
     }
-    metin += '\\nOZET:\\n';
-    metin += '  Toplam Calisilan Gun: ' + d.toplam_gun + '\\n';
-    metin += '  Toplam Mesai Saati: ' + d.toplam_mesai_saat + '\\n';
-    metin += '  Toplam Hakedis: ' + fmtTL(d.hakedis) + '\\n';
-    metin += '  Toplam Odenen: ' + fmtTL(d.odenen) + '\\n';
+    metin += '\nOZET:\n';
+    metin += '  Toplam Calisilan Gun: ' + d.toplam_gun + '\n';
+    metin += '  Toplam Mesai Saati: ' + d.toplam_mesai_saat + '\n';
+    metin += '  Toplam Hakedis: ' + fmtTL(d.hakedis) + '\n';
+    metin += '  Toplam Odenen: ' + fmtTL(d.odenen) + '\n';
     metin += '  Kalan Borc: ' + fmtTL(d.kalan) + ' (' + d.kalan_gun + ' gun)';
     alert(metin);
   }).catch(function(e) { toast('Hata: ' + e.message); });
@@ -730,7 +804,7 @@ function yemekOde(kalan) {
   _OZET_SCROLL = window.scrollY;
   var miktar = prompt('Yemek odemesi miktari (TL):', Math.round(kalan));
   if (!miktar) return;
-  miktar = parseFloat(miktar);
+  miktar = parseTLInput(miktar);
   if (isNaN(miktar) || miktar <= 0) { toast('Gecersiz miktar'); return; }
   apiFetch('/api/yemek/ode', {
     method: 'POST',
@@ -752,7 +826,7 @@ function civiGiderEkle() {
   _OZET_SCROLL = window.scrollY;
   var miktar = prompt('Bu haftaki civi alimi miktari (TL):', '');
   if (!miktar) return;
-  miktar = parseFloat(miktar);
+  miktar = parseTLInput(miktar);
   if (isNaN(miktar) || miktar <= 0) { toast('Gecersiz miktar'); return; }
   apiFetch('/api/civi/gider', {
     method: 'POST',
@@ -766,7 +840,7 @@ function civiOde(kalan) {
   _OZET_SCROLL = window.scrollY;
   var miktar = prompt('Civi odemesi miktari (TL):', Math.round(kalan));
   if (!miktar) return;
-  miktar = parseFloat(miktar);
+  miktar = parseTLInput(miktar);
   if (isNaN(miktar) || miktar <= 0) { toast('Gecersiz miktar'); return; }
   apiFetch('/api/civi/ode', {
     method: 'POST',
@@ -793,6 +867,12 @@ function civiGiderSil(giderId, miktar) {
 }
 
 // ====== AYLIK ======
+function pdfAylikIndir() {
+  var ay = document.getElementById('aylikAy').value;
+  if (!ay) { toast('Once ay secin'); return; }
+  window.open('/api/pdf/aylik?ay=' + ay);
+}
+
 function loadAylik() {
   var ay = document.getElementById('aylikAy').value;
   if (!ay) { toast('Ay secin'); return; }
@@ -824,7 +904,7 @@ function loadAylik() {
       AYLIK_GUNLER[isc.id] = isc.gunler || {};
       ISCI_AD_MAP[isc.id] = isc.ad_soyad;
       html += '<div class="isci-ozet-kart" style="cursor:pointer" onclick="takvimGoster(' + isc.id + ',' + ayGunSayisi + ')">';
-      html += '<div class="ad">' + isc.ad_soyad + ' <small style="color:#a0a0a0;font-weight:400">' + (isc.ustalik || '') + '</small>';
+      html += '<div class="ad">' + escHtml(isc.ad_soyad) + ' <small style="color:#a0a0a0;font-weight:400">' + escHtml(isc.ustalik || '') + '</small>';
       html += ' <small style="color:#3498db;font-size:10px">&#128197; Devam goster</small></div>';
       html += '<div class="satirlar">';
       html += '<span>Yevmiye</span><strong>' + isc.aylik_yevmiye + ' gun</strong>';
@@ -876,65 +956,75 @@ function takvimGoster(isciId, ayGunSayisi) {
   document.getElementById('modal-arka').className = 'modal-arka';
 }
 
-// ====== GİDERLER ======
-function loadGider() {
-  var t = document.getElementById('tarih').value;
-  var ay = t ? t.substring(0, 7) : new Date().toISOString().substring(0, 7);
-  document.getElementById('giderList').innerHTML = '<div class="empty">Yukleniyor...</div>';
-  apiFetch('/api/gider?ay=' + ay).then(function(rows) {
+// ====== MOBİL VİNÇ ======
+var VINC_TIP = 'gelir';
+
+function loadVinc() {
+  document.getElementById('vincList').innerHTML = '<div class="empty">Yukleniyor...</div>';
+  apiFetch('/api/vinc/liste').then(function(r) {
+    document.getElementById('vinc-gelir').textContent = fmtTL(r.toplam_gelir);
+    document.getElementById('vinc-gider').textContent = fmtTL(r.toplam_gider);
+    document.getElementById('vinc-net').textContent = fmtTL(r.net);
+    document.getElementById('vinc-net-stat').className = 'stat ' + (r.net >= 0 ? 'ok' : 'er');
+    var rows = r.kayitlar;
     if (!rows.length) {
-      document.getElementById('giderList').innerHTML = '<div class="empty">Bu ay gider yok</div>';
+      document.getElementById('vincList').innerHTML = '<div class="empty">Henuz kayit yok</div>';
       return;
     }
-    var toplam = 0;
     var html = '';
     for (var i = 0; i < rows.length; i++) {
-      var g = rows[i];
-      toplam += g.tutar || 0;
+      var k = rows[i];
+      var gelirMi = k.tip === 'gelir';
+      var renk = gelirMi ? 'var(--ok)' : 'var(--er)';
+      var isaret = gelirMi ? '+ ' : '- ';
       html += '<div class="kart" style="padding:12px 14px;display:flex;justify-content:space-between;align-items:center">';
-      html += '<div><div style="font-weight:600">' + g.ad + '</div><div style="font-size:12px;color:#a0a0a0">' + (g.tarih || '') + '</div></div>';
+      html += '<div><div style="font-weight:600">' + escHtml(k.aciklama || (gelirMi ? 'Gelir' : 'Gider')) + '</div><div style="font-size:12px;color:#a0a0a0">' + (k.tarih || '') + '</div></div>';
       html += '<div style="display:flex;align-items:center;gap:8px">';
-      html += '<span style="font-weight:700;color:var(--er)">' + fmtTL(g.tutar) + '</span>';
-      html += '<button onclick="giderSil(' + g.id + ')" style="background:none;border:none;color:var(--er);font-size:18px;cursor:pointer">&#128465;</button>';
+      html += '<span style="font-weight:700;color:' + renk + '">' + isaret + fmtTL(k.miktar) + '</span>';
+      html += '<button onclick="vincSil(' + k.id + ')" style="background:none;border:none;color:var(--er);font-size:18px;cursor:pointer">&#128465;</button>';
       html += '</div></div>';
     }
-    html += '<div class="ozet-kart" style="margin-top:8px"><div class="ozet-row"><span>Toplam Gider</span><span class="tutar er">' + fmtTL(toplam) + '</span></div></div>';
-    document.getElementById('giderList').innerHTML = html;
+    document.getElementById('vincList').innerHTML = html;
   }).catch(function(e) {
-    document.getElementById('giderList').innerHTML = '<div class="empty" style="color:var(--er)">Hata: ' + e.message + '</div>';
+    document.getElementById('vincList').innerHTML = '<div class="empty" style="color:var(--er)">Hata: ' + e.message + '</div>';
   });
 }
 
-function giderEkleModal() {
+function vincGelirEkleModal() { VINC_TIP = 'gelir'; vincEkleModalOrtak('Gelir Ekle', 'Vinc kirasi, hizmet bedeli...'); }
+function vincGiderEkleModal() { VINC_TIP = 'gider'; vincEkleModalOrtak('Gider Ekle', 'Yakit, bakim, tamir...'); }
+
+function vincEkleModalOrtak(baslik, placeholder) {
   var t = document.getElementById('tarih').value || new Date().toISOString().substring(0, 10);
   document.getElementById('modal-ici').innerHTML =
     '<button class="kapanis-btn" onclick="modalKapat()">&#10005;</button>' +
-    '<h2>Gider Ekle</h2>' +
-    '<div class="form-row"><label>Gider Adi</label><input type="text" id="g-ad" placeholder="Malzeme, Nakliye..."></div>' +
-    '<div class="form-row"><label>Tutar (TL)</label><input type="number" id="g-tutar" placeholder="0" step="1"></div>' +
-    '<div class="form-row"><label>Tarih</label><input type="text" id="g-tarih" value="' + t + '" placeholder="YYYY-MM-DD"></div>' +
-    '<div class="form-row"><label>Aciklama</label><textarea id="g-acik" placeholder="Opsiyonel..."></textarea></div>' +
-    '<button class="btn btn-ok" onclick="giderKaydet()">Kaydet</button>';
+    '<h2>' + baslik + '</h2>' +
+    '<div class="form-row"><label>Tarih</label><input type="text" id="v-tarih" value="' + t + '" placeholder="YYYY-MM-DD"></div>' +
+    '<div class="form-row"><label>Aciklama</label><input type="text" id="v-acik" placeholder="' + placeholder + '"></div>' +
+    '<div class="form-row"><label>Tutar (TL)</label><input type="text" id="v-miktar" placeholder="0"></div>' +
+    '<button class="btn ' + (VINC_TIP === 'gelir' ? 'btn-ok' : 'btn-er') + '" onclick="vincKaydet()">Kaydet</button>';
   document.getElementById('modal-arka').className = 'modal-arka';
 }
 
-function giderKaydet() {
-  var ad = document.getElementById('g-ad').value.trim();
-  var tutar = parseFloat(document.getElementById('g-tutar').value);
-  if (!ad || isNaN(tutar)) { toast('Ad ve tutar gerekli'); return; }
-  var tarih = document.getElementById('g-tarih').value || new Date().toISOString().substring(0, 10);
-  apiFetch('/api/gider', {
+function vincKaydet() {
+  var miktar = parseTLInput(document.getElementById('v-miktar').value);
+  if (isNaN(miktar) || miktar <= 0) { toast('Gecerli bir tutar girin'); return; }
+  var tarih = document.getElementById('v-tarih').value || new Date().toISOString().substring(0, 10);
+  var aciklama = document.getElementById('v-acik').value.trim();
+  apiFetch('/api/vinc/ekle', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ad: ad, tutar: tutar, tarih: tarih, ay: tarih.substring(0, 7), aciklama: document.getElementById('g-acik').value})
-  }).then(function() { modalKapat(); toast('Gider eklendi'); loadGider(); })
+    body: JSON.stringify({tip: VINC_TIP, tarih: tarih, aciklama: aciklama, miktar: miktar})
+  }).then(function() { modalKapat(); toast(VINC_TIP === 'gelir' ? 'Gelir eklendi' : 'Gider eklendi'); loadVinc(); })
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
-function giderSil(id) {
-  if (!confirm('Bu gideri sil?')) return;
-  apiFetch('/api/gider/' + id, {method: 'DELETE'})
-    .then(function() { toast('Silindi'); loadGider(); })
+function vincSil(id) {
+  if (!confirm('Bu kaydi sil?')) return;
+  apiFetch('/api/vinc/sil', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: id})
+  }).then(function() { toast('Silindi'); loadVinc(); })
     .catch(function(e) { toast('Hata: ' + e.message); });
 }
 
@@ -954,11 +1044,11 @@ function loadIsciler() {
       html += '<div class="kart-ust" onclick="isciDetay(' + isc.id + ')">';
       html += '<div class="avt">' + ilk + '</div>';
       html += '<div class="kart-bilgi">';
-      html += '<div class="ad">' + isc.ad_soyad + '</div>';
-      html += '<div class="alt">' + (isc.ustalik || '') + ' &bull; ' + fmtTL(isc.gunluk_ucret) + '/gun</div>';
+      html += '<div class="ad">' + escHtml(isc.ad_soyad) + '</div>';
+      html += '<div class="alt">' + escHtml(isc.ustalik || '') + ' &bull; ' + fmtTL(isc.gunluk_ucret) + '/gun</div>';
       html += '</div><span style="color:#a0a0a0">&#9998;</span></div>';
       html += '<div class="kart-detay" id="idet-' + isc.id + '" style="display:none">';
-      html += '<div class="form-row"><label>Ad Soyad</label><input type="text" id="iad-' + isc.id + '" value="' + isc.ad_soyad + '"></div>';
+      html += '<div class="form-row"><label>Ad Soyad</label><input type="text" id="iad-' + isc.id + '" value="' + escHtml(isc.ad_soyad) + '"></div>';
       html += '<div class="form-row"><label>Ustalik</label><select id="iust-' + isc.id + '">';
       var ustaliklar = ['Usta','Yamak','Duz Isci','Kalipci','Demirci','Siva Ustasi','Boya Ustasi','Elektrikci','Tesisatci','Forklift Operatoru','Vinccu'];
       for (var u = 0; u < ustaliklar.length; u++) {
@@ -1058,16 +1148,16 @@ function checkReminders() {
       var p = list[i].tarih.split('-');
       var dt = new Date(parseInt(p[0]), parseInt(p[1])-1, parseInt(p[2]));
       var fark = Math.ceil((dt - bugun) / 86400000);
-      if (fark >= 0) {
-        yakin.push({ad: list[i].ad, fark: fark, aciklama: list[i].aciklama || ''});
-      }
+      yakin.push({ad: list[i].ad, fark: fark, aciklama: list[i].aciklama || ''});
     }
+    yakin.sort(function(a, b) { return a.fark - b.fark; });
     var banner = document.getElementById('hat-banner');
     if (yakin.length) {
       var bhtml = '<div class="hatbanner-hdr">&#9888; Odeme Hatirlatmasi <button onclick="kapatBanner()" style="background:none;border:none;color:#ff9800;font-size:18px;cursor:pointer;padding:0">&#10005;</button></div>';
       for (var j = 0; j < yakin.length; j++) {
-        var msg = yakin[j].fark === 0 ? 'BUGUN - ' : yakin[j].fark + ' gun kaldi: ';
-        bhtml += '<div class="hatbanner-satir">' + msg + '<strong>' + yakin[j].ad + '</strong>' + (yakin[j].aciklama ? ' (' + yakin[j].aciklama + ')' : '') + '</div>';
+        var gecikti = yakin[j].fark < 0;
+        var msg = gecikti ? (-yakin[j].fark) + ' gun gecikti - ' : (yakin[j].fark === 0 ? 'BUGUN - ' : yakin[j].fark + ' gun kaldi: ');
+        bhtml += '<div class="hatbanner-satir"' + (gecikti ? ' style="color:var(--er);font-weight:700"' : '') + '>' + msg + '<strong>' + escHtml(yakin[j].ad) + '</strong>' + (yakin[j].aciklama ? ' (' + escHtml(yakin[j].aciklama) + ')' : '') + '</div>';
       }
       banner.innerHTML = bhtml;
       banner.className = 'hatbanner';
@@ -1094,8 +1184,8 @@ function loadHatirlatmalar() {
       var renk = fark < 0 ? 'var(--er)' : fark <= 7 ? 'var(--wr)' : 'var(--ok)';
       var etiket = fark < 0 ? 'Gecti' : fark === 0 ? 'Bugun' : fark + ' gun kaldi';
       html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #ffffff0a">';
-      html += '<div><div style="font-size:14px;font-weight:600">' + list[i].ad + '</div>';
-      html += '<div style="font-size:12px;color:#a0a0a0">' + list[i].tarih + (list[i].aciklama ? ' - ' + list[i].aciklama : '') + '</div></div>';
+      html += '<div><div style="font-size:14px;font-weight:600">' + escHtml(list[i].ad) + '</div>';
+      html += '<div style="font-size:12px;color:#a0a0a0">' + list[i].tarih + (list[i].aciklama ? ' - ' + escHtml(list[i].aciklama) : '') + '</div></div>';
       html += '<div style="display:flex;align-items:center;gap:8px">';
       html += '<span style="font-size:12px;font-weight:700;color:' + renk + '">' + etiket + '</span>';
       html += '<button onclick="hatirlatmaSil(' + list[i].id + ')" style="background:none;border:none;color:var(--er);font-size:16px;cursor:pointer">&#128465;</button>';
@@ -1364,14 +1454,25 @@ def api_puantaj():
     if request.method == 'POST':
         d = request.json
         tarih = d.get('tarih', date.today().isoformat())
+        c.execute('SELECT gunluk_ucret FROM isci WHERE id=?', (d.get('isci_id'),))
+        isc_row = c.fetchone()
+        if not isc_row:
+            conn.close()
+            return jsonify({'error': 'Isci bulunamadi'}), 404
+        o_anki_ucret = isc_row['gunluk_ucret'] or 0
         c.execute('SELECT id FROM puantaj WHERE isci_id=? AND tarih=?', (d.get('isci_id'), tarih))
         ex = c.fetchone()
         if ex:
-            c.execute('UPDATE puantaj SET giris_saati=?, cikis_saati=?, calisma_durumu=?, mesai_saat=?, yapilan_is=? WHERE id=?',
-                      (d.get('giris_saati'), d.get('cikis_saati'), d.get('calisma_durumu','tam_gun'), d.get('mesai_saat',0), d.get('yapilan_is'), ex['id']))
+            # gunluk_ucret UPDATE'te KOSULSUZ ezilmez: gun ilk kaydedildiginde
+            # (INSERT'te) kilitlenir. Ayni gune sonradan donup mesai/not
+            # eklerken ucret degismis olabilir - COALESCE eski (NULL olmayan)
+            # degeri korur, sadece eski (migration-oncesi) NULL kayitlari
+            # o anki ucretle doldurur.
+            c.execute('UPDATE puantaj SET giris_saati=?, cikis_saati=?, calisma_durumu=?, mesai_saat=?, yapilan_is=?, gunluk_ucret=COALESCE(gunluk_ucret,?) WHERE id=?',
+                      (d.get('giris_saati'), d.get('cikis_saati'), d.get('calisma_durumu','tam_gun'), d.get('mesai_saat',0), d.get('yapilan_is'), o_anki_ucret, ex['id']))
         else:
-            c.execute('INSERT INTO puantaj (isci_id, tarih, giris_saati, cikis_saati, calisma_durumu, mesai_saat, yapilan_is) VALUES (?,?,?,?,?,?,?)',
-                      (d.get('isci_id'), tarih, d.get('giris_saati'), d.get('cikis_saati'), d.get('calisma_durumu','tam_gun'), d.get('mesai_saat',0), d.get('yapilan_is')))
+            c.execute('INSERT INTO puantaj (isci_id, tarih, giris_saati, cikis_saati, calisma_durumu, mesai_saat, yapilan_is, gunluk_ucret) VALUES (?,?,?,?,?,?,?,?)',
+                      (d.get('isci_id'), tarih, d.get('giris_saati'), d.get('cikis_saati'), d.get('calisma_durumu','tam_gun'), d.get('mesai_saat',0), d.get('yapilan_is'), o_anki_ucret))
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'message': 'Kaydedildi'})
@@ -1419,6 +1520,29 @@ def api_ayarlar():
     conn.close()
     return jsonify(rows)
 
+@app.route('/api/yedek/indir')
+def api_yedek_indir():
+    dosya_adi = 'puantaj_yedek_' + date.today().isoformat() + '.db'
+    return send_file(DB_PATH, as_attachment=True, download_name=dosya_adi)
+
+@app.route('/api/yedek/json')
+def api_yedek_json():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    tablolar = ['isci', 'puantaj', 'ek_gider', 'odeme', 'ayarlar', 'yemek_odeme',
+                'civi_gider', 'civi_odeme', 'odeme_hatirlatma', 'yemek_fiyat_gecmisi',
+                'vinc_defter']
+    yedek = {}
+    for tablo in tablolar:
+        c.execute('SELECT * FROM ' + tablo)
+        yedek[tablo] = [dict(r) for r in c.fetchall()]
+    conn.close()
+    dosya_adi = 'puantaj_yedek_' + date.today().isoformat() + '.json'
+    resp = jsonify(yedek)
+    resp.headers['Content-Disposition'] = 'attachment; filename=' + dosya_adi
+    return resp
+
 @app.route('/api/ozet/gunluk')
 def api_gunluk():
     tarih = request.args.get('tarih', date.today().isoformat())
@@ -1448,18 +1572,29 @@ def api_gunluk():
 # (yeni isci tek gun, coklu gun+mesai, kismi odeme, haftalik reset yok)
 # dogrulandi, hepsi PASS.
 def isci_bakiye_hesapla(c, isci_id, gunluk_ucret):
+    # Rev-107: Her gun KENDI o gunku ucretiyle (puantaj.gunluk_ucret)
+    # hesaplanir - iscinin GUNCEL ucreti (parametre) sadece o gunun
+    # kaydinda ucret NULL ise (migration-oncesi eski kayit) fallback
+    # olarak kullanilir. Boylece isci ucreti degistirildiginde GECMIS
+    # gunlerin hakedisi yeniden hesaplanmaz (retroaktif ucret hatasi).
     c.execute('''SELECT
                  SUM(CASE WHEN calisma_durumu='bir_bucuk_gun' THEN 1.5
                           WHEN calisma_durumu='tam_gun' THEN 1
                           WHEN calisma_durumu='yarim_gun' THEN 0.5
                           ELSE 0 END) as gun,
-                 SUM(COALESCE(mesai_saat, 0)) as saat
-                 FROM puantaj WHERE isci_id=?''', (isci_id,))
+                 SUM(COALESCE(mesai_saat, 0)) as saat,
+                 SUM(
+                     (CASE WHEN calisma_durumu='bir_bucuk_gun' THEN 1.5
+                           WHEN calisma_durumu='tam_gun' THEN 1
+                           WHEN calisma_durumu='yarim_gun' THEN 0.5
+                           ELSE 0 END) * COALESCE(gunluk_ucret, ?)
+                     + (COALESCE(mesai_saat, 0) / 8.0) * COALESCE(gunluk_ucret, ?)
+                 ) as hakedis
+                 FROM puantaj WHERE isci_id=?''', (gunluk_ucret, gunluk_ucret, isci_id))
     row = c.fetchone()
     gun = row['gun'] or 0
     saat = row['saat'] or 0
-    mesai_ucret = (gunluk_ucret / 8.0) * saat if gunluk_ucret > 0 else 0
-    hakedis = (gun * gunluk_ucret) + mesai_ucret
+    hakedis = row['hakedis'] or 0
     c.execute('SELECT COALESCE(SUM(miktar), 0) as toplam FROM odeme WHERE isci_id=?', (isci_id,))
     odenen = c.fetchone()['toplam'] or 0
     kalan = hakedis - odenen
@@ -1594,14 +1729,25 @@ def api_aylik():
     c.execute('SELECT * FROM isci WHERE aktif=1 ORDER BY gunluk_ucret DESC, ad_soyad')
     isciler = [dict(r) for r in c.fetchall()]
 
-    c.execute('''SELECT isci_id,
-                 SUM(CASE WHEN calisma_durumu='bir_bucuk_gun' THEN 1.5
-                          WHEN calisma_durumu='tam_gun' THEN 1
-                          WHEN calisma_durumu='yarim_gun' THEN 0.5 ELSE 0 END) as aylik_yevmiye,
-                 SUM(COALESCE(mesai_saat, 0)) as aylik_mesai
-                 FROM puantaj WHERE strftime('%Y-%m', tarih)=?
-                 GROUP BY isci_id''', (ay,))
-    puantaj_map = {r['isci_id']: {'yevmiye': r['aylik_yevmiye'] or 0, 'mesai': r['aylik_mesai'] or 0}
+    # Rev-107: aylik_hakedis her gunun KENDI o gunku ucretiyle (p.gunluk_ucret)
+    # hesaplanir; sadece migration-oncesi NULL kayitlarda isci.gunluk_ucret'e
+    # (i.gunluk_ucret) dusulur - iscinin guncel ucreti gecmis aylari etkilemez.
+    c.execute('''SELECT p.isci_id,
+                 SUM(CASE WHEN p.calisma_durumu='bir_bucuk_gun' THEN 1.5
+                          WHEN p.calisma_durumu='tam_gun' THEN 1
+                          WHEN p.calisma_durumu='yarim_gun' THEN 0.5 ELSE 0 END) as aylik_yevmiye,
+                 SUM(COALESCE(p.mesai_saat, 0)) as aylik_mesai,
+                 SUM(
+                     (CASE WHEN p.calisma_durumu='bir_bucuk_gun' THEN 1.5
+                           WHEN p.calisma_durumu='tam_gun' THEN 1
+                           WHEN p.calisma_durumu='yarim_gun' THEN 0.5 ELSE 0 END) * COALESCE(p.gunluk_ucret, i.gunluk_ucret, 0)
+                     + (COALESCE(p.mesai_saat, 0) / 8.0) * COALESCE(p.gunluk_ucret, i.gunluk_ucret, 0)
+                 ) as aylik_hakedis
+                 FROM puantaj p JOIN isci i ON p.isci_id = i.id
+                 WHERE strftime('%Y-%m', p.tarih)=?
+                 GROUP BY p.isci_id''', (ay,))
+    puantaj_map = {r['isci_id']: {'yevmiye': r['aylik_yevmiye'] or 0, 'mesai': r['aylik_mesai'] or 0,
+                                   'hakedis': r['aylik_hakedis'] or 0}
                    for r in c.fetchall()}
 
     c.execute("SELECT isci_id, tarih, calisma_durumu FROM puantaj WHERE strftime('%Y-%m', tarih)=?", (ay,))
@@ -1630,11 +1776,9 @@ def api_aylik():
     for i in isciler:
         isci_id = i['id']
         ucret = i['gunluk_ucret'] or 0
-        p = puantaj_map.get(isci_id, {'yevmiye': 0, 'mesai': 0})
+        p = puantaj_map.get(isci_id, {'yevmiye': 0, 'mesai': 0, 'hakedis': 0})
         yev = p['yevmiye']
-        mes = p['mesai']
-        mesai_ucret = (ucret / 8) * mes if ucret > 0 else 0
-        hakedis = round((yev * ucret) + mesai_ucret, 2)
+        hakedis = round(p['hakedis'], 2)
         toplam_hakedis += hakedis
         isci_list.append({
             'id': isci_id,
@@ -1655,6 +1799,170 @@ def api_aylik():
         'yemek_maliyeti': round(aylik_kisi_gun * yemek_fiyati, 2),
         'civi_maliyeti': round(aylik_civi, 2)
     })
+
+
+# ====================================================================
+# PDF DISA AKTARMA (Rev-110) — mevcut api_aylik/api_haftalik'in
+# hesapladigi veriyi DEGISTIRMEDEN, dogrudan cagirip sadece bicimlendirir.
+# Diske gecici dosya YAZILMAZ - io.BytesIO uzerinden send_file ile
+# dondurulur (PythonAnywhere'de yazma izni sorunu cikarmaz).
+#
+# KRITIK KURAL (Rev-109'un cokertme hatasindan sonra, ASLA TEKRARLAMA):
+# reportlab importlari dosya TEPESINE KONULMAZ. Her PDF endpoint'inin
+# ICINDE, try/except ImportError ile yapilir. reportlab sunucuda kurulu
+# degilse SADECE bu iki route 503 doner - sitenin geri kalani (Excel'in
+# module-level import'unun yaptigi gibi) COKMEZ. Bkz. CLAUDE.md
+# "Reportlab/Openpyxl Import Kurali".
+# ====================================================================
+_PDF_FONT_CACHE = {}
+
+
+def _pdf_font_hazirla(pdfmetrics, TTFont):
+    if 'font' in _PDF_FONT_CACHE:
+        return _PDF_FONT_CACHE['font']
+    normal_yol = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+    kalin_yol = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+    if os.path.exists(normal_yol) and os.path.exists(kalin_yol):
+        pdfmetrics.registerFont(TTFont('DejaVu', normal_yol))
+        pdfmetrics.registerFont(TTFont('DejaVu-Bold', kalin_yol))
+        sonuc = ('DejaVu', 'DejaVu-Bold')
+    else:
+        # Font dosyasi yoksa (ornegin yerel Windows gelistirme ortami)
+        # Helvetica'ya duser - Turkce Ş/Ğ/İ/ı bu fallback'te duzgun
+        # gorunmez, ama uygulama en azindan CALISMAYA devam eder.
+        sonuc = ('Helvetica', 'Helvetica-Bold')
+    _PDF_FONT_CACHE['font'] = sonuc
+    return sonuc
+
+
+def _pdf_tl(deger):
+    return '{:,.0f} TL'.format(deger or 0).replace(',', '.')
+
+
+def _pdf_tablo_stili(font_n, font_b, satir_sayisi):
+    from reportlab.lib import colors
+    stil = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e94560')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), font_b),
+        ('FONTNAME', (0, 1), (-1, -1), font_n),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#dddddd')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]
+    for satir_no in range(1, satir_sayisi):
+        if satir_no % 2 == 0:
+            stil.append(('BACKGROUND', (0, satir_no), (-1, satir_no), colors.HexColor('#f5f5f5')))
+    return stil
+
+
+@app.route('/api/pdf/aylik')
+def api_pdf_aylik():
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except ImportError:
+        return jsonify({'error': 'PDF icin reportlab kurulu degil'}), 503
+
+    font_n, font_b = _pdf_font_hazirla(pdfmetrics, TTFont)
+    veri = api_aylik().get_json()
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm,
+                             leftMargin=1.5 * cm, rightMargin=1.5 * cm)
+    stiller = getSampleStyleSheet()
+    baslik_stili = ParagraphStyle('PdfBaslikAy', parent=stiller['Title'], fontName=font_b,
+                                   textColor=colors.HexColor('#e94560'))
+    normal_stili = ParagraphStyle('PdfNormalAy', parent=stiller['Normal'], fontName=font_n, fontSize=10)
+    kalin_stili = ParagraphStyle('PdfKalinAy', parent=stiller['Normal'], fontName=font_b, fontSize=12)
+
+    elemanlar = [
+        Paragraph('Santiye Puantaj - Aylik Bordro', baslik_stili),
+        Paragraph(veri['ay'] + ' | Toplam Hakedis: ' + _pdf_tl(veri['toplam_hakedis']), kalin_stili),
+        Spacer(1, 14),
+    ]
+
+    tablo_veri = [['Ad Soyad', 'Ustalik', 'Gunluk Ucret', 'Yevmiye', 'Hakedis']]
+    for isc in veri['isciler']:
+        tablo_veri.append([isc['ad_soyad'], isc['ustalik'], _pdf_tl(isc['gunluk_ucret']),
+                            str(isc['aylik_yevmiye']), _pdf_tl(isc['aylik_hakedis'])])
+
+    tablo = Table(tablo_veri, repeatRows=1, colWidths=[4.5 * cm, 3 * cm, 3 * cm, 2.3 * cm, 3.2 * cm])
+    stil = _pdf_tablo_stili(font_n, font_b, len(tablo_veri))
+    stil.append(('ALIGN', (2, 1), (-1, -1), 'RIGHT'))
+    tablo.setStyle(TableStyle(stil))
+    elemanlar.append(tablo)
+    elemanlar.append(Spacer(1, 16))
+    elemanlar.append(Paragraph('Yemek Maliyeti: ' + _pdf_tl(veri['yemek_maliyeti']), normal_stili))
+    elemanlar.append(Paragraph('Civi Maliyeti: ' + _pdf_tl(veri['civi_maliyeti']), normal_stili))
+
+    doc.build(elemanlar)
+    buf.seek(0)
+    return send_file(buf, mimetype='application/pdf', as_attachment=True,
+                      download_name='bordro_' + veri['ay'] + '.pdf')
+
+
+@app.route('/api/pdf/haftalik')
+def api_pdf_haftalik():
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except ImportError:
+        return jsonify({'error': 'PDF icin reportlab kurulu degil'}), 503
+
+    font_n, font_b = _pdf_font_hazirla(pdfmetrics, TTFont)
+    veri = api_haftalik().get_json()
+    bugun = date.today().isoformat()
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm,
+                             leftMargin=1.5 * cm, rightMargin=1.5 * cm)
+    stiller = getSampleStyleSheet()
+    baslik_stili = ParagraphStyle('PdfBaslikHf', parent=stiller['Title'], fontName=font_b,
+                                   textColor=colors.HexColor('#e94560'))
+    normal_stili = ParagraphStyle('PdfNormalHf', parent=stiller['Normal'], fontName=font_n, fontSize=10)
+    kalin_stili = ParagraphStyle('PdfKalinHf', parent=stiller['Normal'], fontName=font_b, fontSize=12)
+
+    elemanlar = [
+        Paragraph('Santiye Puantaj - Haftalik Ozet', baslik_stili),
+        Paragraph(bugun, normal_stili),
+        Spacer(1, 14),
+    ]
+
+    tablo_veri = [['Ad Soyad', 'Bu Hafta Gelen Gun', 'Kalan Yevmiye', 'Odenecek (TL)']]
+    for isc in veri['isciler']:
+        tablo_veri.append([isc['ad_soyad'], str(isc['bu_hafta_gun']), str(isc['yevmiye']),
+                            _pdf_tl(isc['kalan'])])
+
+    tablo = Table(tablo_veri, repeatRows=1, colWidths=[6 * cm, 4 * cm, 4 * cm, 3.5 * cm])
+    stil = _pdf_tablo_stili(font_n, font_b, len(tablo_veri))
+    stil.append(('ALIGN', (1, 1), (-1, -1), 'RIGHT'))
+    tablo.setStyle(TableStyle(stil))
+    elemanlar.append(tablo)
+    elemanlar.append(Spacer(1, 16))
+    elemanlar.append(Paragraph('Yemek Kalan: ' + _pdf_tl(veri['yemek_kalan']), normal_stili))
+    elemanlar.append(Paragraph('Civi Kalan: ' + _pdf_tl(veri['civi_kalan']), normal_stili))
+    genel_toplam = round(veri['toplam_kalan'] + veri['yemek_kalan'] + veri['civi_kalan'], 2)
+    elemanlar.append(Spacer(1, 8))
+    elemanlar.append(Paragraph('GENEL TOPLAM: ' + _pdf_tl(genel_toplam), kalin_stili))
+
+    doc.build(elemanlar)
+    buf.seek(0)
+    return send_file(buf, mimetype='application/pdf', as_attachment=True,
+                      download_name='haftalik_ozet_' + bugun + '.pdf')
+
 
 @app.route('/api/gider', methods=['GET', 'POST'])
 def api_gider():
@@ -1683,6 +1991,60 @@ def api_gider_sil(gider_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('DELETE FROM ek_gider WHERE id=?', (gider_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+# NEYI COZUYORUZ: Mobil vinc isi, isci/puantaj/hakedis hesaplarindan
+# BAGIMSIZ kendi gelir-gider defteri. vinc_defter tablosu disinda hicbir
+# tabloya dokunmaz, mevcut bakiye/hakedis formullerini etkilemez.
+@app.route('/api/vinc/ekle', methods=['POST'])
+def api_vinc_ekle():
+    d = request.json or {}
+    tip = d.get('tip')
+    if tip not in ('gelir', 'gider'):
+        return jsonify({'error': 'Gecersiz tip'}), 400
+    try:
+        miktar = float(d.get('miktar', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Gecersiz miktar'}), 400
+    if miktar <= 0:
+        return jsonify({'error': 'Gecersiz miktar'}), 400
+    tarih = d.get('tarih') or date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO vinc_defter (tarih, tip, aciklama, miktar) VALUES (?,?,?,?)',
+              (tarih, tip, d.get('aciklama', ''), miktar))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+@app.route('/api/vinc/liste')
+def api_vinc_liste():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('SELECT * FROM vinc_defter ORDER BY tarih DESC, id DESC')
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    toplam_gelir = sum(r['miktar'] for r in rows if r['tip'] == 'gelir')
+    toplam_gider = sum(r['miktar'] for r in rows if r['tip'] == 'gider')
+    return jsonify({
+        'kayitlar': rows,
+        'toplam_gelir': round(toplam_gelir, 2),
+        'toplam_gider': round(toplam_gider, 2),
+        'net': round(toplam_gelir - toplam_gider, 2)
+    })
+
+@app.route('/api/vinc/sil', methods=['POST'])
+def api_vinc_sil():
+    d = request.json or {}
+    vinc_id = d.get('id')
+    if not vinc_id:
+        return jsonify({'error': 'id gerekli'}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM vinc_defter WHERE id=?', (vinc_id,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
@@ -1763,81 +2125,6 @@ def api_civi_odeme_sil(odeme_id):
     conn.commit()
     conn.close()
     return jsonify({'success': True})
-
-@app.route('/api/rapor/haftalik')
-def api_rapor_haftalik():
-    hafta = request.args.get('hafta', '')
-    if not hafta:
-        return jsonify({'error': 'Hafta parametresi gerekli'}), 400
-    try:
-        pzt = datetime.strptime(hafta + '-1', '%G-W%V-%u').date()
-    except ValueError:
-        return jsonify({'error': 'Gecersiz hafta formati'}), 400
-    paz = pzt + timedelta(days=6)
-    gunler = [pzt + timedelta(days=i) for i in range(7)]
-
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    c.execute('SELECT * FROM isci WHERE aktif=1 ORDER BY gunluk_ucret DESC, ad_soyad')
-    isciler = [dict(r) for r in c.fetchall()]
-
-    c.execute('SELECT * FROM puantaj WHERE tarih >= ? AND tarih <= ?', (pzt.isoformat(), paz.isoformat()))
-    puantaj_rows = c.fetchall()
-    pmap = {}
-    for p in puantaj_rows:
-        pmap[(p['isci_id'], p['tarih'])] = p['calisma_durumu']
-
-    c.execute('''SELECT i.id,
-                 SUM(CASE WHEN p.calisma_durumu='bir_bucuk_gun' THEN 1.5 WHEN p.calisma_durumu='tam_gun' THEN 1 WHEN p.calisma_durumu='yarim_gun' THEN 0.5 ELSE 0 END) as tum_yevmiye,
-                 SUM(COALESCE(p.mesai_saat, 0)) as tum_mesai
-                 FROM isci i LEFT JOIN puantaj p ON i.id=p.isci_id
-                 WHERE i.aktif=1 GROUP BY i.id''')
-    hakedis_map = {r['id']: {'yevmiye': r['tum_yevmiye'] or 0, 'mesai': r['tum_mesai'] or 0} for r in c.fetchall()}
-
-    c.execute('SELECT isci_id, SUM(miktar) as toplam FROM odeme GROUP BY isci_id')
-    odeme_map = {r['isci_id']: r['toplam'] or 0 for r in c.fetchall()}
-
-    c.execute('SELECT * FROM ek_gider WHERE tarih >= ? AND tarih <= ? ORDER BY tarih', (pzt.isoformat(), paz.isoformat()))
-    giderler = [dict(r) for r in c.fetchall()]
-    conn.close()
-
-    isci_list = []
-    for i in isciler:
-        isci_id = i['id']
-        ucret = i['gunluk_ucret'] or 0
-        gun_durumlari = [pmap.get((isci_id, g.isoformat()), None) for g in gunler]
-        haftalik_yev = sum(
-            1.5 if d == 'bir_bucuk_gun' else 1.0 if d == 'tam_gun' else 0.5 if d == 'yarim_gun' else 0
-            for d in gun_durumlari if d
-        )
-        hk = hakedis_map.get(isci_id, {'yevmiye': 0, 'mesai': 0})
-        mesai_ucret = (ucret / 8) * hk['mesai'] if ucret > 0 else 0
-        toplam_hakedis = (hk['yevmiye'] * ucret) + mesai_ucret
-        odenen = odeme_map.get(isci_id, 0)
-        kalan = max(round(toplam_hakedis - odenen, 2), 0)
-        isci_list.append({
-            'id': isci_id,
-            'ad_soyad': i['ad_soyad'],
-            'ustalik': i['ustalik'] or 'Isci',
-            'gunluk_ucret': ucret,
-            'gunler': [d if d else '-' for d in gun_durumlari],
-            'haftalik_yevmiye': round(haftalik_yev, 1),
-            'haftalik_hakedis': round(haftalik_yev * ucret, 2),
-            'toplam_odenen': round(odenen, 2),
-            'toplam_kalan': kalan
-        })
-
-    toplam_gider = round(sum(g['tutar'] for g in giderler), 2)
-    return jsonify({
-        'hafta_baslangic': pzt.strftime('%d.%m.%Y'),
-        'hafta_bitis': paz.strftime('%d.%m.%Y'),
-        'isciler': isci_list,
-        'haftalik_giderler': giderler,
-        'toplam_gider': toplam_gider
-    })
-
 
 @app.route('/api/hatirlatma', methods=['GET', 'POST'])
 def api_hatirlatma():

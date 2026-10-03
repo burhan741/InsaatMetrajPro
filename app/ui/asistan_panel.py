@@ -16,8 +16,8 @@ from typing import Optional, List, Dict, Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton,
     QLabel, QGroupBox, QSplitter, QApplication, QDialog,
-    QMessageBox, QTabWidget, QButtonGroup, QFileDialog,
-    QScrollArea, QFrame, QListWidget, QListWidgetItem,
+    QMessageBox, QTabWidget, QFileDialog,
+    QScrollArea, QFrame, QListWidget, QListWidgetItem, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSlot, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor
@@ -27,14 +27,6 @@ logger = logging.getLogger(__name__)
 # ── Hızlı Soru Kategorileri ───────────────────────────────────────────────
 
 HIZLI_SORULAR: Dict[str, List[str]] = {
-    "🏠 Değerleme": [
-        "Bu mülkü değerle ve gerçekçi piyasa fiyatı ver",
-        "Bu fiyat piyasaya uygun mu? Almalı mıyım?",
-        "Kira getirisi hesapla: aylık kira tahmini ve brüt yield",
-        "Bu bölgedeki emsal m² fiyatları nedir?",
-        "Yatırım için bu mülk uygun mu? Riskleri nelerdir?",
-        "5 yıl içinde değer artışı tahmini",
-    ],
     "⏱️ Verimlilik": [
         "Verimlilik süresi: Kalıp Döşeme, 500 m², 4 usta",
         "Verimlilik süresi: Demir Bağlama, 20000 kg, 8 usta",
@@ -85,15 +77,11 @@ ARAC_ADLARI = {
     "kaba_yapi_maliyet":        "Kaba Yapı Maliyet Tahmini",
     "proje_metraj_listesi":     "Proje Metraj Listesi",
     "gantt_gorevleri_getir":    "Gantt İş Programı Görevleri",
-    "ekap_ihale_ara":           "EKAP İhale Arama",
     "hakedis_hesapla":          "Hakediş Hesabı (KİK 4734/4735)",
     "gecikme_ceza_hesapla":     "Gecikme Cezası Hesabı (md.20)",
     "saha_sorun_tani":          "Saha Sorun Teşhisi (Yönetmelik Analizi)",
     "malzeme_test_degerlendir": "Malzeme Test Değerlendirmesi (TS/EN)",
     "isg_risk_degerlendirme":   "İSG Risk Değerlendirmesi (6331)",
-    "emlak_url_analiz":         "İlan URL Analizi",
-    "emsal_karsilastir":        "Emsal Karşılaştırma (Bölge m² Fiyatı)",
-    "gayrimenkul_degerle":      "Gayrimenkul Değerleme Raporu",
 }
 
 
@@ -301,47 +289,34 @@ class AsistanPanel(QWidget):
         ust.addWidget(self.ayar_btn)
         ana_layout.addLayout(ust)
 
-        # ── Mod Seçici ──
-        mod_group = QFrame()
-        mod_group.setFrameStyle(QFrame.Shape.StyledPanel)
-        mod_group.setStyleSheet(
-            "QFrame { background-color: #16213e; border-radius: 6px; "
-            "border: 1px solid #0f3460; padding: 4px; }"
-        )
-        mod_layout = QHBoxLayout(mod_group)
-        mod_layout.setSpacing(4)
-
-        self._mod_btn_group = QButtonGroup(self)
-        self._mod_btn_group.setExclusive(True)
-
-        mod_tanimlari = [
-            ("💬 Sohbet",           "Genel inşaat soruları"),
-            ("🔧 Hesap Asistanı",   "Verimlilik, maliyet hesabı (CŞB)"),
-            ("📊 Proje Analizi",    "Risk & maliyet analizi"),
-            ("📅 Gantt Planlama",   "İş programı oluştur"),
-            ("💰 Hakediş Asistanı", "Hakediş & gecikme cezası"),
-            ("🏛️ EKAP Sorgu",       "Kamu ihalesi arama"),
-            ("🔍 Saha Çözüm",       "Yönetmelik bazlı saha analizi"),
-            ("🏠 Değerleme",        "Gayrimenkul değerleme uzmanı"),
+        # ── Mod Seçici Buton Çubuğu ──────────────────────────────────────────
+        mod_satiri = QHBoxLayout()
+        mod_satiri.setSpacing(2)
+        self._mod_butonlari = []
+        _MODLAR = [
+            (0, "💬 Sohbet"),
+            (1, "🔢 Hesap"),
+            (2, "📊 Analiz"),
+            (3, "📅 Gantt"),
+            (4, "💰 Hakediş"),
+            (6, "🔍 Saha"),
         ]
-        for i, (metin, aciklama) in enumerate(mod_tanimlari):
-            kutu = QVBoxLayout()
-            btn = QPushButton(metin)
-            btn.setCheckable(True)
-            btn.setChecked(i == 0)
-            btn.setToolTip(aciklama)
-            btn.setMinimumWidth(130)
-            btn.clicked.connect(lambda checked, idx=i: self._mod_degisti(idx))
-            self._mod_btn_group.addButton(btn, i)
-            kutu.addWidget(btn)
-            lbl = QLabel(aciklama)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("color: #888; font-size: 9px;")
-            kutu.addWidget(lbl)
-            mod_layout.addLayout(kutu)
-
-        mod_layout.addStretch()
-        ana_layout.addWidget(mod_group)
+        _AKTIF_MOD_STYLE = (
+            "QPushButton { background-color: #1a6b2a; color: white; "
+            "font-size: 10px; padding: 4px 8px; border-radius: 3px; font-weight: bold; }"
+        )
+        _PASIF_MOD_STYLE = (
+            "QPushButton { background-color: #16213e; color: #aaaaaa; "
+            "font-size: 10px; padding: 4px 8px; border-radius: 3px; }"
+            "QPushButton:hover { background-color: #1a3a5c; color: white; }"
+        )
+        for _idx, _etiket in _MODLAR:
+            _btn = QPushButton(_etiket)
+            _btn.setStyleSheet(_AKTIF_MOD_STYLE if _idx == 0 else _PASIF_MOD_STYLE)
+            _btn.clicked.connect(lambda checked=False, i=_idx: self._mod_sec(i))
+            mod_satiri.addWidget(_btn)
+            self._mod_butonlari.append(_btn)
+        ana_layout.addLayout(mod_satiri)
 
         # ── Ana Splitter: Sol=Sohbet, Sağ=Araçlar ──
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -357,14 +332,14 @@ class AsistanPanel(QWidget):
         self.sohbet_alani.setReadOnly(True)
         self.sohbet_alani.setFont(QFont("Consolas", 10))
         self.sohbet_alani.setPlaceholderText(
-            "İnşaat sorularınızı buraya yazın...\n\n"
-            "Metraj üretimi:\n"
+            "Asistana isteğinizi yazın...\n\n"
+            "Örnekler:\n"
             "  • '4 katlı 800 m² konut — tüm kaba yapı metrajını çıkar'\n"
-            "  • '200 m² ticari zemin kat, betonarme — metraj listesi'\n\n"
-            "Hesap / maliyet:\n"
-            "  • '500 m² kalıp döşeme, 4 usta, kaç gün?'\n"
-            "  • '1200 m² betonarme perde+çerçeve kaba yapı maliyeti'\n\n"
-            "Saha sorusu → Mod 6 Saha Çözüm'e geçin"
+            "  • '500 m² kalıp döşeme, 4 usta, kaç gün sürer?'\n"
+            "  • 'Sözleşme bedeli 5.000.000 TL, %35 tamamlandı, hakediş hesapla'\n"
+            "  • 'Perde betonunda bal peteği var — tamir talimatı ver'\n"
+            "  • 'Ankara yapım işi ihale ara'\n"
+            "  • 'Kadıköy 3+1 120 m² daire değerle'"
         )
         sol_layout.addWidget(self.sohbet_alani, stretch=4)
 
@@ -392,14 +367,6 @@ class AsistanPanel(QWidget):
         self.hakedis_basla_btn.clicked.connect(self._hakedis_baslat)
         self.hakedis_basla_btn.setVisible(False)
         sol_layout.addWidget(self.hakedis_basla_btn)
-
-        self.ekap_basla_btn = QPushButton("🏛️ EKAP İhale Ara")
-        self.ekap_basla_btn.setStyleSheet(
-            "background-color: #1a4080; color: white; font-weight: bold; padding: 8px;"
-        )
-        self.ekap_basla_btn.clicked.connect(self._ekap_ara_baslat)
-        self.ekap_basla_btn.setVisible(False)
-        sol_layout.addWidget(self.ekap_basla_btn)
 
         self.saha_cozum_basla_btn = QPushButton("🔍 Saha Sorun Analizi Başlat")
         self.saha_cozum_basla_btn.setStyleSheet(
@@ -433,257 +400,13 @@ class AsistanPanel(QWidget):
         self.gantt_aktar_btn.setVisible(False)
         sol_layout.addWidget(self.gantt_aktar_btn)
 
-        # ── Değerleme Modu UI — Hızlı Giriş Formu ────────────────────────────
-        from PyQt6.QtWidgets import QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QGridLayout
-        self.degerl_url_frame = QFrame()  # eski isim korundu (görünürlük kodu uyumlu)
-        self.degerl_url_frame.setFrameStyle(QFrame.Shape.StyledPanel)
-        self.degerl_url_frame.setStyleSheet(
-            "QFrame { background-color: #0d1b2a; border: 1px solid #1a6b2a; "
-            "border-radius: 6px; padding: 4px; }"
-        )
-        degerl_layout = QVBoxLayout(self.degerl_url_frame)
-        degerl_layout.setSpacing(4)
-        degerl_layout.setContentsMargins(6, 6, 6, 6)
-
-        form_baslik = QLabel("🏠 Mülk Bilgileri — Hızlı Giriş")
-        form_baslik.setStyleSheet("color: #2ecc71; font-weight: bold; font-size: 11px;")
-        degerl_layout.addWidget(form_baslik)
-
-        _FIELD_STYLE = (
-            "background-color: #16213e; color: #e0e0e0; "
-            "border: 1px solid #2c5f3a; padding: 3px; border-radius: 3px;"
-        )
-        _LBL_STYLE = "color: #aaa; font-size: 10px;"
-
-        # Mülk Tipi seçimi
-        mulk_tipi_satir = QHBoxLayout()
-        mulk_tipi_lbl = QLabel("Mülk Tipi")
-        mulk_tipi_lbl.setStyleSheet(_LBL_STYLE)
-        self.df_mulk_tipi = QComboBox()
-        self.df_mulk_tipi.addItems(["Daire", "Villa", "Arsa", "Tarla", "Dükkan/Ofis", "Bina"])
-        self.df_mulk_tipi.setStyleSheet(_FIELD_STYLE)
-        self.df_mulk_tipi.setToolTip("Değerlenecek mülkün tipini seçin")
-        mulk_tipi_satir.addWidget(mulk_tipi_lbl)
-        mulk_tipi_satir.addWidget(self.df_mulk_tipi, 1)
-        degerl_layout.addLayout(mulk_tipi_satir)
-
-        grid = QGridLayout()
-        grid.setSpacing(4)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(3, 1)
-
-        # Satır 0: İl / İlçe
-        grid.addWidget(QLabel("İl"), 0, 0)
-        self.df_il = QLineEdit()
-        self.df_il.setPlaceholderText("İstanbul")
-        self.df_il.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_il, 0, 1)
-        grid.addWidget(QLabel("İlçe"), 0, 2)
-        self.df_ilce = QLineEdit()
-        self.df_ilce.setPlaceholderText("Arnavutköy")
-        self.df_ilce.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_ilce, 0, 3)
-
-        # Satır 1: Mahalle / Fiyat
-        grid.addWidget(QLabel("Mahalle"), 1, 0)
-        self.df_mahalle = QLineEdit()
-        self.df_mahalle.setPlaceholderText("Şekerdere")
-        self.df_mahalle.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_mahalle, 1, 1)
-        lbl_fiyat = QLabel("Fiyat (TL)")
-        lbl_fiyat.setToolTip("Opsiyonel — boş bırakırsanız Claude tahmini piyasa değeri hesaplar")
-        grid.addWidget(lbl_fiyat, 1, 2)
-        self.df_fiyat = QLineEdit()
-        self.df_fiyat.setPlaceholderText("boş = tahmini hesapla")
-        self.df_fiyat.setStyleSheet(_FIELD_STYLE)
-        self.df_fiyat.setToolTip("İlan fiyatını yazın veya boş bırakın — boş bırakırsanız Claude piyasa tahmini üretir")
-        grid.addWidget(self.df_fiyat, 1, 3)
-
-        # Satır 2: m² / Oda
-        grid.addWidget(QLabel("Brüt m²"), 2, 0)
-        self.df_m2 = QLineEdit()
-        self.df_m2.setPlaceholderText("120")
-        self.df_m2.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_m2, 2, 1)
-        grid.addWidget(QLabel("Oda"), 2, 2)
-        self.df_oda = QLineEdit()
-        self.df_oda.setPlaceholderText("3+1")
-        self.df_oda.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_oda, 2, 3)
-
-        # Satır 3: Kat / Bina Yaşı
-        grid.addWidget(QLabel("Kat"), 3, 0)
-        self.df_kat = QLineEdit()
-        self.df_kat.setPlaceholderText("4/8")
-        self.df_kat.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_kat, 3, 1)
-        grid.addWidget(QLabel("Bina Yaşı"), 3, 2)
-        self.df_yas = QLineEdit()
-        self.df_yas.setPlaceholderText("0 (sıfır)")
-        self.df_yas.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_yas, 3, 3)
-
-        # Satır 4: Tapu / Özellikler
-        grid.addWidget(QLabel("Tapu"), 4, 0)
-        self.df_tapu = QComboBox()
-        self.df_tapu.addItems([
-            "Kat Mülkiyeti", "Kat İrtifakı", "Arsa Tapusu", "Hisseli", "Zilyetlik"
-        ])
-        self.df_tapu.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_tapu, 4, 1)
-        grid.addWidget(QLabel("Özellikler"), 4, 2)
-        self.df_ozellik = QLineEdit()
-        self.df_ozellik.setPlaceholderText("site, otopark, manzara...")
-        self.df_ozellik.setStyleSheet(_FIELD_STYLE)
-        grid.addWidget(self.df_ozellik, 4, 3)
-
-        # Satır 5: Ada No / Parsel No
-        lbl_ada = QLabel("Ada No")
-        lbl_ada.setToolTip("Tapu ada numarası (opsiyonel)")
-        grid.addWidget(lbl_ada, 5, 0)
-        self.df_ada_no = QLineEdit()
-        self.df_ada_no.setPlaceholderText("örn: 1234")
-        self.df_ada_no.setStyleSheet(_FIELD_STYLE)
-        self.df_ada_no.setToolTip("Tapudaki ada numarası — opsiyonel")
-        grid.addWidget(self.df_ada_no, 5, 1)
-        lbl_parsel = QLabel("Parsel No")
-        lbl_parsel.setToolTip("Tapu parsel numarası (opsiyonel)")
-        grid.addWidget(lbl_parsel, 5, 2)
-        self.df_parsel_no = QLineEdit()
-        self.df_parsel_no.setPlaceholderText("örn: 56")
-        self.df_parsel_no.setStyleSheet(_FIELD_STYLE)
-        self.df_parsel_no.setToolTip("Tapudaki parsel numarası — opsiyonel")
-        grid.addWidget(self.df_parsel_no, 5, 3)
-
-        # Etiket stilleri
-        for i in range(grid.rowCount()):
-            item = grid.itemAtPosition(i, 0)
-            if item and item.widget():
-                item.widget().setStyleSheet(_LBL_STYLE)
-            item2 = grid.itemAtPosition(i, 2)
-            if item2 and item2.widget():
-                item2.widget().setStyleSheet(_LBL_STYLE)
-
-        degerl_layout.addLayout(grid)
-
-        # ── Arsa/Tarla dinamik alanlar ────────────────────────────────────────
-        self.df_arsa_frame = QFrame()
-        arsa_grid = QGridLayout(self.df_arsa_frame)
-        arsa_grid.setSpacing(4)
-        arsa_grid.setContentsMargins(0, 2, 0, 2)
-        arsa_grid.setColumnStretch(1, 1)
-        arsa_grid.setColumnStretch(3, 1)
-        lbl_imar = QLabel("İmar Durumu")
-        lbl_imar.setStyleSheet(_LBL_STYLE)
-        self.df_imar_durumu = QComboBox()
-        self.df_imar_durumu.addItems(["Konut", "Ticari", "Tarım", "Karma", "İmarsız"])
-        self.df_imar_durumu.setStyleSheet(_FIELD_STYLE)
-        self.df_imar_durumu.setToolTip("Arsanın imar durumu")
-        arsa_grid.addWidget(lbl_imar, 0, 0)
-        arsa_grid.addWidget(self.df_imar_durumu, 0, 1)
-        lbl_yap = QLabel("Yapılaşma %")
-        lbl_yap.setStyleSheet(_LBL_STYLE)
-        self.df_yapilanma = QLineEdit()
-        self.df_yapilanma.setPlaceholderText("40 (opsiyonel)")
-        self.df_yapilanma.setStyleSheet(_FIELD_STYLE)
-        self.df_yapilanma.setToolTip("TAKS/KAKS oranı (opsiyonel)")
-        arsa_grid.addWidget(lbl_yap, 0, 2)
-        arsa_grid.addWidget(self.df_yapilanma, 0, 3)
-        self.df_arsa_frame.setVisible(False)
-        degerl_layout.addWidget(self.df_arsa_frame)
-
-        # ── Dükkan/Ofis dinamik alanlar ───────────────────────────────────────
-        self.df_ticari_frame = QFrame()
-        ticari_grid = QGridLayout(self.df_ticari_frame)
-        ticari_grid.setSpacing(4)
-        ticari_grid.setContentsMargins(0, 2, 0, 2)
-        ticari_grid.setColumnStretch(1, 1)
-        ticari_grid.setColumnStretch(3, 1)
-        lbl_tkat = QLabel("Ticari Kat")
-        lbl_tkat.setStyleSheet(_LBL_STYLE)
-        self.df_ticari_kat = QComboBox()
-        self.df_ticari_kat.addItems(["Zemin", "Asma", "1. Kat", "2. Kat ve Üzeri", "AVM İçi"])
-        self.df_ticari_kat.setStyleSheet(_FIELD_STYLE)
-        ticari_grid.addWidget(lbl_tkat, 0, 0)
-        ticari_grid.addWidget(self.df_ticari_kat, 0, 1)
-        lbl_cephe = QLabel("Cephe")
-        lbl_cephe.setStyleSheet(_LBL_STYLE)
-        self.df_cephe = QComboBox()
-        self.df_cephe.addItems(["Ana Cadde", "Sokak/Ara Yol", "Pasaj/Çarşı İçi", "AVM İçi"])
-        self.df_cephe.setStyleSheet(_FIELD_STYLE)
-        ticari_grid.addWidget(lbl_cephe, 0, 2)
-        ticari_grid.addWidget(self.df_cephe, 0, 3)
-        lbl_kira = QLabel("Mevcut Kira (₺/ay)")
-        lbl_kira.setStyleSheet(_LBL_STYLE)
-        self.df_mevcut_kira = QLineEdit()
-        self.df_mevcut_kira.setPlaceholderText("Opsiyonel")
-        self.df_mevcut_kira.setStyleSheet(_FIELD_STYLE)
-        self.df_mevcut_kira.setToolTip("Kiracı varsa aylık kira miktarı")
-        ticari_grid.addWidget(lbl_kira, 1, 0)
-        ticari_grid.addWidget(self.df_mevcut_kira, 1, 1, 1, 3)
-        self.df_ticari_frame.setVisible(False)
-        degerl_layout.addWidget(self.df_ticari_frame)
-
-        # Mülk tipi değişince formu güncelle
-        self.df_mulk_tipi.currentTextChanged.connect(self._guncelle_form_alanlari)
-
-        # Görüntü yükleme butonu
-        self._degerl_gorsel_yolu = None
-        gorsel_satir = QHBoxLayout()
-        self.degerl_gorsel_btn = QPushButton("📷 Ekran Görüntüsü Yükle")
-        self.degerl_gorsel_btn.setStyleSheet(
-            "QPushButton { background-color: #1a3a5c; color: #7ec8e3; "
-            "padding: 4px 8px; font-size: 10px; border-radius: 3px; "
-            "border: 1px solid #2c5f7a; }"
-            "QPushButton:hover { background-color: #2c5f7a; color: white; }"
-        )
-        self.degerl_gorsel_btn.setToolTip(
-            "İlan sayfasının ekran görüntüsünü yükleyin — Claude görüntüden verileri okur"
-        )
-        self.degerl_gorsel_btn.clicked.connect(self._degerl_gorsel_sec)
-        gorsel_satir.addWidget(self.degerl_gorsel_btn)
-
-        self.degerl_gorsel_label = QLabel("")
-        self.degerl_gorsel_label.setStyleSheet("color: #2ecc71; font-size: 9px;")
-        self.degerl_gorsel_label.setVisible(False)
-        gorsel_satir.addWidget(self.degerl_gorsel_label)
-
-        self.degerl_gorsel_sil_btn = QPushButton("✕")
-        self.degerl_gorsel_sil_btn.setFixedWidth(24)
-        self.degerl_gorsel_sil_btn.setStyleSheet(
-            "QPushButton { background-color: #3d1a1a; color: #e74c3c; "
-            "border-radius: 3px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #e74c3c; color: white; }"
-        )
-        self.degerl_gorsel_sil_btn.setVisible(False)
-        self.degerl_gorsel_sil_btn.clicked.connect(self._degerl_gorsel_kaldir)
-        gorsel_satir.addWidget(self.degerl_gorsel_sil_btn)
-        gorsel_satir.addStretch()
-        degerl_layout.addLayout(gorsel_satir)
-
-        ipucu = QLabel("💡 Form boşsa mesaj kutusuna mülk bilgilerini yazabilirsiniz.")
-        ipucu.setWordWrap(True)
-        ipucu.setStyleSheet("color: #666; font-size: 9px;")
-        degerl_layout.addWidget(ipucu)
-
-        self.degerl_url_frame.setVisible(False)
-        sol_layout.addWidget(self.degerl_url_frame)
-
-        self.degerl_basla_btn = QPushButton("🏠 Değerlemeyi Başlat")
-        self.degerl_basla_btn.setStyleSheet(
-            "background-color: #1a6b2a; color: white; font-weight: bold; padding: 8px;"
-        )
-        self.degerl_basla_btn.setToolTip("Formu doldurun veya ekran görüntüsü yükleyin")
-        self.degerl_basla_btn.clicked.connect(self._degerl_baslat)
-        self.degerl_basla_btn.setVisible(False)
-        sol_layout.addWidget(self.degerl_basla_btn)
-
         # Mesaj yazma grubu
         yaz_group = QGroupBox("Mesajınız")
         yaz_layout = QVBoxLayout(yaz_group)
         yaz_layout.setSpacing(6)
 
         self.mesaj_input = QTextEdit()
+        self.mesaj_input.setObjectName("mesaj_input")
         self.mesaj_input.setMaximumHeight(80)
         self.mesaj_input.setPlaceholderText("Sorunuzu yazın... (Ctrl+Enter ile gönder)")
         self.mesaj_input.setFont(QFont("Arial", 11))
@@ -817,36 +540,7 @@ class AsistanPanel(QWidget):
 
         sag_layout.addWidget(gecmis_group)
 
-        # Hızlı sorular (sekmeli)
-        hizli_group = QGroupBox("⚡ Hızlı Sorular")
-        hizli_ic = QVBoxLayout(hizli_group)
-        hizli_ic.setContentsMargins(4, 8, 4, 4)
-
-        tab_widget = QTabWidget()
-        tab_widget.setMaximumHeight(260)
-        for kategori, sorular in HIZLI_SORULAR.items():
-            sekme = QWidget()
-            sekme_layout = QVBoxLayout(sekme)
-            sekme_layout.setContentsMargins(4, 4, 4, 4)
-            sekme_layout.setSpacing(3)
-            for soru in sorular:
-                btn = QPushButton(soru)
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #16213e; text-align: left;
-                        padding: 4px 8px; font-size: 10px; border-radius: 3px;
-                    }
-                    QPushButton:hover { background-color: #1a5276; }
-                """)
-                btn.clicked.connect(
-                    lambda checked, s=soru: self._hizli_soru_sor(s)
-                )
-                sekme_layout.addWidget(btn)
-            sekme_layout.addStretch()
-            tab_widget.addTab(sekme, kategori)
-
-        hizli_ic.addWidget(tab_widget)
-        sag_layout.addWidget(hizli_group)
+        # Hızlı Sorular paneli kaldırıldı — kullanıcı isteği doğrudan yazar
 
         # Proje bağlamı
         baglam_group = QGroupBox("📂 Proje Bağlamı")
@@ -877,14 +571,31 @@ class AsistanPanel(QWidget):
 
         splitter.addWidget(sag)
         splitter.setSizes([700, 300])
-        ana_layout.addWidget(splitter)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        ana_layout.addWidget(splitter, stretch=1)
 
         # Durum etiketi
         self.durum_label = QLabel("Hazır. API anahtarınızı ayarlayın.")
         self.durum_label.setStyleSheet("color: #aaaaaa; font-size: 10px;")
-        ana_layout.addWidget(self.durum_label)
+        ana_layout.addWidget(self.durum_label, stretch=0)
 
     # ── Mod Yönetimi ────────────────────────────────────────────────────────
+
+    def _mod_sec(self, mod_index: int):
+        """Buton çubuğundan mod seçimi — aktif butonu vurgula, modu güncelle."""
+        _AKTIF = (
+            "QPushButton { background-color: #1a6b2a; color: white; "
+            "font-size: 10px; padding: 4px 8px; border-radius: 3px; font-weight: bold; }"
+        )
+        _PASIF = (
+            "QPushButton { background-color: #16213e; color: #aaaaaa; "
+            "font-size: 10px; padding: 4px 8px; border-radius: 3px; }"
+            "QPushButton:hover { background-color: #1a3a5c; color: white; }"
+        )
+        for i, btn in enumerate(self._mod_butonlari):
+            btn.setStyleSheet(_AKTIF if i == mod_index else _PASIF)
+        self._mod_degisti(mod_index)
 
     def _mod_degisti(self, mod_index: int):
         self._aktif_mod = mod_index
@@ -896,11 +607,8 @@ class AsistanPanel(QWidget):
             mod_index == 3 and bool(self._parsed_gantt_tasks)
         )
         self.hakedis_basla_btn.setVisible(mod_index == 4)
-        self.ekap_basla_btn.setVisible(mod_index == 5)
         self.saha_cozum_basla_btn.setVisible(mod_index == 6)
         self.fotograf_analiz_btn.setVisible(mod_index == 6)
-        self.degerl_url_frame.setVisible(mod_index == 7)
-        self.degerl_basla_btn.setVisible(mod_index == 7)
 
         # Placeholder metni moda göre güncelle
         if mod_index == 6:
@@ -911,15 +619,6 @@ class AsistanPanel(QWidget):
                 "  • 'Slump 190mm çıktı' → kabul/red kararı\n"
                 "  • 'C25 numune 19 MPa' → karot gerekli mi?\n"
                 "  • Fotoğraf yükle → sorun tespit + tamir talimatı"
-            )
-        elif mod_index == 7:
-            self.mesaj_input.setPlaceholderText(
-                "Mülk bilgilerini yazın veya ilan metnini yapıştırın...\n\n"
-                "Örnekler:\n"
-                "  • 'Kadıköy, 3+1, 120 m², 5. kat, 15 yıllık, kat mülkiyeti'\n"
-                "  • 'İlan linki: sahibinden.com/...'\n"
-                "  • 'Ada: 142, Parsel: 7, Maltepe'\n"
-                "  • 'Çankaya, 500 m² arsa, konut imarlı'"
             )
         else:
             self.mesaj_input.setPlaceholderText(
@@ -932,14 +631,9 @@ class AsistanPanel(QWidget):
             2: "Proje Analizi — 'Analizi Başlat' veya doğrudan soru sorun.",
             3: "Gantt Planlama — 'Planı Oluştur' ile AI iş programı hazırlayın.",
             4: "Hakediş Asistanı — Hakediş ve gecikme cezası hesabı yapın.",
-            5: "EKAP Sorgu — Kamu ihalelerini EKAP üzerinden arayın.",
             6: (
                 "Saha Çözüm Danışmanı — Beton hatası, çatlak, test sonucu, tamir talimatı. "
                 "Fotoğraf yükle → malzeme + adım adım uygulama talimatı."
-            ),
-            7: (
-                "Gayrimenkul Değerleme Uzmanı — URL yapıştırın veya mülk bilgisi "
-                "girin, gerçekçi piyasa değeri + yatırım analizi."
             ),
         }
         self.durum_label.setText(mesajlar.get(mod_index, ""))
@@ -1012,14 +706,7 @@ class AsistanPanel(QWidget):
             self.engine.mesaj_ekle_kullanici(mesaj)
         self._sohbete_ekle("kullanici", gorsel_mesaj)
 
-        if self._aktif_mod == 0:
-            self._streaming_basla()
-        elif self._aktif_mod == 6:
-            self._saha_cozum_aracli_basla()
-        elif self._aktif_mod == 7:
-            self._gayrimenkul_aracli_basla()
-        else:
-            self._aracli_basla()
+        self._aracli_basla()
 
     # ── Yeni Mod Başlatıcıları ──────────────────────────────────────────────
 
@@ -1046,31 +733,6 @@ class AsistanPanel(QWidget):
         )
         self.engine.mesaj_ekle_kullanici(prompt)
         self._sohbete_ekle("sistem", "Hakediş Asistanı başlatıldı.")
-        self._aracli_basla()
-
-    def _ekap_ara_baslat(self):
-        """EKAP Sorgu modu — kullanıcıdan arama kriteri iste."""
-        if not self._engine_ok or not self.engine:
-            return
-        if not self.engine.api_key_gecerli():
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                self, "API Anahtarı Yok",
-                "Önce API anahtarınızı girin.\n⚙️ API Ayarları butonuna tıklayın."
-            )
-            return
-        prompt = (
-            "EKAP Sorgu moduna geçildi.\n\n"
-            "EKAP (Elektronik Kamu Alımları Platformu) üzerinden ihale arayabilirim.\n\n"
-            "Örnek aramalar:\n"
-            "  • 'Ankara yapım işi ihalelerini ara'\n"
-            "  • 'Okul inşaatı ihale ara'\n"
-            "  • 'İstanbul Mart 2026 ihale listesi'\n\n"
-            "Ne aramak istediğinizi yazın, ekap_ihale_ara aracını kullanarak "
-            "gerçek EKAP verilerini getireyim."
-        )
-        self.engine.mesaj_ekle_kullanici(prompt)
-        self._sohbete_ekle("sistem", "EKAP Sorgu başlatıldı.")
         self._aracli_basla()
 
     def _fotograf_analiz_sec(self):
@@ -1169,189 +831,6 @@ class AsistanPanel(QWidget):
         self._ui_mesgul_yap(True)
         self.durum_label.setText(
             "⏳ Saha analizi yapılıyor — yönetmelikler kontrol ediliyor..."
-        )
-        thread.start()
-
-    def _degerl_gorsel_sec(self):
-        """Ekran görüntüsü dosyası seç."""
-        from PyQt6.QtWidgets import QFileDialog
-        dosya, _ = QFileDialog.getOpenFileName(
-            self, "Ekran Görüntüsü Seç", "",
-            "Görsel Dosyalar (*.png *.jpg *.jpeg *.webp *.bmp)"
-        )
-        if dosya:
-            import os
-            self._degerl_gorsel_yolu = dosya
-            self.degerl_gorsel_label.setText("📷 " + os.path.basename(dosya))
-            self.degerl_gorsel_label.setVisible(True)
-            self.degerl_gorsel_sil_btn.setVisible(True)
-
-    def _degerl_gorsel_kaldir(self):
-        """Seçili görüntüyü kaldır."""
-        self._degerl_gorsel_yolu = None
-        self.degerl_gorsel_label.setVisible(False)
-        self.degerl_gorsel_sil_btn.setVisible(False)
-
-    def _guncelle_form_alanlari(self, mulk_tipi: str = ""):
-        """Mülk tipine göre ek form alanlarını göster/gizle."""
-        if not mulk_tipi:
-            mulk_tipi = self.df_mulk_tipi.currentText() if hasattr(self, "df_mulk_tipi") else ""
-        mt = mulk_tipi.lower()
-        arsa_tipi = any(x in mt for x in ["arsa", "tarla"])
-        ticari_tipi = any(x in mt for x in ["dükkan", "ofis"])
-        if hasattr(self, "df_arsa_frame"):
-            self.df_arsa_frame.setVisible(arsa_tipi)
-        if hasattr(self, "df_ticari_frame"):
-            self.df_ticari_frame.setVisible(ticari_tipi)
-
-    def _degerl_baslat(self):
-        """Değerleme modu — form veya ekran görüntüsünden değerleme başlat."""
-        if not self._engine_ok or not self.engine:
-            return
-        if not self.engine.api_key_gecerli():
-            QMessageBox.warning(
-                self, "API Anahtarı Yok",
-                "Önce API anahtarınızı girin.\n⚙️ API Ayarları butonuna tıklayın."
-            )
-            return
-
-        # Form verilerini topla
-        mulk_tipi = self.df_mulk_tipi.currentText() if hasattr(self, "df_mulk_tipi") else "Daire"
-        il       = self.df_il.text().strip()
-        ilce     = self.df_ilce.text().strip()
-        mahalle  = self.df_mahalle.text().strip()
-        fiyat    = self.df_fiyat.text().strip()
-        m2       = self.df_m2.text().strip()
-        oda      = self.df_oda.text().strip()
-        kat      = self.df_kat.text().strip()
-        yas      = self.df_yas.text().strip()
-        tapu     = self.df_tapu.currentText()
-        ozellik  = self.df_ozellik.text().strip()
-        mesaj_ek = self.mesaj_input.toPlainText().strip()
-        gorsel   = self._degerl_gorsel_yolu
-        # Dinamik alanlar
-        imar_durumu = self.df_imar_durumu.currentText() if hasattr(self, "df_imar_durumu") else ""
-        yapilanma   = self.df_yapilanma.text().strip() if hasattr(self, "df_yapilanma") else ""
-        ticari_kat  = self.df_ticari_kat.currentText() if hasattr(self, "df_ticari_kat") else ""
-        cephe       = self.df_cephe.currentText() if hasattr(self, "df_cephe") else ""
-        mevcut_kira = self.df_mevcut_kira.text().strip() if hasattr(self, "df_mevcut_kira") else ""
-        ada_no      = self.df_ada_no.text().strip() if hasattr(self, "df_ada_no") else ""
-        parsel_no   = self.df_parsel_no.text().strip() if hasattr(self, "df_parsel_no") else ""
-
-        form_dolu = any([il, ilce, fiyat, m2, ada_no, parsel_no])
-
-        if not form_dolu and not gorsel and not mesaj_ek:
-            QMessageBox.information(
-                self, "Bilgi",
-                "Lütfen en az İl + m² bilgisini girin\n"
-                "veya ilan sayfasının ekran görüntüsünü yükleyin."
-            )
-            return
-
-        # Görüntü varsa — Vision API ile okut
-        if gorsel:
-            gorsel_talimat = (
-                f"Bu ekran görüntüsü bir {mulk_tipi} ilanına ait.\n"
-                "Görselden şu bilgileri oku ve değerleme yap:\n"
-                "Fiyat, brüt m², oda sayısı, kat, bina yaşı, tapu türü, "
-                "ilçe/mahalle, öne çıkan özellikler.\n"
-                "Ardından emsal_karsilastir ile bölge araştır, "
-                "gayrimenkul_degerle ile tam rapor üret."
-            )
-            if mesaj_ek:
-                gorsel_talimat += f"\n\nEk bilgi: {mesaj_ek}"
-            try:
-                self.engine.mesaj_ekle_saha_gorseli(gorsel, gorsel_talimat)
-            except Exception:
-                self.engine.mesaj_ekle_kullanici(gorsel_talimat)
-            self._sohbete_ekle("kullanici", "📷 Ekran görüntüsü yüklendi — değerleme başlatılıyor...")
-            self.mesaj_input.clear()
-            self._gayrimenkul_aracli_basla()
-            return
-
-        # Form verilerinden prompt oluştur
-        satirlar = [f"Bu {mulk_tipi} mülkünü değerle:"]
-        satirlar.append(f"Mülk Tipi: {mulk_tipi}")
-        if il or ilce:
-            konum = " / ".join(filter(None, [il, ilce, mahalle]))
-            satirlar.append(f"Konum: {konum}")
-        if fiyat:
-            satirlar.append(f"İlan Fiyatı: {fiyat} TL")
-        else:
-            satirlar.append("İlan Fiyatı: Belirtilmedi — piyasa tahmini üret")
-        if m2:
-            satirlar.append(f"Brüt Alan: {m2} m²")
-        if oda:
-            satirlar.append(f"Oda Sayısı: {oda}")
-        if kat:
-            satirlar.append(f"Kat: {kat}")
-        if yas:
-            satirlar.append(f"Bina Yaşı: {yas} yıl")
-        if tapu:
-            satirlar.append(f"Tapu: {tapu}")
-        if ozellik:
-            satirlar.append(f"Özellikler: {ozellik}")
-        # Arsa/Tarla dinamik alanlar
-        if hasattr(self, "df_arsa_frame") and self.df_arsa_frame.isVisible():
-            if imar_durumu:
-                satirlar.append(f"İmar Durumu: {imar_durumu}")
-            if yapilanma:
-                satirlar.append(f"Yapılaşma Oranı: %{yapilanma}")
-        # Dükkan/Ofis dinamik alanlar
-        if hasattr(self, "df_ticari_frame") and self.df_ticari_frame.isVisible():
-            if ticari_kat:
-                satirlar.append(f"Ticari Kat: {ticari_kat}")
-            if cephe:
-                satirlar.append(f"Cephe: {cephe}")
-            if mevcut_kira:
-                satirlar.append(f"Mevcut Kira: {mevcut_kira} ₺/ay")
-        if ada_no and parsel_no:
-            satirlar.append(f"Ada/Parsel: {ada_no}/{parsel_no}")
-        elif ada_no:
-            satirlar.append(f"Ada No: {ada_no}")
-        elif parsel_no:
-            satirlar.append(f"Parsel No: {parsel_no}")
-        if mesaj_ek:
-            satirlar.append(f"Ek Bilgi: {mesaj_ek}")
-        if fiyat:
-            satirlar.append(
-                "\nemsal_karsilastir ile bölge fiyatlarını araştır, "
-                "ardından gayrimenkul_degerle ile ilan fiyatı karşılaştırmalı değerleme raporu üret."
-            )
-        else:
-            satirlar.append(
-                "\nemsal_karsilastir ile bölge fiyatlarını araştır, "
-                "ardından gayrimenkul_degerle ile TAHMİNİ piyasa değeri hesapla "
-                "(ilan_fiyati parametresi gönderme — kullanıcı fiyat bilmiyor)."
-            )
-
-        prompt = "\n".join(satirlar)
-        self.engine.mesaj_ekle_kullanici(prompt)
-        ozet = f"🏠 Değerleme: {mulk_tipi} — {il or '?'}/{ilce or '?'} — {m2 or '?'}m²"
-        self._sohbete_ekle("kullanici", ozet)
-        self.mesaj_input.clear()
-        self._gayrimenkul_aracli_basla()
-
-    def _gayrimenkul_aracli_basla(self):
-        """Gayrimenkul Değerleme modu — uzmanlaşmış sistem promptuyla thread başlat."""
-        self.engine.set_proje_baglam(self.db, self.proje_id)
-        try:
-            thread = self.engine.sorgu_gayrimenkul_thread_olustur()
-        except AttributeError:
-            thread = self.engine.sorgu_aracli_thread_olustur()
-        if not thread:
-            self._sohbete_ekle("hata", "Değerleme thread'i oluşturulamadı.")
-            return
-
-        self._current_thread = thread
-        thread.yanit_tamamlandi.connect(self._aracli_yanit_geldi)
-        thread.arac_cagrildi.connect(self._arac_sonucu_goster)
-        thread.hata_olustu.connect(self._hata_geldi)
-        thread.islem_bitti.connect(self._islem_bitti_aracli)
-
-        self._ui_mesgul_yap(True)
-        self.durum_label.setText(
-            "⏳ Gayrimenkul değerlemesi yapılıyor — emsal analizi ve piyasa araştırması..."
         )
         thread.start()
 
@@ -1740,7 +1219,6 @@ class AsistanPanel(QWidget):
         self.analiz_basla_btn.setEnabled(not mesgul)
         self.gantt_plan_basla_btn.setEnabled(not mesgul)
         self.hakedis_basla_btn.setEnabled(not mesgul)
-        self.ekap_basla_btn.setEnabled(not mesgul)
 
     def _sohbete_ekle(self, rol: str, icerik: str):
         renk_map = {

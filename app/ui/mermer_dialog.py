@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton,
     QLabel, QTextEdit, QMessageBox, QGroupBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QScrollArea, QWidget, QFrame,
-    QCheckBox, QTabWidget, QSplitter, QFileDialog
+    QCheckBox, QTabWidget, QSplitter, QFileDialog, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QBrush
@@ -421,7 +421,7 @@ class MermerHesaplamaDialog(QDialog):
         dxf_dosya_row.addWidget(self.dxf_path_edit)
         btn_dxf_sec = QPushButton("Gozat...")
         btn_dxf_sec.clicked.connect(self.dxf_dosya_sec)
-        btn_dxf_sec.setFixedWidth(90)
+        btn_dxf_sec.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         dxf_dosya_row.addWidget(btn_dxf_sec)
         dxf_dosya_form.addRow("DXF Dosyasi:", dxf_dosya_row)
 

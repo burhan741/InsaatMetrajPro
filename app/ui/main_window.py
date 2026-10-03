@@ -151,7 +151,7 @@ class MainWindow(QMainWindow):
             'malzeme': False,
             'birim_fiyat': False,
             'ihale': False,
-            'ekap': False,
+            'devlet_ihalesi': False,
         }
         # Floating AI Asistan penceresi referansı
         self._asistan_pencere = None
@@ -378,9 +378,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(QWidget(), "İhale Dosyası Hazırlama")
         self.tabs.addTab(QWidget(), "Enflasyon ve Fiyat Farkı")
         self.tabs.addTab(QWidget(), "Tedarikçi Fiyat Karşılaştırma")
-        self.tabs.addTab(QWidget(), "Çevre ve Sürdürülebilirlik")
         self.tabs.addTab(QWidget(), "Gantt Chart ve İş Programı")
-        self.tabs.addTab(QWidget(), "EKAP İhale Sorgulama")
+        self.tabs.addTab(QWidget(), "Devlet İhalesi Araçları")
 
         parent.addWidget(self.tabs)
         
@@ -1796,6 +1795,38 @@ class MainWindow(QMainWindow):
         demir_hesaplama_action = tools_menu.addAction("Yapısal Demir Hesaplama")
         demir_hesaplama_action.triggered.connect(self.open_demir_hesaplama)
 
+        # PDF Metraj
+        pdf_metraj_action = tools_menu.addAction("PDF'den Fare ile Metraj")
+        pdf_metraj_action.triggered.connect(self.open_pdf_metraj)
+
+        # Birim Fiyat Analizi (BFA)
+        bfa_action = tools_menu.addAction("Birim Fiyat Analizi (BFA)")
+        bfa_action.triggered.connect(self.open_bfa)
+
+        # Yaklaşık Maliyet & Keşif Cetveli
+        yaklasik_maliyet_action = tools_menu.addAction("Yaklaşık Maliyet & Keşif Cetveli")
+        yaklasik_maliyet_action.triggered.connect(self.open_yaklasik_maliyet)
+
+        # Resmi Hakediş Belgesi
+        hakedis_resmi_action = tools_menu.addAction("Resmi Hakediş Belgesi")
+        hakedis_resmi_action.triggered.connect(self.open_hakedis_resmi)
+
+        # Ataşman Belgesi
+        atasaman_action = tools_menu.addAction("Ataşman Belgesi")
+        atasaman_action.triggered.connect(self.open_atasaman)
+
+        # Santiye Gunluk Rapor
+        santiye_gunluk_action = tools_menu.addAction("📓 Şantiye Günlük Rapor (Santiye Defteri)")
+        santiye_gunluk_action.triggered.connect(self.open_santiye_gunluk)
+
+        # Nakit Akis Projeksiyonu
+        nakit_akis_action = tools_menu.addAction("💰 Nakit Akış Projeksiyonu")
+        nakit_akis_action.triggered.connect(self.open_nakit_akis)
+
+        # Ince Isler Hizli Hesap
+        ince_isler_hizli_action = tools_menu.addAction("⚡ İnce İşler Hızlı Maliyet Hesabı")
+        ince_isler_hizli_action.triggered.connect(self.open_ince_isler_hizli)
+
         # Saha Demiri Hesabı
         saha_demiri_action = tools_menu.addAction("Saha Demiri Hesabı")
         saha_demiri_action.triggered.connect(self.open_saha_demiri)
@@ -1935,7 +1966,7 @@ class MainWindow(QMainWindow):
     def _asistan_gantt_ac(self):
         """AI asistandan gelen Gantt sekme açma isteğini işle."""
         try:
-            self.tabs.setCurrentIndex(9)
+            self.tabs.setCurrentIndex(8)
         except Exception:
             pass
 
@@ -3717,37 +3748,19 @@ class MainWindow(QMainWindow):
                     self.tabs.blockSignals(False)
                     import traceback
                     logger.error(f"Tedarikçi sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
-            elif index == 8 and not self._tabs_created.get('surdurulebilirlik', False):
-                try:
-                    # Çevre ve Sürdürülebilirlik sekmesi
-                    placeholder = self.tabs.widget(8)
-                    from app.ui.surdurulebilirlik_window import SurdurulebilirlikWindow
-                    surdurulebilirlik_widget = SurdurulebilirlikWindow(self.db)
-                    self.tabs.blockSignals(True)
-                    self.tabs.removeTab(8)
-                    self.tabs.insertTab(8, surdurulebilirlik_widget, "🌍 Çevre ve Sürdürülebilirlik")
-                    self.tabs.setCurrentIndex(8)
-                    self.tabs.blockSignals(False)
-                    self._tabs_created['surdurulebilirlik'] = True
-                    if placeholder:
-                        placeholder.deleteLater()
-                except Exception as e:
-                    self.tabs.blockSignals(False)
-                    import traceback
-                    logger.error(f"Sürdürülebilirlik sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
-            elif index == 9 and not self._tabs_created.get('gantt', False):
+            elif index == 8 and not self._tabs_created.get('gantt', False):
                 try:
                     # Gantt Chart ve İş Programı sekmesi
-                    placeholder = self.tabs.widget(9)
+                    placeholder = self.tabs.widget(8)
                     from app.ui.gantt_window import GanttWindow
                     gantt_widget = GanttWindow(self.db)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(9)
-                    self.tabs.insertTab(9, gantt_widget, "📅 Gantt Chart")
-                    self.tabs.setCurrentIndex(9)
+                    self.tabs.removeTab(8)
+                    self.tabs.insertTab(8, gantt_widget, "📅 Gantt Chart")
+                    self.tabs.setCurrentIndex(8)
                     self.tabs.blockSignals(False)
                     self._tabs_created['gantt'] = True
-                    self._gantt_widget = gantt_widget  # referans sakla
+                    self._gantt_widget = gantt_widget
                     if placeholder:
                         placeholder.deleteLater()
                     # Floating asistan açıksa Gantt engine ve window'u bağla
@@ -3773,24 +3786,23 @@ class MainWindow(QMainWindow):
                     self.tabs.blockSignals(False)
                     import traceback
                     logger.error(f"Gantt Chart sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
-            elif index == 10 and not self._tabs_created.get('ekap', False):
+            elif index == 9 and not self._tabs_created.get('devlet_ihalesi', False):
                 try:
-                    placeholder = self.tabs.widget(10)
-                    from app.ui.ekap_window import EKAPWindow
-                    ekap_widget = EKAPWindow(self.db)
+                    placeholder = self.tabs.widget(9)
+                    from app.ui.devlet_ihalesi_widget import DevletIhalesiWidget
+                    devlet_widget = DevletIhalesiWidget(self.db)
                     self.tabs.blockSignals(True)
-                    self.tabs.removeTab(10)
-                    self.tabs.insertTab(10, ekap_widget, "🏛 EKAP İhale")
-                    self.tabs.setCurrentIndex(10)
+                    self.tabs.removeTab(9)
+                    self.tabs.insertTab(9, devlet_widget, "🏗 Devlet İhalesi")
+                    self.tabs.setCurrentIndex(9)
                     self.tabs.blockSignals(False)
-                    self._tabs_created['ekap'] = True
+                    self._tabs_created['devlet_ihalesi'] = True
                     if placeholder:
                         placeholder.deleteLater()
                 except Exception as e:
                     self.tabs.blockSignals(False)
-                    print(f"EKAP sekmesi oluşturma hatası: {e}")
                     import traceback
-                    traceback.print_exc()
+                    logger.error(f"Devlet İhalesi sekmesi oluşturma hatası: {e}\n{traceback.format_exc()}")
 
             # Proje Özeti sekmesine geçildiğinde güncelle (sadece sekme zaten oluşturulmuşsa)
             if index == 1 and self._tabs_created['ozet']:
@@ -7684,14 +7696,151 @@ class MainWindow(QMainWindow):
         dialog.exec()
     
     def open_demir_hesaplama(self) -> None:
-        """Demir hesaplama penceresini aç"""
+        """Demir hesaplama penceresini aç (var olan pencere varsa onu öne getirir,
+        yeniden oluşturmaz — aksi halde Kesim Listesi'ne aktarılmış veriler
+        sahipsiz kalıp kaybolur, bkz. CLAUDE.md Rev-113 ailesi)."""
         try:
+            mevcut = getattr(self, "demir_window", None)
+            try:
+                acik_mi = mevcut is not None and mevcut.isVisible()
+            except RuntimeError:
+                acik_mi = False  # Qt C++ nesnesi silinmiş (pencere kapatılmış)
+            if acik_mi:
+                self.demir_window.show()
+                self.demir_window.raise_()
+                self.demir_window.activateWindow()
+                return
             from app.ui.demir_hesaplama_window import DemirHesaplamaWindow
             self.demir_window = DemirHesaplamaWindow(self)
             self.demir_window.show()
             logger.info("Demir hesaplama penceresi açıldı")
         except Exception as e:
             logger.error(f"Demir hesaplama penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_pdf_metraj(self) -> None:
+        """PDF'den fare ile metraj penceresini aç"""
+        try:
+            from app.ui.pdf_metraj_window import PDFMetrajWindow
+            self._pdf_metraj_window = PDFMetrajWindow(self)
+            self._pdf_metraj_window.show()
+            logger.info("PDF Metraj penceresi açıldı")
+        except Exception as e:
+            logger.error(f"PDF Metraj penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_bfa(self) -> None:
+        """Birim Fiyat Analizi (BFA) penceresini aç"""
+        try:
+            from app.ui.bfa_window import BFAWindow
+            self._bfa_window = BFAWindow(self)
+            self._bfa_window.setWindowFlags(
+                self._bfa_window.windowFlags() | Qt.WindowType.Window
+            )
+            self._bfa_window.setWindowTitle("Birim Fiyat Analizi (BFA) — CŞB Standartları")
+            self._bfa_window.resize(1280, 820)
+            self._bfa_window.show()
+            logger.info("BFA penceresi açıldı")
+        except Exception as e:
+            logger.error(f"BFA penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"BFA penceresi açılamadı:\n{str(e)}")
+
+    def open_yaklasik_maliyet(self) -> None:
+        """Yaklaşık maliyet & keşif cetveli penceresini aç"""
+        try:
+            from app.ui.yaklasik_maliyet_window import YaklasikMaliyetWindow
+            self._yaklasik_maliyet_window = YaklasikMaliyetWindow(db=self.db, parent=self)
+            self._yaklasik_maliyet_window.setWindowFlags(
+                self._yaklasik_maliyet_window.windowFlags() |
+                Qt.WindowType.Window
+            )
+            self._yaklasik_maliyet_window.resize(1200, 800)
+            self._yaklasik_maliyet_window.show()
+            logger.info("Yaklaşık Maliyet penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Yaklaşık Maliyet penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_hakedis_resmi(self) -> None:
+        """Resmi hakediş belgesi penceresini aç"""
+        try:
+            from app.ui.hakedis_window import HakedisWindow
+            self._hakedis_resmi_window = HakedisWindow(self.db, self)
+            self._hakedis_resmi_window.show()
+            logger.info("Resmi Hakediş penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Resmi Hakediş penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_atasaman(self) -> None:
+        """Ataşman belgesi penceresini aç"""
+        try:
+            from app.ui.atasaman_window import AtasamanWindow
+            self._atasaman_window = AtasamanWindow(self)
+            self._atasaman_window.setWindowFlags(
+                self._atasaman_window.windowFlags() | Qt.WindowType.Window
+            )
+            self._atasaman_window.resize(1200, 760)
+            self._atasaman_window.show()
+            logger.info("Ataşman belgesi penceresi açıldı")
+        except Exception as e:
+            logger.error(f"Ataşman belgesi penceresi açılamadı: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_santiye_gunluk(self) -> None:
+        """Santiye gunluk rapor (santiye defteri) penceresini ac"""
+        try:
+            from app.ui.santiye_gunluk_window import SantiyeGunlukWindow
+            proje_id = getattr(self, 'current_project_id', None)
+            self._santiye_gunluk_window = SantiyeGunlukWindow(
+                db=self.db, proje_id=proje_id, parent=self
+            )
+            self._santiye_gunluk_window.setWindowFlags(
+                self._santiye_gunluk_window.windowFlags() | Qt.WindowType.Window
+            )
+            self._santiye_gunluk_window.resize(1100, 720)
+            self._santiye_gunluk_window.show()
+            logger.info("Santiye gunluk rapor penceresi acildi")
+        except Exception as e:
+            logger.error(f"Santiye gunluk rapor penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_nakit_akis(self) -> None:
+        """Nakit akis projeksiyonu penceresini ac"""
+        try:
+            from app.ui.nakit_akis_window import NakitAkisWindow
+            gantt_engine = None
+            if hasattr(self, '_gantt_window') and self._gantt_window:
+                gantt_engine = getattr(self._gantt_window, '_gantt_engine', None) or \
+                               getattr(self._gantt_window, 'engine', None)
+            self._nakit_akis_window = NakitAkisWindow(
+                gantt_engine=gantt_engine, parent=self
+            )
+            self._nakit_akis_window.setWindowFlags(
+                self._nakit_akis_window.windowFlags() | Qt.WindowType.Window
+            )
+            self._nakit_akis_window.resize(1200, 740)
+            self._nakit_akis_window.show()
+            logger.info("Nakit akis projeksiyonu penceresi acildi")
+        except Exception as e:
+            logger.error(f"Nakit akis penceresi acilamadi: {e}")
+            QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
+
+    def open_ince_isler_hizli(self) -> None:
+        """Ince isler hizli maliyet hesabi penceresini ac"""
+        try:
+            from app.ui.ince_isler_hizli_window import InceIslerHizliWindow
+            self._ince_isler_hizli_window = InceIslerHizliWindow(
+                db=self.db, parent=self
+            )
+            self._ince_isler_hizli_window.setWindowFlags(
+                self._ince_isler_hizli_window.windowFlags() | Qt.WindowType.Window
+            )
+            self._ince_isler_hizli_window.resize(920, 660)
+            self._ince_isler_hizli_window.show()
+            logger.info("Ince isler hizli hesap penceresi acildi")
+        except Exception as e:
+            logger.error(f"Ince isler hizli hesap penceresi acilamadi: {e}")
             QMessageBox.critical(self, "Hata", f"Pencere açılamadı:\n{str(e)}")
 
     def open_saha_demiri(self) -> None:
@@ -8182,9 +8331,6 @@ class MainWindow(QMainWindow):
                         logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
                     elif pencere_tipi == 'EnflasyonWindow':
                         self.show_enflasyon_analizi()
-                        logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
-                    elif pencere_tipi == 'SurdurulebilirlikWindow':
-                        self.show_surdurulebilirlik_raporu()
                         logger.info(f"✅ Pencere yeniden açıldı: {pencere_tipi}")
 
                 except Exception as e:

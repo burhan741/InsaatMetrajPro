@@ -55,7 +55,8 @@ class KategoriButon(QPushButton):
         aciklama = KATEGORI_ACIKLAMA.get(kategori, "")
 
         self.setText(f"{ikon}\n{kategori}\n\n{aciklama}")
-        self.setFixedSize(QSize(150, 130))
+        self.setFixedWidth(150)
+        self.setMinimumHeight(130)
         self.setFont(QFont("Segoe UI", 10))
         self.setStyleSheet(f"""
             QPushButton {{
@@ -185,11 +186,11 @@ class SablonSihirbazi(QDialog):
         nav_layout = QHBoxLayout()
         self._geri_btn = QPushButton("◀ Geri")
         self._geri_btn.setEnabled(False)
-        self._geri_btn.setFixedWidth(100)
+        self._geri_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self._geri_btn.clicked.connect(self._onceki_adim)
 
         self._ileri_btn = QPushButton("İleri ▶")
-        self._ileri_btn.setFixedWidth(100)
+        self._ileri_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self._ileri_btn.setStyleSheet(
             "background-color: #3498db; color: white; border-radius: 4px; padding: 5px;"
         )
@@ -204,7 +205,7 @@ class SablonSihirbazi(QDialog):
         self._olustur_btn.clicked.connect(self.accept)
 
         iptal_btn = QPushButton("İptal")
-        iptal_btn.setFixedWidth(80)
+        iptal_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         iptal_btn.clicked.connect(self.reject)
 
         nav_layout.addWidget(iptal_btn)
@@ -288,7 +289,7 @@ class SablonSihirbazi(QDialog):
         # Proje Adı
         ad_layout = QHBoxLayout()
         ad_label = QLabel("Proje Adı:")
-        ad_label.setFixedWidth(120)
+        ad_label.setMinimumWidth(230)
         ad_label.setStyleSheet("font-weight: bold;")
         self._proje_adi_input = QLineEdit()
         self._proje_adi_input.setPlaceholderText("Örn: Kaya Villası, Merkez Apartman...")
@@ -300,7 +301,7 @@ class SablonSihirbazi(QDialog):
         # Başlangıç Tarihi
         tarih_layout = QHBoxLayout()
         tarih_label = QLabel("Başlangıç Tarihi:")
-        tarih_label.setFixedWidth(120)
+        tarih_label.setMinimumWidth(230)
         tarih_label.setStyleSheet("font-weight: bold;")
         self._baslangic_date = QDateEdit()
         self._baslangic_date.setCalendarPopup(True)
@@ -314,7 +315,7 @@ class SablonSihirbazi(QDialog):
         # Şehir (opsiyonel)
         sehir_layout = QHBoxLayout()
         sehir_label = QLabel("Şehir (Opsiyonel):")
-        sehir_label.setFixedWidth(120)
+        sehir_label.setMinimumWidth(230)
         sehir_label.setStyleSheet("font-weight: bold;")
         self._sehir_input = QLineEdit()
         self._sehir_input.setPlaceholderText("Hava durumu entegrasyonu için (Ankara, İstanbul...)")

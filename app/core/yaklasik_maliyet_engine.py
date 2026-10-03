@@ -1,9 +1,10 @@
 """
 Yaklaşık Maliyet ve Keşif Özeti Motoru
+=======================================
 4734 Sayılı Kamu İhale Kanunu kapsamında yaklaşık maliyet hesabı.
 
 Desteklenen kurum fiyat listeleri:
-- ÇŞB : Çevre, Şehircilik ve İklim Bakanlığı (Yapım işleri)
+- ÇŞB : Çevre, Şehircilik ve İklim Bakanlığı (Yapım işleri)  — CSBPozEngine
 - DSİ : Devlet Su İşleri
 - KGM : Karayolları Genel Müdürlüğü
 - İLBANK: İller Bankası (Belediye altyapısı)
@@ -13,8 +14,8 @@ Hesaplanan değerler:
 - Toplam yapım bedeli
 - KDV tutarı
 - Genel toplam (KDV dahil)
-- Aşırı düşük teklif sınır değeri
-- Resmi keşif özeti formatında export
+- Aşırı düşük teklif sınır değeri (KİK md.38)
+- Resmi keşif özeti formatında export (JSON / Excel satırları)
 """
 
 from decimal import Decimal, ROUND_HALF_UP
@@ -22,136 +23,106 @@ from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple
 import logging
 
+from app.core.csb_poz_engine import CSBPozEngine
+
 logger = logging.getLogger(__name__)
+
+try:
+    from app.utils.font_utils import get_fonts as _get_fonts
+    _PDF_FONT, _PDF_FONT_BOLD = _get_fonts()
+except Exception:
+    _PDF_FONT, _PDF_FONT_BOLD = _PDF_FONT, _PDF_FONT_BOLD
+
 
 # ============================================================
 # KURUM FİYAT LİSTESİ TANIMLARI
 # ============================================================
 
-KURUM_LISTESI = {
-'csb': 'ÇŞB — Çevre, Şehircilik ve İklim Bakanlığı',
-'dsi': 'DSİ — Devlet Su İşleri',
-'kgm': 'KGM — Karayolları Genel Müdürlüğü',
-'ilbank': 'İLBANK — İller Bankası',
-'ozel': 'Özel / Piyasa Fiyatı',
+KURUM_LISTESI: Dict[str, str] = {
+    'csb': 'ÇŞB — Çevre, Şehircilik ve İklim Bakanlığı',
+    'dsi': 'DSİ — Devlet Su İşleri',
+    'kgm': 'KGM — Karayolları Genel Müdürlüğü',
+    'ilbank': 'İLBANK — İller Bankası',
+    'ozel': 'Özel / Piyasa Fiyatı',
 }
 
 # KDV oranları (%)
-KDV_ORANLARI = {
-'standard': Decimal('20'), # Genel KDV oranı (2023 sonrası)
-'insaat': Decimal('20'), # İnşaat KDV oranı
-'muaf': Decimal('0'), # KDV muaf (bazı kamu ihaleleri)
+KDV_ORANLARI: Dict[str, Decimal] = {
+    'standard': Decimal('20'),   # Genel KDV oranı (2023 sonrası)
+    'insaat': Decimal('20'),     # İnşaat KDV oranı
+    'muaf': Decimal('0'),        # KDV muaf (bazı kamu ihaleleri)
 }
 
-# Aşırı düşük teklif hesabı için eşik katılımcı sayıları
-# 4734 KİK md.38: Sınır değer = (teklifler toplamı - en yüksek - en düşük) / (n-2) × 0.80
+# 4734 KİK md.38: Sınır değer = ortalama × 0.80
 ASIRI_DUSUK_KATSAYI = Decimal('0.80')
 
-
-# ============================================================
-# ÖRNEK RESMİ POZ VERİTABANI (ÇŞB 2025 Yapım Birim Fiyatları)
-# Gerçek uygulamada PDF'ten veya API'den çekilecek
-# ============================================================
-
-CSB_BIRIM_FIYATLARI_2025: Dict[str, Dict[str, Any]] = {
-# ---- TOPRAK İŞLERİ ----
-'16.001': {'tanim': 'Her derinlikte kaya olmayan zeminlerde makineyle kazı', 'birim': 'm³', 'fiyat': Decimal('148.50')},
-'16.002': {'tanim': 'Bitkisel toprak sıyrılması', 'birim': 'm²', 'fiyat': Decimal('28.40')},
-'16.003': {'tanim': 'Dolguda kullanılan zeminin serilip sıkıştırılması', 'birim': 'm³', 'fiyat': Decimal('112.00')},
-
-# ---- BETON İŞLERİ ----
-'21.001': {'tanim': 'C16/20 beton - Grobeton', 'birim': 'm³', 'fiyat': Decimal('3_820.00')},
-'21.002': {'tanim': 'C25/30 beton - Temel', 'birim': 'm³', 'fiyat': Decimal('4_650.00')},
-'21.003': {'tanim': 'C25/30 beton - Kolon, kiriş, döşeme', 'birim': 'm³', 'fiyat': Decimal('4_890.00')},
-'21.004': {'tanim': 'C30/37 beton - Perde', 'birim': 'm³', 'fiyat': Decimal('5_120.00')},
-'21.011': {'tanim': 'Kalıp yapılması, sökülmesi (Kolon, kiriş, döşeme)', 'birim': 'm²', 'fiyat': Decimal('580.00')},
-'21.012': {'tanim': 'Kalıp yapılması, sökülmesi (Temel, perde)', 'birim': 'm²', 'fiyat': Decimal('520.00')},
-'21.021': {'tanim': 'Çelik hasır donatı (Q131 - Q335)', 'birim': 'kg', 'fiyat': Decimal('42.80')},
-'21.022': {'tanim': 'Nervürlü çelik çubuk donatı (S420)', 'birim': 'kg', 'fiyat': Decimal('38.50')},
-
-# ---- DUVAR İŞLERİ ----
-'22.001': {'tanim': 'Tuğla duvar örülmesi (19×19×13.5)', 'birim': 'm²', 'fiyat': Decimal('820.00')},
-'22.002': {'tanim': 'Gazbeton duvar örülmesi (20 cm)', 'birim': 'm²', 'fiyat': Decimal('760.00')},
-'22.003': {'tanim': 'Briket duvar (20 cm)', 'birim': 'm²', 'fiyat': Decimal('680.00')},
-
-# ---- SIVA İŞLERİ ----
-'23.001': {'tanim': 'İç sıva (Kireç harçlı, el ile)', 'birim': 'm²', 'fiyat': Decimal('285.00')},
-'23.002': {'tanim': 'Dış sıva (Çimento harçlı)', 'birim': 'm²', 'fiyat': Decimal('340.00')},
-'23.003': {'tanim': 'Alçı sıva (İnce, makine ile)', 'birim': 'm²', 'fiyat': Decimal('220.00')},
-
-# ---- BOYA İŞLERİ ----
-'24.001': {'tanim': 'İç cephe su bazlı boya (2 kat + astar)', 'birim': 'm²', 'fiyat': Decimal('185.00')},
-'24.002': {'tanim': 'Dış cephe silikon esaslı boya', 'birim': 'm²', 'fiyat': Decimal('320.00')},
-'24.003': {'tanim': 'Antipas + yağlı boya (Çelik yüzey)', 'birim': 'm²', 'fiyat': Decimal('280.00')},
-
-# ---- DÖŞEME İŞLERİ ----
-'25.001': {'tanim': 'Seramik döşeme (30×30 - 60×60)', 'birim': 'm²', 'fiyat': Decimal('520.00')},
-'25.002': {'tanim': 'Granit / mermer döşeme', 'birim': 'm²', 'fiyat': Decimal('1_250.00')},
-'25.003': {'tanim': 'Şap (Tesviye betonu, 5 cm)', 'birim': 'm²', 'fiyat': Decimal('195.00')},
-
-# ---- YALITIM ----
-'26.001': {'tanim': 'Isı yalıtımı (EPS 5 cm, mantolama)', 'birim': 'm²', 'fiyat': Decimal('480.00')},
-'26.002': {'tanim': 'Su yalıtımı (Bitümlü membran, 2 kat)', 'birim': 'm²', 'fiyat': Decimal('380.00')},
-'26.003': {'tanim': 'XPS yalıtım (5 cm, teras çatı)', 'birim': 'm²', 'fiyat': Decimal('520.00')},
-
-# ---- ÇATI ----
-'27.001': {'tanim': 'Kiremit kaplama (Beton kiremit)', 'birim': 'm²', 'fiyat': Decimal('620.00')},
-'27.002': {'tanim': 'Trapez sac çatı kaplama', 'birim': 'm²', 'fiyat': Decimal('780.00')},
-
-# ---- ELEKTRİK ----
-'30.001': {'tanim': 'Sıva altı tesisat borusu + kablo', 'birim': 'm', 'fiyat': Decimal('180.00')},
-'30.002': {'tanim': 'Priz (Topraklı, 16A)', 'birim': 'adet', 'fiyat': Decimal('320.00')},
-'30.003': {'tanim': 'Aydınlatma armatürü montajı (LED panel)', 'birim': 'adet', 'fiyat': Decimal('480.00')},
-
-# ---- MEKANİK TESİSAT ----
-'31.001': {'tanim': 'Plastik boru tesisat (Ø32-Ø110)', 'birim': 'm', 'fiyat': Decimal('285.00')},
-'31.002': {'tanim': 'Kombi montajı (24 kW)', 'birim': 'adet', 'fiyat': Decimal('8_500.00')},
-'31.003': {'tanim': 'Banyo tesisatı (Klozet, lavabo, duş)', 'birim': 'set', 'fiyat': Decimal('12_800.00')},
-
-# ---- PENCERE / KAPI ----
-'33.001': {'tanim': 'PVC pencere (Tek kanat, Enerji sınıfı A)', 'birim': 'm²', 'fiyat': Decimal('2_800.00')},
-'33.002': {'tanim': 'PVC balkon kapısı (Çift kanat)', 'birim': 'm²', 'fiyat': Decimal('3_200.00')},
-'33.003': {'tanim': 'Çelik kapı montajı', 'birim': 'adet', 'fiyat': Decimal('4_500.00')},
+# Kategori etiketleri (poz_kodu prefix → kategori adı)
+KATEGORI_MAP: Dict[str, str] = {
+    '16': 'Toprak İşleri',
+    '21': 'Beton ve Betonarme',
+    '22': 'Duvar İşleri',
+    '23': 'Sıva İşleri',
+    '24': 'Boya İşleri',
+    '25': 'Döşeme İşleri',
+    '26': 'Yalıtım',
+    '27': 'Çatı İşleri',
+    '30': 'Elektrik Tesisatı',
+    '31': 'Mekanik Tesisat',
+    '33': 'Kapı/Pencere',
+    '34': 'Çelik Yapı',
 }
 
+
+# ============================================================
+# KALEM SINIFI
+# ============================================================
 
 class YaklasikMaliyetKalemi:
     """
     Keşif / yaklaşık maliyet cetveli tek satırı.
 
     Her satır bir poz kalemini temsil eder:
-    poz_no × miktar × birim_fiyat = tutar
+    sira_no | poz_no | tanim | birim | miktar | birim_fiyat → tutar
     """
 
     def __init__(
-    self,
-    sira_no: int,
-    poz_no: str,
-    tanim: str,
-    birim: str,
-    miktar: Decimal,
-    birim_fiyat: Decimal,
-    kurum: str = 'csb',
-    aciklama: str = '',
+        self,
+        sira_no: int,
+        poz_no: str,
+        tanim: str,
+        birim: str,
+        miktar: Decimal,
+        birim_fiyat: Decimal,
+        kurum: str = 'csb',
+        aciklama: str = '',
     ):
         self.sira_no = sira_no
-    self.poz_no = poz_no
-    self.tanim = tanim
-    self.birim = birim
-    self.miktar = miktar
-    self.birim_fiyat = birim_fiyat
-    self.kurum = kurum
-    self.aciklama = aciklama
+        self.poz_no = poz_no
+        self.tanim = tanim
+        self.birim = birim
+        self.miktar = miktar
+        self.birim_fiyat = birim_fiyat
+        self.kurum = kurum
+        self.aciklama = aciklama
+
+    # ------------------------------------------------------------------
+    # HESAPLANAN PROPERTY
+    # ------------------------------------------------------------------
 
     @property
     def tutar(self) -> Decimal:
         """Kalem tutarı = miktar × birim fiyat (2 ondalık hassasiyet)."""
         return (self.miktar * self.birim_fiyat).quantize(
-        Decimal('0.01'), rounding=ROUND_HALF_UP
+            Decimal('0.01'), rounding=ROUND_HALF_UP
         )
 
-        def to_dict(self) -> Dict[str, Any]:
-            return {
+    # ------------------------------------------------------------------
+    # SERİLEŞTİRME
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Kalem verisini JSON-uyumlu dict olarak döndür."""
+        return {
             'sira_no': self.sira_no,
             'poz_no': self.poz_no,
             'tanim': self.tanim,
@@ -161,22 +132,34 @@ class YaklasikMaliyetKalemi:
             'tutar': float(self.tutar),
             'kurum': self.kurum,
             'aciklama': self.aciklama,
-            }
+        }
 
+    def __repr__(self) -> str:
+        return (
+            f"YaklasikMaliyetKalemi("
+            f"sira={self.sira_no}, poz={self.poz_no!r}, "
+            f"miktar={float(self.miktar)}, tutar={float(self.tutar):,.2f} TL)"
+        )
+
+
+# ============================================================
+# MOTOR SINIFI
+# ============================================================
 
 class YaklasikMaliyetEngine:
     """
     Yaklaşık maliyet hesaplama motoru.
 
     Neyi çözüyoruz:
-    4734 KİK kapsamında müteahhitin ihaleye girmeden önce
-    kendi keşfini yapması ve teklifini konumlandırması.
-    Aşırı düşük sınırın tespiti teklif reddini önler.
+    4734 KİK kapsamında müteahhitin ihaleye girmeden önce kendi keşfini
+    yapması ve teklifini doğru konumlandırması. Aşırı düşük sınırın
+    tespiti teklif reddini önler.
 
     Nasıl test ederiz:
     - Bilinen poz + miktar girişiyle beklenen toplam doğrula
     - KDV tutarı = toplam × kdv_orani / 100 kontrolü
     - Aşırı düşük sınır = yaklaşık maliyet × 0.80 kontrolü
+    - asiri_dusuk_analizi ile n>=5 teklif listesinde uç değer eleme
     """
 
     def __init__(self):
@@ -184,16 +167,17 @@ class YaklasikMaliyetEngine:
         self.proje_adi: str = ''
         self.ihale_no: str = ''
         self.idare: str = ''
-        self.kurum: str = 'csb' # Varsayılan fiyat listesi
+        self.kurum: str = 'csb'            # Varsayılan fiyat listesi
         self.kdv_orani: Decimal = KDV_ORANLARI['standard']
         self.olusturma_tarihi: datetime = datetime.now()
         self._sira_sayac: int = 0
+        self._poz_engine: CSBPozEngine = CSBPozEngine()
 
-        # ------------------------------------------------------------------ #
-        # KALEM YÖNETİMİ
-        # ------------------------------------------------------------------ #
+    # ==================================================================
+    # KALEM YÖNETİMİ
+    # ==================================================================
 
-        def kalem_ekle(
+    def kalem_ekle(
         self,
         poz_no: str,
         miktar: float,
@@ -201,286 +185,663 @@ class YaklasikMaliyetEngine:
         tanim: Optional[str] = None,
         birim: Optional[str] = None,
         aciklama: str = '',
-        ) -> YaklasikMaliyetKalemi:
-            """
+    ) -> YaklasikMaliyetKalemi:
+        """
         Keşif cetveline yeni kalem ekle.
 
-        Poz no resmi listede varsa otomatik doldurur; birim fiyat
-        override edilmek istenirse açıkça verilir.
+        Poz no CSBPozEngine'de varsa tanım, birim ve fiyat otomatik
+        doldurulur. birim_fiyat, tanim veya birim override için
+        açıkça geçilebilir.
 
         Args:
-        poz_no : Resmi poz numarası (örn: '21.003')
-        miktar : Metraj miktarı
-        birim_fiyat : Opsiyonel override; yoksa resmi fiyat alınır
-        tanim : Opsiyonel override; yoksa resmi tanım alınır
-        birim : Opsiyonel override; yoksa resmi birim alınır
-        aciklama : Serbest not alanı
+            poz_no      : Resmi poz numarası (örn: '21.003')
+            miktar      : Metraj miktarı
+            birim_fiyat : Opsiyonel override; yoksa CSBPozEngine'den alınır
+            tanim       : Opsiyonel override; yoksa CSBPozEngine'den alınır
+            birim       : Opsiyonel override; yoksa CSBPozEngine'den alınır
+            aciklama    : Serbest not alanı
 
         Returns:
-        Eklenen YaklasikMaliyetKalemi nesnesi
+            Eklenen YaklasikMaliyetKalemi nesnesi
         """
         self._sira_sayac += 1
 
-        # Resmi listeden fiyat çek
-        resmi = CSB_BIRIM_FIYATLARI_2025.get(poz_no, {})
+        # CSBPozEngine'den resmi veriyi çek
+        resmi = self._poz_engine.poz_ara(poz_no) or {}
+
+        _tanim = tanim or resmi.get('aciklama', 'Tanımsız Kalem')
+        _birim = birim or resmi.get('birim', 'adet')
+
+        if birim_fiyat is not None:
+            _fiyat = Decimal(str(birim_fiyat))
+        elif resmi.get('birim_fiyat') is not None:
+            _fiyat = Decimal(str(resmi['birim_fiyat']))
+        else:
+            _fiyat = Decimal('0')
 
         kalem = YaklasikMaliyetKalemi(
-        sira_no=self._sira_sayac,
-        poz_no=poz_no,
-        tanim=tanim or resmi.get('tanim', 'Tanımsız Kalem'),
-        birim=birim or resmi.get('birim', 'adet'),
-        miktar=Decimal(str(miktar)),
-        birim_fiyat=Decimal(str(birim_fiyat)) if birim_fiyat else resmi.get('fiyat', Decimal('0')),
-        kurum=self.kurum,
-        aciklama=aciklama,
+            sira_no=self._sira_sayac,
+            poz_no=poz_no,
+            tanim=_tanim,
+            birim=_birim,
+            miktar=Decimal(str(miktar)),
+            birim_fiyat=_fiyat,
+            kurum=self.kurum,
+            aciklama=aciklama,
         )
         self.kalemler.append(kalem)
-        logger.debug(f"Kalem eklendi: {poz_no} — {kalem.tanim} — {float(kalem.tutar):,.2f} TL")
+        logger.debug(
+            "Kalem eklendi: %s — %s — %.2f TL",
+            poz_no, kalem.tanim, float(kalem.tutar),
+        )
         return kalem
 
-        def kalem_sil(self, sira_no: int) -> bool:
-            """Sıra numarasına göre kalem sil."""
-            onceki_uzunluk = len(self.kalemler)
-            self.kalemler = [k for k in self.kalemler if k.sira_no != sira_no]
-            return len(self.kalemler) < onceki_uzunluk
+    def kalem_sil(self, sira_no: int) -> bool:
+        """
+        Sıra numarasına göre kalem sil.
 
-            def kalem_guncelle(self, sira_no: int, miktar: Optional[float] = None,
-            birim_fiyat: Optional[float] = None) -> bool:
-                """Miktar veya birim fiyatı güncelle."""
-            for kalem in self.kalemler:
-                if kalem.sira_no == sira_no:
-                    if miktar is not None:
-                        kalem.miktar = Decimal(str(miktar))
-                        if birim_fiyat is not None:
-                            kalem.birim_fiyat = Decimal(str(birim_fiyat))
-                            return True
-                            return False
+        Returns:
+            True: kalem bulunup silindi; False: kalem bulunamadı
+        """
+        onceki = len(self.kalemler)
+        self.kalemler = [k for k in self.kalemler if k.sira_no != sira_no]
+        silindi = len(self.kalemler) < onceki
+        if silindi:
+            logger.debug("Kalem silindi: sira_no=%d", sira_no)
+        else:
+            logger.warning("Silinecek kalem bulunamadı: sira_no=%d", sira_no)
+        return silindi
 
-                            def poz_ara(self, arama: str) -> List[Dict[str, Any]]:
-                                """
-                                Resmi poz listesinde poz no veya tanımda arama yap.
+    def kalem_guncelle(
+        self,
+        sira_no: int,
+        miktar: Optional[float] = None,
+        birim_fiyat: Optional[float] = None,
+    ) -> bool:
+        """
+        Miktar veya birim fiyatı güncelle.
 
-                                Args:
-                                arama: Aranacak metin (poz no veya tanım kelimesi)
+        Returns:
+            True: kalem bulunup güncellendi; False: kalem bulunamadı
+        """
+        for kalem in self.kalemler:
+            if kalem.sira_no == sira_no:
+                if miktar is not None:
+                    kalem.miktar = Decimal(str(miktar))
+                if birim_fiyat is not None:
+                    kalem.birim_fiyat = Decimal(str(birim_fiyat))
+                logger.debug("Kalem güncellendi: sira_no=%d", sira_no)
+                return True
+        logger.warning("Güncellenecek kalem bulunamadı: sira_no=%d", sira_no)
+        return False
 
-                                Returns:
-                                Eşleşen pozların listesi
-                                """
-                                arama_lower = arama.lower()
-                                sonuclar = []
-                                for poz_no, bilgi in CSB_BIRIM_FIYATLARI_2025.items():
-                                    if (arama_lower in poz_no.lower() or
-                                    arama_lower in bilgi['tanim'].lower()):
-                                        sonuclar.append({
-                                    'poz_no': poz_no,
-                                    'tanim': bilgi['tanim'],
-                                    'birim': bilgi['birim'],
-                                    'fiyat': float(bilgi['fiyat']),
-                                    })
-                                    return sorted(sonuclar, key=lambda x: x['poz_no'])
+    # ==================================================================
+    # POZ ARAMA — CSBPozEngine'e DELEGE
+    # ==================================================================
 
-                                    # ------------------------------------------------------------------ #
-                                    # ANA HESAPLAMA
-                                    # ------------------------------------------------------------------ #
+    def poz_ara(self, poz_kodu: str) -> Optional[Dict[str, Any]]:
+        """
+        Poz koduna göre tam eşleşme ara (CSBPozEngine'e delege).
 
-                                    def hesapla(self) -> Dict[str, Any]:
-                                        """
-                                        Tam yaklaşık maliyet hesabını yap.
+        Returns:
+            Poz bilgisi dict'i veya None
+        """
+        return self._poz_engine.poz_ara(poz_kodu)
 
-                                        Returns:
-                                        {
-                                        'toplam_yapim': float, # KDV hariç yapım bedeli
-                                        'kdv_tutari': float,
-                                        'genel_toplam': float, # KDV dahil
-                                        'asiri_dusuk_sinir': float, # %80 sınır
-                                        'kdv_orani': float,
-                                        'kalem_sayisi': int,
-                                        'kalemler': List[dict],
-                                        }
-                                        """
-                                        if not self.kalemler:
-                                            return {'hata': 'Keşif cetveli boş. Lütfen kalem ekleyin.'}
+    def poz_metin_ara(
+        self,
+        metin: str,
+        kategori: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Tanım veya poz kodu içinde metin arama (CSBPozEngine'e delege).
 
-                                            toplam_yapim = sum(k.tutar for k in self.kalemler)
-                                            kdv_tutari = (toplam_yapim * self.kdv_orani / Decimal('100')).quantize(
-                                            Decimal('0.01'), rounding=ROUND_HALF_UP
-                                            )
-                                            genel_toplam = toplam_yapim + kdv_tutari
+        Args:
+            metin    : Aranacak kelime/poz kodu
+            kategori : Opsiyonel kategori filtresi
+            limit    : Maksimum sonuç sayısı
 
-                                            # Aşırı düşük sınır: yaklaşık maliyetin %80'i
-                                            # (4734 md.38 — gerçekte rekabet ortamına göre değişir)
-                                            asiri_dusuk_sinir = (toplam_yapim * ASIRI_DUSUK_KATSAYI).quantize(
-                                            Decimal('0.01'), rounding=ROUND_HALF_UP
-                                            )
+        Returns:
+            Eşleşen poz kayıtlarının listesi
+        """
+        return self._poz_engine.metin_ara(metin, kategori=kategori, limit=limit)
 
-                                            return {
-                                            'toplam_yapim': float(toplam_yapim),
-                                            'kdv_tutari': float(kdv_tutari),
-                                            'genel_toplam': float(genel_toplam),
-                                            'asiri_dusuk_sinir': float(asiri_dusuk_sinir),
-                                            'kdv_orani': float(self.kdv_orani),
-                                            'kalem_sayisi': len(self.kalemler),
-                                            'kalemler': [k.to_dict() for k in self.kalemler],
-                                            'proje_adi': self.proje_adi,
-                                            'ihale_no': self.ihale_no,
-                                            'idare': self.idare,
-                                            'kurum': KURUM_LISTESI.get(self.kurum, self.kurum),
-                                            'tarih': self.olusturma_tarihi.strftime('%d.%m.%Y'),
-                                            }
+    # ==================================================================
+    # ANA HESAPLAMALAR
+    # ==================================================================
 
-                                            def kategori_ozeti(self) -> List[Dict[str, Any]]:
-                                                """
-                                                Poz numarası prefix'ine göre kategori bazlı özet.
-                                                Örn: 16.xxx = Toprak, 21.xxx = Beton ...
-                                                """
-                                                KATEGORI_MAP = {
-                                                '16': 'Toprak İşleri',
-                                                '21': 'Beton ve Betonarme',
-                                                '22': 'Duvar İşleri',
-                                                '23': 'Sıva İşleri',
-                                                '24': 'Boya İşleri',
-                                                '25': 'Döşeme İşleri',
-                                                '26': 'Yalıtım',
-                                                '27': 'Çatı İşleri',
-                                                '30': 'Elektrik Tesisat',
-                                                '31': 'Mekanik Tesisat',
-                                                '33': 'Pencere ve Kapı',
-                                                }
+    def toplam_hesapla(self) -> Decimal:
+        """
+        Tüm kalemlerin KDV hariç tutarı toplamı.
 
-                                                kategori_tutarlar: Dict[str, Decimal] = {}
-                                                for kalem in self.kalemler:
-                                                    prefix = kalem.poz_no.split('.')[0]
-                                                    kategori = KATEGORI_MAP.get(prefix, f'Diğer ({prefix})')
-                                                    kategori_tutarlar[kategori] = (
-                                                    kategori_tutarlar.get(kategori, Decimal('0')) + kalem.tutar
-                                                    )
+        Returns:
+            Decimal (2 ondalık hassasiyet)
+        """
+        toplam = sum((k.tutar for k in self.kalemler), Decimal('0'))
+        return toplam.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-                                                    toplam = sum(kategori_tutarlar.values()) or Decimal('1')
-                                                    return [
-                                                    {
-                                                    'kategori': kat,
-                                                    'tutar': float(tutar),
-                                                    'yuzde': float((tutar / toplam * 100).quantize(Decimal('0.1'))),
-                                                    }
-                                                    for kat, tutar in sorted(kategori_tutarlar.items(),
-                                                    key=lambda x: x[1], reverse=True)
-                                                    ]
+    def kdv_hesapla(self) -> Decimal:
+        """
+        KDV tutarı = toplam × kdv_orani / 100.
 
-                                                    # ------------------------------------------------------------------ #
-                                                    # ASIRI DÜŞÜK TEKLİF ANALİZİ
-                                                    # ------------------------------------------------------------------ #
+        Returns:
+            Decimal (2 ondalık hassasiyet)
+        """
+        return (self.toplam_hesapla() * self.kdv_orani / Decimal('100')).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
 
-                                                    def asiri_dusuk_analiz(self, teklifler: List[float]) -> Dict[str, Any]:
-                                                        """
-                                                        Birden fazla teklif varken aşırı düşük sınır değerini hesapla.
-                                                        4734 KİK md.38 formülü: n >= 5 katılımcı olunca devreye girer.
+    def genel_toplam(self) -> Decimal:
+        """
+        KDV dahil genel toplam.
 
-                                                        Sınır değer = Geçerli tekliflerin aritmetik ortalaması × 0.80
+        Returns:
+            Decimal (2 ondalık hassasiyet)
+        """
+        return (self.toplam_hesapla() + self.kdv_hesapla()).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
 
-                                                        Args:
-                                                        teklifler: Geçerli teklif tutarları (TL, KDV hariç)
+    def asiri_dusuk_siniri(self) -> Decimal:
+        """
+        Yaklaşık maliyetin aşırı düşük sınırı (KİK md.38).
 
-                                                        Returns:
-                                                        Sınır değer, durum ve analiz detayı
-                                                        """
-                                                        if len(teklifler) < 2:
-                                                            return {
-                                                            'sinir_deger': None,
-                                                            'durum': 'Yetersiz teklif sayısı (min 2 gerekli)',
-                                                            'katilimci_sayisi': len(teklifler),
-                                                            }
+        Formül: yaklaşık maliyet × 0.80
 
-                                                            teklifler_dec = [Decimal(str(t)) for t in teklifler]
-                                                            teklifler_dec.sort()
+        Returns:
+            Decimal (2 ondalık hassasiyet)
+        """
+        return (self.toplam_hesapla() * ASIRI_DUSUK_KATSAYI).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
 
-                                                            # 5 ve üzeri teklifte en yüksek ve en düşük çıkarılır
-                                                            if len(teklifler_dec) >= 5:
-                                                                hesap_listesi = teklifler_dec[1:-1]
-                                                            else:
-                                                                hesap_listesi = teklifler_dec
+    def asiri_dusuk_analizi(
+        self,
+        teklif_listesi: List[float],
+    ) -> Dict[str, Any]:
+        """
+        Çok teklifli ihalede aşırı düşük sınır değeri hesabı.
 
-                                                                ortalama = sum(hesap_listesi) / len(hesap_listesi)
-                                                                sinir_deger = (ortalama * ASIRI_DUSUK_KATSAYI).quantize(
-                                                                Decimal('0.01'), rounding=ROUND_HALF_UP
-                                                                )
+        4734 KİK md.38 tam formülü:
+        - N >= 5 teklif: en yüksek + en düşük çıkar, kalan N-2 ortalama × 0.80
+        - N < 5  teklif: tüm tekliflerin ortalaması × 0.80
 
-                                                                analizler = []
-                                                                for i, teklif in enumerate(teklifler_dec):
-                                                                    durum = 'Normal' if teklif >= sinir_deger else 'Aşırı Düşük'
-                                                                    analizler.append({
-                                                                    'sira': i + 1,
-                                                                    'teklif': float(teklif),
-                                                                    'durum': durum,
-                                                                    'sinirin_yuzdesi': float(
-                                                                    (teklif / sinir_deger * 100).quantize(Decimal('0.1'))
-                                                                    ),
-                                                                    })
+        Args:
+            teklif_listesi: Geçerli teklif tutarları (TL, KDV hariç)
 
-                                                                    return {
-                                                                    'sinir_deger': float(sinir_deger),
-                                                                    'ortalama_teklif': float(ortalama),
-                                                                    'katilimci_sayisi': len(teklifler),
-                                                                    'asiri_dusuk_sayisi': sum(1 for a in analizler if a['durum'] == 'Aşırı Düşük'),
-                                                                    'teklifler': analizler,
-                                                                    }
+        Returns:
+            {
+              'sinir_deger': Decimal,
+              'ortalama': Decimal,
+              'asiri_dusuk_teklifler': List[float],
+              'gecerli_teklifler': List[float],
+            }
+        """
+        n = len(teklif_listesi)
+        if n < 2:
+            return {
+                'sinir_deger': Decimal('0'),
+                'ortalama': Decimal('0'),
+                'asiri_dusuk_teklifler': [],
+                'gecerli_teklifler': list(teklif_listesi),
+                'uyari': 'Yetersiz teklif sayısı (minimum 2 gerekli)',
+                'katilimci_sayisi': n,
+            }
 
-                                                                    # ------------------------------------------------------------------ #
-                                                                    # EXPORT
-                                                                    # ------------------------------------------------------------------ #
+        teklifler = sorted(Decimal(str(t)) for t in teklif_listesi)
 
-                                                                    def export_kesif_ozeti_dict(self) -> Dict[str, Any]:
-                                                                        """
-                                                                        Resmi keşif özeti formatında veri döndür.
-                                                                        Excel/PDF export için hazır yapı.
-                                                                        """
-                                                                        sonuc = self.hesapla()
-                                                                        if 'hata' in sonuc:
-                                                                            return sonuc
+        # Uç değer eleme: N >= 5 ise en düşük ve en yüksek çıkar
+        if n >= 5:
+            hesap_listesi = teklifler[1:-1]
+        else:
+            hesap_listesi = teklifler
 
-                                                                            return {
-                                                                            'baslik': {
-                                                                            'idare': self.idare or 'İdare Adı Girilmedi',
-                                                                            'proje_adi': self.proje_adi or 'Proje Adı Girilmedi',
-                                                                            'ihale_no': self.ihale_no or '---',
-                                                                            'fiyat_listesi': KURUM_LISTESI.get(self.kurum, self.kurum),
-                                                                            'tarih': self.olusturma_tarihi.strftime('%d.%m.%Y'),
-                                                                            'yil': self.olusturma_tarihi.year,
-                                                                            },
-                                                                            'kalemler': sonuc['kalemler'],
-                                                                            'ozet': {
-                                                                            'toplam_yapim_bedeli': sonuc['toplam_yapim'],
-                                                                            'kdv_orani': sonuc['kdv_orani'],
-                                                                            'kdv_tutari': sonuc['kdv_tutari'],
-                                                                            'genel_toplam': sonuc['genel_toplam'],
-                                                                            'asiri_dusuk_sinir': sonuc['asiri_dusuk_sinir'],
-                                                                            },
-                                                                            'kategori_dagilimi': self.kategori_ozeti(),
-                                                                            }
+        ortalama = sum(hesap_listesi) / Decimal(len(hesap_listesi))
+        ortalama = ortalama.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-                                                                            def to_excel_rows(self) -> List[List[Any]]:
-                                                                                """
-                                                                                Excel export için satır listesi döndür.
-                                                                                Her satır: [Sıra, Poz No, Tanım, Birim, Miktar, Birim Fiyat, Tutar]
-                                                                                """
-                                                                                rows = []
-                                                                                for k in self.kalemler:
-                                                                                    rows.append([
-                                                                                    k.sira_no,
-                                                                                    k.poz_no,
-                                                                                    k.tanim,
-                                                                                    k.birim,
-                                                                                    float(k.miktar),
-                                                                                    float(k.birim_fiyat),
-                                                                                    float(k.tutar),
-                                                                                    ])
-                                                                                    return rows
+        sinir_deger = (ortalama * ASIRI_DUSUK_KATSAYI).quantize(
+            Decimal('0.01'), rounding=ROUND_HALF_UP
+        )
 
-                                                                                    def __repr__(self):
-                                                                                        sonuc = self.hesapla()
-                                                                                        if 'hata' in sonuc:
-                                                                                            return f"YaklasikMaliyetEngine(boş)"
-                                                                                            return (
-                                                                                            f"YaklasikMaliyetEngine("
-                                                                                            f"kalem={sonuc['kalem_sayisi']}, "
-                                                                                            f"toplam={sonuc['genel_toplam']:,.2f} TL)"
-                                                                                            )
+        asiri_dusuk = [float(t) for t in teklifler if t < sinir_deger]
+        gecerli = [float(t) for t in teklifler if t >= sinir_deger]
+
+        return {
+            'sinir_deger': sinir_deger,
+            'ortalama': ortalama,
+            'asiri_dusuk_teklifler': asiri_dusuk,
+            'gecerli_teklifler': gecerli,
+            'katilimci_sayisi': n,
+            'elenen_uct_deger': n >= 5,
+        }
+
+    # ==================================================================
+    # KATEGORİ ÖZETİ
+    # ==================================================================
+
+    def kategori_ozeti(self) -> List[Dict[str, Any]]:
+        """
+        Poz numarası prefix'ine göre kategori bazlı özet.
+
+        Returns:
+            [{'kategori': str, 'tutar': float, 'yuzde': float}, ...]
+            Tutara göre azalan sıralı
+        """
+        kategori_tutarlar: Dict[str, Decimal] = {}
+        for kalem in self.kalemler:
+            prefix = kalem.poz_no.split('.')[0]
+            kategori = KATEGORI_MAP.get(prefix, f'Diğer ({prefix})')
+            kategori_tutarlar[kategori] = (
+                kategori_tutarlar.get(kategori, Decimal('0')) + kalem.tutar
+            )
+
+        toplam = sum(kategori_tutarlar.values()) or Decimal('1')
+        return [
+            {
+                'kategori': kat,
+                'tutar': float(tutar),
+                'yuzde': float(
+                    (tutar / toplam * 100).quantize(Decimal('0.1'))
+                ),
+            }
+            for kat, tutar in sorted(
+                kategori_tutarlar.items(), key=lambda x: x[1], reverse=True
+            )
+        ]
+
+    # ==================================================================
+    # EXPORT / IMPORT
+    # ==================================================================
+
+    def export_json(self) -> Dict[str, Any]:
+        """
+        Tüm keşif verisini JSON-uyumlu dict olarak serialize et.
+
+        Kullanım alanı: dosyaya kaydetme, API yanıtı, Excel export.
+
+        Returns:
+            Tam keşif özeti dict'i
+        """
+        toplam = self.toplam_hesapla()
+        kdv = self.kdv_hesapla()
+        genel = self.genel_toplam()
+        sinir = self.asiri_dusuk_siniri()
+
+        return {
+            'baslik': {
+                'idare': self.idare or 'İdare Adı Girilmedi',
+                'proje_adi': self.proje_adi or 'Proje Adı Girilmedi',
+                'ihale_no': self.ihale_no or '---',
+                'fiyat_listesi': KURUM_LISTESI.get(self.kurum, self.kurum),
+                'tarih': self.olusturma_tarihi.strftime('%d.%m.%Y'),
+                'yil': self.olusturma_tarihi.year,
+            },
+            'kalemler': [k.to_dict() for k in self.kalemler],
+            'ozet': {
+                'kalem_sayisi': len(self.kalemler),
+                'toplam_yapim_bedeli': float(toplam),
+                'kdv_orani': float(self.kdv_orani),
+                'kdv_tutari': float(kdv),
+                'genel_toplam': float(genel),
+                'asiri_dusuk_siniri': float(sinir),
+            },
+            'kategori_dagilimi': self.kategori_ozeti(),
+        }
+
+    def import_json(self, data: Dict[str, Any]) -> None:
+        """
+        export_json() ile oluşturulmuş dict'ten keşif verisini yükle.
+
+        Mevcut kalemler temizlenir, yeni verilerle doldurulur.
+
+        Args:
+            data: export_json() formatında dict
+        """
+        self.kalemler.clear()
+        self._sira_sayac = 0
+
+        baslik = data.get('baslik', {})
+        self.proje_adi = baslik.get('proje_adi', '')
+        self.ihale_no = baslik.get('ihale_no', '')
+        self.idare = baslik.get('idare', '')
+
+        ozet = data.get('ozet', {})
+        kdv_orani_val = ozet.get('kdv_orani', 20.0)
+        self.kdv_orani = Decimal(str(kdv_orani_val))
+
+        for k in data.get('kalemler', []):
+            self._sira_sayac += 1
+            kalem = YaklasikMaliyetKalemi(
+                sira_no=k.get('sira_no', self._sira_sayac),
+                poz_no=k.get('poz_no', ''),
+                tanim=k.get('tanim', ''),
+                birim=k.get('birim', 'adet'),
+                miktar=Decimal(str(k.get('miktar', 0))),
+                birim_fiyat=Decimal(str(k.get('birim_fiyat', 0))),
+                kurum=k.get('kurum', self.kurum),
+                aciklama=k.get('aciklama', ''),
+            )
+            self.kalemler.append(kalem)
+
+        logger.info(
+            "import_json: %d kalem yüklendi (%s)",
+            len(self.kalemler), self.proje_adi,
+        )
+
+    def to_excel_rows(self) -> List[List[Any]]:
+        """
+        Excel export için satır listesi döndür.
+
+        Her satır: [Sıra, Poz No, Tanım, Birim, Miktar, Birim Fiyat, Tutar]
+
+        Returns:
+            List[List[Any]]
+        """
+        return [
+            [
+                k.sira_no,
+                k.poz_no,
+                k.tanim,
+                k.birim,
+                float(k.miktar),
+                float(k.birim_fiyat),
+                float(k.tutar),
+            ]
+            for k in self.kalemler
+        ]
+
+    # ==================================================================
+    # PDF EXPORT
+    # ==================================================================
+
+    def pdf_kesif_ozeti_uret(self, dosya_yolu: str) -> bool:
+        """
+        4734 uyumlu resmi keşif özeti PDF üretir.
+
+        Neyi çözüyoruz:
+            İhale dosyasına eklenecek resmi keşif özeti belgesi.
+            Word/Excel yerine PDF — onay zincirinde kurumsal görünüm.
+
+        Nasıl test ederiz:
+            Birkaç kalem ekle, dosya_yolu ver, True dönmeli ve PDF açılmalı.
+
+        Args:
+            dosya_yolu: Kaydedilecek PDF'in tam yolu (.pdf uzantılı)
+
+        Returns:
+            True  — PDF başarıyla oluşturuldu
+            False — reportlab yoksa veya yazma hatası oluştu
+        """
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib import colors
+            from reportlab.lib.units import cm
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.platypus import (
+                SimpleDocTemplate, Table, TableStyle, Paragraph,
+                Spacer, HRFlowable,
+            )
+            from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+        except Exception:
+            logger.error("reportlab kütüphanesi bulunamadı — PDF üretilemiyor")
+            return False
+
+        try:
+            # ------------------------------------------------------------------
+            # DEĞERLER
+            # ------------------------------------------------------------------
+            toplam    = self.toplam_hesapla()
+            kdv       = self.kdv_hesapla()
+            genel     = self.genel_toplam()
+            sinir     = self.asiri_dusuk_siniri()
+            tarih_str = datetime.now().strftime("%d.%m.%Y")
+
+            def _para(d: Decimal) -> str:
+                """Türk lirası formatı: 1.234.567,89 TL"""
+                s = f"{float(d):,.2f} TL"
+                return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+            # ------------------------------------------------------------------
+            # SAYFA AYARI
+            # ------------------------------------------------------------------
+            doc = SimpleDocTemplate(
+                dosya_yolu,
+                pagesize=A4,
+                rightMargin=1.8 * cm,
+                leftMargin=1.8 * cm,
+                topMargin=1.5 * cm,
+                bottomMargin=1.5 * cm,
+            )
+
+            styles = getSampleStyleSheet()
+
+            st_baslik = ParagraphStyle(
+                "Baslik",
+                parent=styles["Normal"],
+                fontSize=14,
+                fontName=_PDF_FONT_BOLD,
+                alignment=TA_CENTER,
+                spaceAfter=4,
+            )
+            st_alt_baslik = ParagraphStyle(
+                "AltBaslik",
+                parent=styles["Normal"],
+                fontSize=10,
+                fontName=_PDF_FONT,
+                alignment=TA_CENTER,
+                spaceAfter=2,
+            )
+            st_meta_sol = ParagraphStyle(
+                "MetaSol",
+                parent=styles["Normal"],
+                fontSize=9,
+                fontName=_PDF_FONT,
+                alignment=TA_LEFT,
+            )
+            st_meta_sag = ParagraphStyle(
+                "MetaSag",
+                parent=styles["Normal"],
+                fontSize=9,
+                fontName=_PDF_FONT,
+                alignment=TA_RIGHT,
+            )
+            st_not = ParagraphStyle(
+                "Not",
+                parent=styles["Normal"],
+                fontSize=8,
+                fontName=_PDF_FONT,
+                textColor=colors.HexColor("#555555"),
+                alignment=TA_LEFT,
+            )
+            st_imza = ParagraphStyle(
+                "Imza",
+                parent=styles["Normal"],
+                fontSize=9,
+                fontName=_PDF_FONT,
+                alignment=TA_RIGHT,
+            )
+
+            # ------------------------------------------------------------------
+            # BAŞLIK BLOĞU
+            # ------------------------------------------------------------------
+            story = []
+
+            idare_str   = self.idare or "İdare Adı Girilmedi"
+            proje_str   = self.proje_adi or "Proje Adı Girilmedi"
+            ihale_str   = self.ihale_no or "—"
+
+            # Üst satır: idare (sol) — tarih (sağ)
+            ust_data = [[
+                Paragraph(idare_str, st_meta_sol),
+                Paragraph("Tarih: " + tarih_str, st_meta_sag),
+            ]]
+            ust_tablo = Table(ust_data, colWidths=[9 * cm, 8.14 * cm])
+            ust_tablo.setStyle(TableStyle([
+                ("VALIGN",     (0, 0), (-1, -1), "TOP"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]))
+            story.append(ust_tablo)
+            story.append(Spacer(1, 0.3 * cm))
+
+            story.append(Paragraph("YAKLAŞIK MALİYET (KEŞİF ÖZETİ)", st_baslik))
+            story.append(Paragraph(proje_str, st_alt_baslik))
+
+            # Alt başlık: ihale no
+            if ihale_str != "—":
+                story.append(Paragraph("İhale No: " + ihale_str, st_alt_baslik))
+
+            story.append(Spacer(1, 0.4 * cm))
+            story.append(HRFlowable(width="100%", thickness=1,
+                                    color=colors.HexColor("#003366")))
+            story.append(Spacer(1, 0.4 * cm))
+
+            # ------------------------------------------------------------------
+            # KALEM TABLOSU
+            # ------------------------------------------------------------------
+            sayfa_genislik = A4[0] - 3.6 * cm   # iki kenar margin
+            col_widths = [
+                1.0 * cm,   # Sıra No
+                2.2 * cm,   # Poz No
+                6.5 * cm,   # Tanım
+                1.4 * cm,   # Birim
+                2.0 * cm,   # Miktar
+                3.2 * cm,   # Birim Fiyat
+                3.2 * cm,   # Tutar
+            ]
+
+            tablo_data = []
+
+            # Başlık satırı
+            baslik_satir = [
+                Paragraph("<b>Sıra\nNo</b>",    ParagraphStyle("th", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT_BOLD, alignment=TA_CENTER)),
+                Paragraph("<b>Poz No</b>",       ParagraphStyle("th", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT_BOLD, alignment=TA_CENTER)),
+                Paragraph("<b>Tanım</b>",         ParagraphStyle("th", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT_BOLD, alignment=TA_LEFT)),
+                Paragraph("<b>Birim</b>",         ParagraphStyle("th", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT_BOLD, alignment=TA_CENTER)),
+                Paragraph("<b>Miktar</b>",        ParagraphStyle("th", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT_BOLD, alignment=TA_RIGHT)),
+                Paragraph("<b>Birim\nFiyat (TL)</b>", ParagraphStyle("th", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT_BOLD, alignment=TA_RIGHT)),
+                Paragraph("<b>Tutar (TL)</b>",   ParagraphStyle("th", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT_BOLD, alignment=TA_RIGHT)),
+            ]
+            tablo_data.append(baslik_satir)
+
+            # Kalem satırları
+            st_td = ParagraphStyle("td", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT)
+            st_td_r = ParagraphStyle("td_r", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT, alignment=TA_RIGHT)
+            st_td_c = ParagraphStyle("td_c", parent=styles["Normal"], fontSize=8, fontName=_PDF_FONT, alignment=TA_CENTER)
+
+            for k in self.kalemler:
+                tutar_val = float(k.tutar)
+                satir = [
+                    Paragraph(str(k.sira_no), st_td_c),
+                    Paragraph(k.poz_no, st_td_c),
+                    Paragraph(k.tanim, st_td),
+                    Paragraph(k.birim, st_td_c),
+                    Paragraph(f"{float(k.miktar):,.3f}".replace(",", "X").replace(".", ",").replace("X", "."), st_td_r),
+                    Paragraph(_para(k.birim_fiyat), st_td_r),
+                    Paragraph(_para(k.tutar), st_td_r),
+                ]
+                tablo_data.append(satir)
+
+            # Özet satırları
+            st_ozet_etiket = ParagraphStyle("ozet_e", parent=styles["Normal"], fontSize=9, fontName=_PDF_FONT_BOLD, alignment=TA_RIGHT)
+            st_ozet_deger  = ParagraphStyle("ozet_d", parent=styles["Normal"], fontSize=9, fontName=_PDF_FONT_BOLD, alignment=TA_RIGHT)
+            st_ozet_deger_buyuk = ParagraphStyle("ozet_db", parent=styles["Normal"], fontSize=10, fontName=_PDF_FONT_BOLD, alignment=TA_RIGHT)
+            st_ozet_kirmizi = ParagraphStyle("ozet_k", parent=styles["Normal"], fontSize=9, fontName=_PDF_FONT_BOLD, alignment=TA_RIGHT, textColor=colors.HexColor("#cc0000"))
+
+            ozet_satirlar = [
+                # [birleştirme metni, tutar, stil]
+                ("TOPLAM YAPIM BEDELİ",                 _para(toplam),  st_ozet_deger),
+                (f"KDV (%{int(self.kdv_orani)})",        _para(kdv),     st_ozet_deger),
+                ("GENEL TOPLAM (KDV DAHİL)",             _para(genel),   st_ozet_deger_buyuk),
+                ("KİK md.38 AŞIRI DÜŞÜK SINIR (%80)",   _para(sinir),   st_ozet_kirmizi),
+            ]
+
+            for etiket, deger, stil in ozet_satirlar:
+                satir = [
+                    "",
+                    Paragraph(etiket, st_ozet_etiket),
+                    Paragraph(deger, stil),
+                ]
+                tablo_data.append(satir)
+
+            # Tablo oluştur — özet satırları için SPAN (ilk 5 sütun birleşir)
+            n_kalem = len(self.kalemler)
+            n_total = len(tablo_data)
+
+            kalem_tablosu = Table(tablo_data, colWidths=col_widths, repeatRows=1)
+
+            tablo_stili_cmds = [
+                # Genel
+                ("FONTNAME",    (0, 0), (-1, 0),           _PDF_FONT_BOLD),
+                ("FONTSIZE",    (0, 0), (-1, -1),          8),
+                ("BACKGROUND",  (0, 0), (-1, 0),           colors.HexColor("#003366")),
+                ("TEXTCOLOR",   (0, 0), (-1, 0),           colors.white),
+                ("ROWBACKGROUNDS", (0, 1), (-1, n_kalem),
+                 [colors.HexColor("#f2f6ff"), colors.white]),
+                ("GRID",        (0, 0), (-1, n_kalem),     0.4, colors.HexColor("#cccccc")),
+                ("VALIGN",      (0, 0), (-1, -1),          "MIDDLE"),
+                ("TOPPADDING",  (0, 0), (-1, -1),          3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1),        3),
+                # Özet satırları (n_kalem+1 → son)
+                ("BACKGROUND",  (0, n_kalem + 1), (-1, -1), colors.HexColor("#eef2f8")),
+                ("LINEABOVE",   (0, n_kalem + 1), (-1, n_kalem + 1), 1, colors.HexColor("#003366")),
+                ("LINEBELOW",   (0, -1), (-1, -1),         1, colors.HexColor("#003366")),
+            ]
+
+            # Özet satırlarında ilk 5 sütunu birleştir
+            for i, idx in enumerate(range(n_kalem + 1, n_total)):
+                tablo_stili_cmds.append(("SPAN", (0, idx), (4, idx)))
+
+            kalem_tablosu.setStyle(TableStyle(tablo_stili_cmds))
+            story.append(kalem_tablosu)
+            story.append(Spacer(1, 0.6 * cm))
+
+            # ------------------------------------------------------------------
+            # ALT NOTLAR
+            # ------------------------------------------------------------------
+            story.append(HRFlowable(width="100%", thickness=0.5,
+                                    color=colors.HexColor("#aaaaaa")))
+            story.append(Spacer(1, 0.3 * cm))
+            story.append(Paragraph(
+                "Bu keşif özeti 4734 sayılı Kamu İhale Kanunu kapsamında hazırlanmıştır.",
+                st_not,
+            ))
+            story.append(Paragraph(
+                "Fiyatlar yaklaşık olup ihale öncesi güncellenmelidir.",
+                st_not,
+            ))
+            story.append(Spacer(1, 1.0 * cm))
+
+            # İmza satırı
+            imza_data = [[
+                Paragraph("", st_imza),
+                Paragraph("İdare Yetkilisi\n\n\n_________________________", st_imza),
+            ]]
+            imza_tablo = Table(imza_data, colWidths=[10 * cm, 7.14 * cm])
+            imza_tablo.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
+            story.append(imza_tablo)
+
+            # ------------------------------------------------------------------
+            # PDF OLUŞTUR
+            # ------------------------------------------------------------------
+            doc.build(story)
+            logger.info("PDF keşif özeti oluşturuldu: %s", dosya_yolu)
+            return True
+
+        except Exception as exc:
+            logger.error("PDF üretim hatası: %s", exc, exc_info=True)
+            return False
+
+    # ==================================================================
+    # YARDIMCI
+    # ==================================================================
+
+    def __repr__(self) -> str:
+        return (
+            f"YaklasikMaliyetEngine("
+            f"kalem={len(self.kalemler)}, "
+            f"toplam={float(self.toplam_hesapla()):,.2f} TL, "
+            f"genel={float(self.genel_toplam()):,.2f} TL)"
+        )

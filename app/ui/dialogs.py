@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLineEdit, QDoubleSpinBox, QComboBox, QPushButton,
-    QLabel, QTextEdit, QMessageBox
+    QLabel, QTextEdit, QMessageBox, QWidget, QSizePolicy
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -216,7 +216,7 @@ class MetrajItemDialog(QDialog):
         # Form
         form = QFormLayout()
 
-        # ── KAMU MODU ── Kategori + Poz No (sabit DB listesi)
+        # ── KAMU MODU ── Kategori + Poz No (serbest giriş + CSBPozEngine entegrasyon)
         if self.mod == "kamu":
             self.kategori_combo = QComboBox()
             self.kategori_combo.setEditable(False)
@@ -225,12 +225,26 @@ class MetrajItemDialog(QDialog):
             self.kategori_combo.currentIndexChanged.connect(self.on_category_changed)
             form.addRow("Kategori *:", self.kategori_combo)
 
-            self.poz_combo = QComboBox()
-            self.poz_combo.setEditable(True)
-            self.poz_combo.setMinimumWidth(200)
-            self.poz_combo.setEnabled(False)
-            self.poz_combo.addItem("-- Önce kategori seçiniz --")
-            form.addRow("Poz No:", self.poz_combo)
+            # Poz No — serbest QLineEdit + CSBPozEngine arama
+            poz_satir = QHBoxLayout()
+            self.poz_no_input = QLineEdit()
+            self.poz_no_input.setPlaceholderText("Poz no yazın (örn: 21.003) veya arayın…")
+            self.poz_no_input.setMinimumWidth(180)
+            self.poz_no_input.textChanged.connect(self._poz_no_degisti)
+            poz_satir.addWidget(self.poz_no_input)
+
+            self._poz_ara_btn = QPushButton("Ara")
+            self._poz_ara_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+            self._poz_ara_btn.setToolTip("CSBPozEngine'den poz ara")
+            self._poz_ara_btn.clicked.connect(self._poz_ara_dialog)
+            poz_satir.addWidget(self._poz_ara_btn)
+
+            poz_widget = QWidget()
+            poz_widget.setLayout(poz_satir)
+            form.addRow("Poz No:", poz_widget)
+
+            # Eski poz_combo referansı — uyumluluk için alias
+            self.poz_combo = self.poz_no_input
 
         # ── SERBEST PIYASA MODU ── Kategori serbest metin, poz yok
         else:
@@ -305,10 +319,6 @@ class MetrajItemDialog(QDialog):
 
         layout.addLayout(form)
 
-        # Poz seçildiğinde otomatik doldur (sadece kamu modunda)
-        if self.mod == "kamu":
-            self.poz_combo.currentTextChanged.connect(self.on_poz_selected)
-
         # Tüm pozları sakla (filtreleme için — sadece kamu modunda gerekli)
         self.all_pozlar = []
         if self.mod == "kamu":
@@ -343,28 +353,9 @@ class MetrajItemDialog(QDialog):
             self.all_pozlar = []
 
     def on_category_changed(self, index: int) -> None:
-        """Kategori değiştiğinde pozları filtrele"""
-        if index == 0:
-            self.poz_combo.clear()
-            self.poz_combo.addItem("-- Önce kategori seçiniz --")
-            self.poz_combo.setEnabled(False)
-            return
-
-        selected_category = self.kategori_combo.currentText()
-        self.poz_combo.clear()
-        self.poz_combo.setEnabled(True)
-
-        filtered_pozlar = [
-            poz for poz in self.all_pozlar
-            if poz.get('kategori', '') == selected_category
-        ]
-
-        if filtered_pozlar:
-            for poz in filtered_pozlar:
-                display_text = f"{poz['poz_no']} - {poz['tanim']}"
-                self.poz_combo.addItem(display_text, poz['poz_no'])
-        else:
-            self.poz_combo.addItem("-- Poz bulunamadı, manuel giriniz --", None)
+        """Kategori değişince poz alanını sıfırla (artık her zaman aktif)."""
+        # poz_no_input her zaman yazılabilir — kategori bağımlılığı kaldırıldı
+        pass
 
     def load_pozlar(self) -> None:
         """Pozları yükle (eski metod - artık kullanılmıyor)"""
@@ -382,45 +373,111 @@ class MetrajItemDialog(QDialog):
         ]
         self.kategori_combo.addItems(categories)
 
-    def on_poz_selected(self, text: str) -> None:
-        """Poz seçildiğinde tanım, birim ve fiyatı otomatik doldur"""
+    def _poz_no_degisti(self, poz_no: str) -> None:
+        """Poz no yazıldığında CSBPozEngine'den otomatik doldur."""
+        poz_no = poz_no.strip()
+        if not poz_no:
+            return
         try:
-            if not text or text.startswith("--"):
+            from app.core.csb_poz_engine import CSBPozEngine
+            poz = CSBPozEngine().poz_ara(poz_no)
+            if poz:
+                self.tanim_input.setText(poz.get('aciklama', ''))
+                self.birim_combo.setCurrentText(poz.get('birim', 'm'))
+                bf = float(poz.get('birim_fiyat') or 0)
+                if bf > 0:
+                    self.birim_fiyat_spin.setValue(bf)
                 return
-
-            poz_no = text.split(" - ")[0].strip() if " - " in text else text.strip()
-
-            if not poz_no:
-                return
-
-            poz = None
-            for p in self.all_pozlar:
-                if p['poz_no'] == poz_no:
-                    poz = p
-                    break
-
+        except Exception:
+            pass
+        # Fallback: eski pozlar tablosu
+        try:
+            poz = next((p for p in self.all_pozlar if p['poz_no'] == poz_no), None)
             if not poz:
                 poz = self.db.get_poz(poz_no)
-
             if poz:
-                self.tanim_input.setText(poz['tanim'])
+                self.tanim_input.setText(poz.get('tanim', ''))
                 self.birim_combo.setCurrentText(poz.get('birim', 'm'))
-                # Önce pozlar tablosundaki resmi_fiyat'a bak
-                resmi_fiyat = poz.get('resmi_fiyat') or 0
-                # resmi_fiyat 0 ise birim_fiyatlar tablosundan aktif fiyatı çek
-                if not resmi_fiyat:
-                    bf = self.db.get_birim_fiyat(poz_no=poz_no)
-                    if bf and bf.get('birim_fiyat'):
-                        resmi_fiyat = bf['birim_fiyat']
-                    elif bf is None:
-                        # aktif fiyat yoksa pasif kayıtlara bak
-                        bf = self.db.get_birim_fiyat(poz_no=poz_no, aktif_only=False)
-                        if bf and bf.get('birim_fiyat'):
-                            resmi_fiyat = bf['birim_fiyat']
-                if resmi_fiyat and resmi_fiyat > 0:
-                    self.birim_fiyat_spin.setValue(float(resmi_fiyat))
+                resmi_fiyat = float(poz.get('resmi_fiyat') or 0)
+                if resmi_fiyat > 0:
+                    self.birim_fiyat_spin.setValue(resmi_fiyat)
+        except Exception:
+            pass
+
+    def _poz_ara_dialog(self) -> None:
+        """CSBPozEngine metin araması — sonucu poz_no_input'a yaz."""
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLineEdit,
+            QListWidget, QListWidgetItem, QDialogButtonBox, QLabel,
+        )
+        try:
+            from app.core.csb_poz_engine import CSBPozEngine
+            _engine = CSBPozEngine()
         except Exception as e:
-            print(f"Poz seçimi hatası: {e}")
+            QMessageBox.warning(self, "CSBPozEngine", f"Poz motoru yüklenemedi:\n{e}")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Poz Ara — CŞB Veritabanı")
+        dlg.setMinimumSize(520, 400)
+        lay = QVBoxLayout(dlg)
+
+        arama = QLineEdit()
+        arama.setPlaceholderText("Poz kodu veya açıklama yazın…")
+        lay.addWidget(arama)
+
+        liste = QListWidget()
+        lay.addWidget(liste)
+
+        bilgi = QLabel("Arama yapmak için en az 2 karakter girin.")
+        bilgi.setStyleSheet("color:#888; font-size:10px;")
+        lay.addWidget(bilgi)
+
+        def _ara(metin):
+            liste.clear()
+            if len(metin) < 2:
+                return
+            try:
+                sonuclar = _engine.metin_ara(metin)
+            except Exception:
+                sonuclar = []
+            for p in sonuclar[:40]:
+                item = QListWidgetItem(
+                    f"{p['poz_kodu']}  —  {p['aciklama']}  [{p['birim']}]"
+                )
+                item.setData(0x0100, p)
+                liste.addItem(item)
+
+        arama.textChanged.connect(_ara)
+
+        butonlar = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        butonlar.accepted.connect(dlg.accept)
+        butonlar.rejected.connect(dlg.reject)
+        lay.addWidget(butonlar)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        secili = liste.currentItem()
+        if not secili:
+            return
+
+        poz = secili.data(0x0100)
+        if not poz:
+            return
+
+        self.poz_no_input.setText(poz['poz_kodu'])
+        self.tanim_input.setText(poz.get('aciklama', ''))
+        self.birim_combo.setCurrentText(poz.get('birim', 'm'))
+        bf = float(poz.get('birim_fiyat') or 0)
+        if bf > 0:
+            self.birim_fiyat_spin.setValue(bf)
+
+    def on_poz_selected(self, text: str) -> None:
+        """Geriye dönük uyumluluk için bırakıldı — artık kullanılmıyor."""
+        pass
 
     def calculate_total(self) -> None:
         """Toplam tutarı hesapla"""
@@ -450,12 +507,8 @@ class MetrajItemDialog(QDialog):
                     self.kategori_combo.setCurrentIndex(index)
 
             poz_no = self.item_data.get('poz_no', '')
-            if poz_no and self.poz_combo.isEnabled():
-                index = self.poz_combo.findData(poz_no)
-                if index >= 0:
-                    self.poz_combo.setCurrentIndex(index)
-                else:
-                    self.poz_combo.setCurrentText(poz_no)
+            if poz_no:
+                self.poz_no_input.setText(poz_no)
 
             self.tanim_input.setText(tanim)
 
@@ -503,16 +556,10 @@ class MetrajItemDialog(QDialog):
             }
 
         # Kamu modu
-        poz_text = self.poz_combo.currentText()
-        if poz_text.startswith("--") or not poz_text.strip():
-            poz_no = None
-        else:
-            poz_no = poz_text.split(" - ")[0] if " - " in poz_text else poz_text
-            if not poz_no or poz_no.strip() == "":
-                poz_no = None
+        poz_no = self.poz_no_input.text().strip() or None
 
         return {
-            'poz_no': poz_no if poz_no else None,
+            'poz_no': poz_no,
             'tanim': self.tanim_input.text().strip(),
             'miktar': self.miktar_spin.value(),
             'birim': self.birim_combo.currentText().strip(),
@@ -546,13 +593,7 @@ class MetrajItemDialog(QDialog):
             QMessageBox.warning(self, "Uyarı", "Birim alanı zorunludur!")
             return
 
-        # Bug-3: Kamu modunda poz_no zorunlu alan
-        if self.mod == "kamu" and not data.get('poz_no'):
-            QMessageBox.warning(
-                self, "Zorunlu Alan",
-                "Poz numarası zorunludur!\nLütfen listeden bir poz seçiniz."
-            )
-            return
+        # Poz no kamu modunda zorunlu değil — girmeden de kaydedilebilir
 
         # Bug-1: Kamu modunda birim uyuşmazlık kontrolü
         if self.mod == "kamu" and data.get('poz_no'):
