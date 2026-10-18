@@ -15,10 +15,11 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QGroupBox, QSplitter,
     QComboBox, QMessageBox, QHeaderView, QFrame, QFileDialog,
     QDialog, QListWidget, QListWidgetItem, QCheckBox, QDialogButtonBox,
-    QTabWidget, QRadioButton, QButtonGroup, QScrollArea, QInputDialog
+    QTabWidget, QRadioButton, QButtonGroup, QScrollArea, QInputDialog, QToolBar
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QAction
+from datetime import datetime
 
 import webbrowser
 import tempfile
@@ -68,6 +69,10 @@ except ImportError:
     PANDAS_AVAILABLE = False
     pd = None
 
+try:
+    from app.core import metraj_proje_kayit as proje_kayit  # Rev-168
+except Exception:
+    proje_kayit = None
 try:
     from app.core.excel_bicim import beton_kalip_sutunlari_tek_hane  # Rev-166
 except Exception:
@@ -2854,7 +2859,7 @@ class MetrajAnalizWindow(QMainWindow):
     def merdiven_kayitlari(self, deger: List[Dict]) -> None:
         self._merdiven_kat_kayitlari[self._aktif_kat_anahtari()] = list(deger)
 
-    def __init__(self, parent=None, db=None):
+    def __init__(self, parent=None, db=None, otomatik_kayit: Optional[bool] = None):
         super().__init__(parent)
         # Veritabanı bağlantısı (AI öğrenme için)
         if db is not None:
@@ -2954,6 +2959,292 @@ class MetrajAnalizWindow(QMainWindow):
 
         self._setup_ui()
         self._load_demo_data()
+        self._proje_kayit_kur(parent, otomatik_kayit)
+
+    # ══ Rev-168: PROJE KAYDET / AÇ + OTOMATİK KAYIT ══
+    # Metraj kayıtları eskiden SADECE bellekteydi (program kapanınca / PC çökünce kayboluyordu).
+    # Gerçek programda (ana pencereye bağlı açılınca) proje dosyası açılışta yüklenir, her
+    # dakika değişiklik varsa ve pencere kapanırken kaydedilir. Testler (parent=None) gerçek
+    # dosyaya DOKUNMAZ.
+    PROJE_KAYIT_ARALIGI_MS = 60_000
+    _PROJE_DURUM_ANAHTARLARI = (
+        "demir_kat_verileri", "aralikli_donati_kayitlari", "beton_kalip_kolon_kayitlari",
+        "okunamayan_elemanlar", "perde_kayitlari", "kat_yukseklik_ayarlari", "_doseme_kat_kayitlari",
+        "_kiris_kat_kayitlari", "_merdiven_kat_kayitlari", "temel_kirisi_kayitlari", "radye_kayitlari",
+    )
+
+    def _proje_kayit_kur(self, parent, otomatik_kayit):
+        self._otomatik_kayit_acik = (parent is not None) if otomatik_kayit is None else bool(otomatik_kayit)
+        self._kayit_dosyasi = None
+        self._son_kayit_imzasi = None
+        self._proje_kayit_cubugu_olustur()
+        if proje_kayit is None or not self._otomatik_kayit_acik:
+            return
+        try:
+            self._kayit_dosyasi = proje_kayit.proje_dosyasi(self._kayit_proje_adi())
+            if self._kayit_dosyasi.exists() or self._kayit_dosyasi.with_name(
+                    self._kayit_dosyasi.stem + ".onceki.json").exists():
+                self._proje_yukle(self._kayit_dosyasi, sessiz=True)
+            else:
+                self._kayit_durumu_yaz(f"Yeni proje — kayıtlar otomatik olarak {self._kayit_dosyasi.name} "
+                                       "dosyasına yazılacak.")
+        except Exception as e:
+            logger.error(f"[PROJE KAYIT] açılış yüklemesi: {e}", exc_info=True)
+            self._kayit_durumu_yaz(f"⚠ Kayıt yüklenemedi: {e}")
+        self._otomatik_kayit_zamanlayici = QTimer(self)
+        self._otomatik_kayit_zamanlayici.timeout.connect(self._otomatik_kaydet)
+        self._otomatik_kayit_zamanlayici.start(self.PROJE_KAYIT_ARALIGI_MS)
+
+    def _kayit_proje_adi(self) -> str:
+        """Ana penceredeki aktif proje adı (soru SORMADAN); yoksa "Genel"."""
+        try:
+            ana = self.parent()
+            pid = getattr(ana, "current_project_id", None)
+            if pid and getattr(ana, "db", None) is not None:
+                ad = ((ana.db.get_project(pid) or {}).get("ad") or "").strip()
+                if ad:
+                    return ad
+        except Exception as e:
+            logger.debug(f"[PROJE KAYIT] proje adı okunamadı: {e}")
+        return "Genel"
+
+    def _proje_kayit_cubugu_olustur(self):
+        cubuk = QToolBar("Proje")
+        cubuk.setMovable(False)
+        cubuk.setStyleSheet(
+            "QToolBar { background:#1f2a36; border-bottom:1px solid #2e86c1; spacing:6px; padding:3px; }"
+            "QToolButton { color:white; background:#2e4053; border:1px solid #5d6d7e; border-radius:3px;"
+            " padding:4px 10px; font-weight:bold; } QToolButton:hover { background:#3c5a73; }")
+        for metin, ipucu, kisayol, fonk in (
+                ("Kaydet", "Tüm metraj kayıtlarını (katlar, demir, kolon, perde, döşeme, saçak, kiriş, merdiven, "
+                           "SBH, radye) proje dosyasına kaydeder. Ayrıca her dakika otomatik kaydedilir.",
+                 "Ctrl+S", self._proje_kaydet),
+                ("Farklı Kaydet…", "Projeyi seçtiğiniz bir dosyaya kaydeder (ör. başka bilgisayara taşımak için). "
+                                   "Sonraki otomatik kayıtlar bu dosyaya yapılır.", None, self._proje_farkli_kaydet),
+                ("Proje Aç…", "Daha önce kaydedilmiş bir metraj projesini açar (mevcut kayıtların yerine geçer).",
+                 "Ctrl+O", self._proje_ac)):
+            eylem = QAction(metin, self)
+            eylem.setToolTip(ipucu)
+            if kisayol:
+                eylem.setShortcut(kisayol)
+            eylem.triggered.connect(fonk)
+            cubuk.addAction(eylem)
+        self.proje_kayit_label = QLabel()
+        self.proje_kayit_label.setStyleSheet("color:#aed6f1; padding-left:8px;")
+        cubuk.addWidget(self.proje_kayit_label)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, cubuk)
+        self._kayit_durumu_yaz("Kayıtlar otomatik saklanmıyor (test / bağımsız pencere) — 'Kaydet' ile kaydedin."
+                               if not getattr(self, "_otomatik_kayit_acik", False) else "")
+
+    def _kayit_durumu_yaz(self, metin: str):
+        if hasattr(self, "proje_kayit_label"):
+            self.proje_kayit_label.setText(metin)
+
+    # ── durum topla / uygula ──
+    def _proje_durumu_topla(self) -> Dict:
+        d = {k: getattr(self, k, None) for k in self._PROJE_DURUM_ANAHTARLARI}
+        d["aktif_kat_adi"] = self.aktif_kat_adi
+        d["bk_elle_satirlar"] = self._bk_elle_satirlari_oku()
+        ayar = {}
+        for ad in ("kat_yuksekligi_spin", "perde_yukseklik_spin", "perde_doseme_spin", "doseme_varsayilan_h_spin",
+                   "sacak_kalinlik_spin", "bk_fire_spin"):
+            w = getattr(self, ad, None)
+            if w is not None:
+                ayar[ad] = w.value()
+        if hasattr(self, "perde_esas_combo"):
+            ayar["perde_esas"] = self.perde_esas_combo.currentData() or "tam"
+        if hasattr(self, "perde_doseme_otomatik_chk"):
+            ayar["perde_doseme_otomatik"] = self.perde_doseme_otomatik_chk.isChecked()
+        ayar["sacak_kalinlik_elle"] = bool(getattr(self, "_sacak_kalinlik_elle", False))
+        d["ayarlar"] = ayar
+        return d
+
+    def _bk_elle_satirlari_oku(self) -> List[Dict]:
+        """Beton & Kalıp tablosunun ELLE eklenen satırları (kolon/perde araçlarının satırları
+        registry'den yeniden kurulur, kaydedilmez)."""
+        satirlar = []
+        t = getattr(self, "beton_kalip_table", None)
+        if t is None:
+            return satirlar
+        for row in range(t.rowCount()):
+            ilk = t.item(row, 0)
+            if ilk is not None and ilk.data(Qt.ItemDataRole.UserRole):
+                continue
+            satirlar.append({"metin": [t.item(row, c).text() if t.item(row, c) else "" for c in range(t.columnCount())],
+                             "tam": {str(c): self._bk_hucre_degeri(row, c) for c in self.BK_SAYI_KOLONLARI}})
+        return satirlar
+
+    def _proje_durumu_uygula(self, d: Dict):
+        varsayilan = {"demir_kat_verileri": [], "radye_kayitlari": []}
+        for k in self._PROJE_DURUM_ANAHTARLARI:
+            deger = d.get(k)
+            if deger is None:
+                deger = list(varsayilan[k]) if k in varsayilan else {}
+            setattr(self, k, deger)
+        katlar = [kd["kat_adi"] for kd in self.demir_kat_verileri]
+        self.aktif_kat_adi = d.get("aktif_kat_adi") if d.get("aktif_kat_adi") in katlar else (katlar[0] if katlar else "")
+        ayar = d.get("ayarlar") or {}
+        for ad, deger in ayar.items():
+            w = getattr(self, ad, None)
+            if w is not None and hasattr(w, "setValue"):
+                w.blockSignals(True)
+                w.setValue(deger)
+                w.blockSignals(False)
+        if "perde_esas" in ayar and hasattr(self, "perde_esas_combo"):
+            self.perde_esas_combo.blockSignals(True)
+            self.perde_esas_combo.setCurrentIndex(max(0, self.perde_esas_combo.findData(ayar["perde_esas"])))
+            self.perde_esas_combo.blockSignals(False)
+        if "perde_doseme_otomatik" in ayar and hasattr(self, "perde_doseme_otomatik_chk"):
+            self.perde_doseme_otomatik_chk.blockSignals(True)
+            self.perde_doseme_otomatik_chk.setChecked(bool(ayar["perde_doseme_otomatik"]))
+            self.perde_doseme_otomatik_chk.blockSignals(False)
+        self._sacak_kalinlik_elle = bool(ayar.get("sacak_kalinlik_elle", False))
+        # kat listesi
+        self._demir_kat_listesini_guncelle()
+        if self.aktif_kat_adi in katlar:
+            self.demir_kat_listesi.setCurrentRow(katlar.index(self.aktif_kat_adi))
+        for ad in ("btn_kat_sil",):
+            if hasattr(self, ad):
+                getattr(self, ad).setEnabled(bool(katlar))
+        var_demir = any(kd.get("demirler") for kd in self.demir_kat_verileri)
+        for ad in ("btn_demir_excel", "btn_kesime_aktar"):
+            if hasattr(self, ad):
+                getattr(self, ad).setEnabled(var_demir)
+        # Beton & Kalıp tablosu: elle satırlar + kolon aracı satırları (perde satırları _perde_tablo_yenile'de)
+        t = getattr(self, "beton_kalip_table", None)
+        if t is not None:
+            t.setRowCount(0)
+            for satir in d.get("bk_elle_satirlar") or []:
+                row = t.rowCount()
+                t.insertRow(row)
+                tam = satir.get("tam") or {}
+                for col, metin in enumerate(satir.get("metin") or []):
+                    item = QTableWidgetItem(metin)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    if str(col) in tam:
+                        item.setData(Qt.ItemDataRole.UserRole, float(tam[str(col)]))
+                    t.setItem(row, col, item)
+            for kat in dict.fromkeys(k for (k, _a) in self.beton_kalip_kolon_kayitlari):
+                self._beton_kalip_kat_kolon_satirlarini_yeniden_olustur(kat)
+        # Kata bağlı tüm sekmeler (perde ayarı + tablo, kiriş, döşeme, merdiven, kat özeti)
+        self._aktif_kat_degisti()
+        for fonk in ("_temel_kirisi_tablo_yenile", "_radye_degisti", "_beton_kalip_toplamlar_guncelle",
+                     "_kat_ozeti_yenile"):
+            if hasattr(self, fonk):
+                try:
+                    getattr(self, fonk)()
+                except Exception as e:
+                    logger.error(f"[PROJE KAYIT] {fonk}: {e}", exc_info=True)
+
+    @staticmethod
+    def _proje_siniflari() -> Dict:
+        siniflar = {}
+        if DemirBilgisi is not None:
+            siniflar["DemirBilgisi"] = DemirBilgisi
+        if KatYukseklikAyari is not None:
+            siniflar["KatYukseklikAyari"] = KatYukseklikAyari
+        return siniflar
+
+    def _durum_imzasi(self, durum: Dict) -> str:
+        import hashlib
+        import json as _json
+        return hashlib.sha1(_json.dumps(proje_kayit.serilestir(durum), ensure_ascii=False,
+                                        sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+    # ── kaydet / aç ──
+    def _proje_dosyaya_yaz(self, yol, otomatik: bool = False) -> bool:
+        if proje_kayit is None:
+            return False
+        try:
+            durum = self._proje_durumu_topla()
+            imza = self._durum_imzasi(durum)
+            if otomatik and imza == self._son_kayit_imzasi:
+                return False   # değişiklik yok
+            proje_kayit.kaydet(yol, durum, self._kayit_proje_adi())
+            self._son_kayit_imzasi = imza
+            self._kayit_durumu_yaz(f"{'Otomatik kaydedildi' if otomatik else 'Kaydedildi'} "
+                                   f"{datetime.now().strftime('%H:%M')} — {Path(yol).name} — "
+                                   f"{proje_kayit.durum_ozeti(durum)}")
+            logger.info(f"[PROJE KAYIT] {'otomatik ' if otomatik else ''}kaydedildi: {yol}")
+            return True
+        except Exception as e:
+            logger.error(f"[PROJE KAYIT] kaydetme hatası ({yol}): {e}", exc_info=True)
+            self._kayit_durumu_yaz(f"⚠ KAYDEDİLEMEDİ: {e}")
+            if not otomatik:
+                QMessageBox.critical(self, "Kaydetme Hatası", f"Proje kaydedilemedi:\n{e}")
+            return False
+
+    def _otomatik_kaydet(self):
+        if self._otomatik_kayit_acik and self._kayit_dosyasi is not None:
+            self._proje_dosyaya_yaz(self._kayit_dosyasi, otomatik=True)
+
+    def _proje_kaydet(self):
+        if proje_kayit is None:
+            QMessageBox.warning(self, "Uyarı", "Kayıt modülü yüklenemedi.")
+            return
+        if self._kayit_dosyasi is None:
+            self._kayit_dosyasi = proje_kayit.proje_dosyasi(self._kayit_proje_adi())
+        if self._proje_dosyaya_yaz(self._kayit_dosyasi):
+            self.statusBar().showMessage(f"Kaydedildi: {self._kayit_dosyasi}", 5000)
+
+    def _proje_farkli_kaydet(self):
+        if proje_kayit is None:
+            return
+        varsayilan = str(proje_kayit.proje_dosyasi(self._kayit_proje_adi()))
+        yol, _ = QFileDialog.getSaveFileName(self, "Projeyi Farklı Kaydet", varsayilan,
+                                             "Metraj Projesi (*.json)")
+        if not yol:
+            return
+        if not yol.lower().endswith(".json"):
+            yol += ".json"
+        if self._proje_dosyaya_yaz(yol):
+            self._kayit_dosyasi = Path(yol)
+
+    def _proje_ac(self):
+        if proje_kayit is None:
+            return
+        yol, _ = QFileDialog.getOpenFileName(self, "Metraj Projesi Aç", str(proje_kayit.metraj_kayit_klasoru()),
+                                             "Metraj Projesi (*.json)")
+        if not yol:
+            return
+        mevcut = self._proje_durumu_topla()
+        if self._durum_imzasi(mevcut) != self._son_kayit_imzasi and proje_kayit.durum_ozeti(mevcut) != "Kat: 0":
+            S = QMessageBox.StandardButton
+            cevap = QMessageBox.question(
+                self, "Proje Aç", "Açık projede kaydedilmemiş değişiklik olabilir. Önce kaydedilsin mi?",
+                S.Yes | S.No | S.Cancel, S.Yes)
+            if cevap == S.Cancel:
+                return
+            if cevap == S.Yes:
+                self._proje_kaydet()
+        if self._proje_yukle(yol):
+            self._kayit_dosyasi = Path(yol)
+
+    def _proje_yukle(self, yol, sessiz: bool = False) -> bool:
+        try:
+            veri = proje_kayit.yukle(yol, self._proje_siniflari())
+            self._proje_durumu_uygula(veri["durum"])
+            self._son_kayit_imzasi = self._durum_imzasi(self._proje_durumu_topla())
+            zaman = (veri.get("kayit_zamani") or "").replace("T", " ")
+            yedek = " (bozuk dosya yerine ÖNCEKİ sürüm)" if veri.get("yuklenen_dosya") != str(yol) else ""
+            self._kayit_durumu_yaz(f"Yüklendi{yedek}: {Path(yol).name} ({zaman}) — "
+                                   f"{proje_kayit.durum_ozeti(veri['durum'])}")
+            logger.info(f"[PROJE KAYIT] yüklendi: {veri.get('yuklenen_dosya')}")
+            return True
+        except Exception as e:
+            logger.error(f"[PROJE KAYIT] yükleme hatası ({yol}): {e}", exc_info=True)
+            self._kayit_durumu_yaz(f"⚠ Yüklenemedi: {e}")
+            if not sessiz:
+                QMessageBox.critical(self, "Açma Hatası", f"Proje açılamadı:\n{e}")
+            return False
+
+    def closeEvent(self, event):
+        # Rev-168: kapanırken son durum kaydedilir (otomatik kayıt açıksa)
+        try:
+            self._otomatik_kaydet()
+        except Exception as e:
+            logger.error(f"[PROJE KAYIT] kapanış kaydı: {e}", exc_info=True)
+        super().closeEvent(event)
 
     def _setup_ui(self):
         """Arayuzu olustur"""

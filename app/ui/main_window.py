@@ -8124,6 +8124,19 @@ class MainWindow(QMainWindow):
     def open_metraj_analiz(self) -> None:
         """Akilli metraj analizi penceresini ac (Kiris/Duvar cakisma tespiti)"""
         try:
+            # Rev-168: SINGLETON (Rev-118 kuralı) — açık pencere varsa öne getir; eskiden her
+            # tıklamada yeni pencere açılıyor, önceki penceredeki metraj kayıtları kayboluyordu
+            mevcut = getattr(self, "metraj_analiz_window", None)
+            if mevcut is not None:
+                try:
+                    if mevcut.isVisible():
+                        if mevcut.isMinimized():
+                            mevcut.showNormal()
+                        mevcut.raise_()
+                        mevcut.activateWindow()
+                        return
+                except RuntimeError:
+                    pass  # C++ nesnesi kapatılmış — yenisini aç
             from app.ui.metraj_analiz_window import MetrajAnalizWindow
             self.metraj_analiz_window = MetrajAnalizWindow(self)
             self.metraj_analiz_window.show()
