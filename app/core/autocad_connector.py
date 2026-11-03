@@ -3509,6 +3509,7 @@ class AutoCADConnector:
         """
         if not self.bagli:
             return
+        self.cizim_baglantisini_tazele()
         try:
             if not self._mesgul_retry(lambda: self.acad_app.Visible, "Visible"):
                 self.acad_app.Visible = True
@@ -3528,6 +3529,84 @@ class AutoCADConnector:
                 self._tk_hata("_autocad_one_getir_hafif/Activate", e)
         if WIN32GUI_AVAILABLE:
             self._win32_pencere_one_getir()
+
+    # Rev-170: COM nesnesi ölmüş (çizim kapatıldı / AutoCAD yeniden başladı).
+    # 0x80010108 RPC_E_DISCONNECTED ("çağrılan nesne istemcilerinden ayrılmış"),
+    # 0x800706BA RPC sunucusu yok, 0x800706BE uzak yordam çağrısı başarısız.
+    COM_KOPUK_KODLARI = (-2147417848, -2147023174, -2147023170)
+    BAGLANTI_KOPTU_MESAJI = (
+        "AutoCAD bağlantısı koptu (çizim kapatılmış ya da AutoCAD yeniden başlatılmış).\n\n"
+        "AutoCAD'de çalışacağınız DWG'yi açın ve işlemi tekrar başlatın."
+    )
+
+    def _com_kopuk_mu(self, e: Exception) -> bool:
+        return any(k in self.COM_KOPUK_KODLARI for k in self._com_hata_kodlari(e))
+
+    def cizim_baglantisini_tazele(self) -> bool:
+        """Tutulan çizim referansını AutoCAD'in ŞU ANKİ aktif çizimiyle eşler.
+
+        Neyi çözüyoruz? aktif_cizim/model_space bağlantı anında bir kez
+        alınıyordu. Kullanıcı DWG'yi kapatıp başkasını açınca (veya AutoCAD'i
+        yeniden başlatınca) referans ölür -> her araç RPC_E_DISCONNECTED ile
+        düşüyordu (gerçek log 2026-11-03, temel kirişi). Başka DWG'ye geçince
+        de araç ESKİ çizimde seçim bekliyordu. Her araç başlangıcında
+        (öne getirme) çağrılır: ölü/farklı çizim -> yeni ActiveDocument;
+        uygulama da ölmüşse baglan(). Kurtarılamazsa açık ConnectionError.
+        AutoCAD meşgulse (red) dokunmaz — eski referansla devam edilir.
+
+        Nasıl test ederiz? scratchpad/test_com_kopuk.py — ölü çizim, farklı
+        çizim, aynı çizim, ölü uygulama, meşgul senaryoları.
+
+        Returns:
+            bool: referans değiştiyse True.
+        """
+        if not self.bagli:
+            return False
+        try:
+            doc = self.acad_app.ActiveDocument
+        except AttributeError:
+            return False  # meşgul / gen_py — eski referansla devam
+        except com_error as e:
+            if not self._com_kopuk_mu(e):
+                return False
+            logger.warning(f"[BAGLANTI] AutoCAD uygulama nesnesi kopmuş, yeniden bağlanılıyor: {e}")
+            self._bagli = False
+            try:
+                self.baglan()
+            except ConnectionError:
+                raise
+            except Exception as e2:  # beklenmeyen COM hatası -> anlaşılır mesaj
+                logger.error(f"[BAGLANTI] yeniden bağlanma başarısız: {e2!r}")
+                raise ConnectionError(self.BAGLANTI_KOPTU_MESAJI) from e2
+            return True
+        if doc is None:
+            raise ConnectionError("AutoCAD'de açık bir çizim yok!\nLütfen bir DWG dosyası açın.")
+
+        eski_ad = None
+        if self.aktif_cizim is not None:
+            try:
+                eski_ad = self.aktif_cizim.FullName
+            except com_error as e:
+                if not self._com_kopuk_mu(e):
+                    return False
+            except AttributeError:
+                return False
+        try:
+            yeni_ad = doc.FullName
+        except (com_error, AttributeError):
+            yeni_ad = None
+        if eski_ad is not None and eski_ad == yeni_ad:
+            return False
+        try:
+            model_space = doc.ModelSpace
+        except (com_error, AttributeError) as e:
+            logger.error(f"[BAGLANTI] yeni çizimin ModelSpace'i alınamadı: {e!r}")
+            raise ConnectionError(self.BAGLANTI_KOPTU_MESAJI) from e
+        logger.warning(f"[BAGLANTI] aktif çizim değişti/koptu: {eski_ad!r} -> {yeni_ad!r}")
+        self.aktif_cizim = doc
+        self.model_space = model_space
+        self.selection_set = None
+        return True
 
     def _mesgul_retry(self, func, ad: str, max_deneme: int = 8, bekleme: float = 0.15):
         """AutoCAD meşgulken reddedilen COM çağrısını tekrar dener.
@@ -3571,6 +3650,7 @@ class AutoCADConnector:
         """AutoCAD penceresini görünür yap ve öne getir."""
         if not self.bagli:
             return
+        self.cizim_baglantisini_tazele()
 
         max_deneme = 3
         for deneme in range(max_deneme):
