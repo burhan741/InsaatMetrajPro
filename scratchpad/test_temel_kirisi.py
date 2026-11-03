@@ -30,11 +30,46 @@ kontrol("SBH-1 uyari yok", r["uyari"] == "")
 r = temel_kirisi_ayristir("SBH-2 (25/150)")
 kontrol("SBH-2 g=25 y=150", r["basarili"] and r["genislik_cm"] == 25 and r["yukseklik_cm"] == 150)
 
-for m in ["SZ07 (50/50)", "KB110 (25/60)", "bozuk", "", "28Ø14 L=442", "Ø14/20 L=500"]:
+for m in ["bozuk", "", "28Ø14 L=442", "Ø14/20 L=500", "%%c16/15 L=300", "30/80", "(40/120)", "4Ø16"]:
     r = temel_kirisi_ayristir(m)
     kontrol(f"'{m}' ilgisiz", not r["basarili"] and r["ilgisiz"])
 
-kontrol("XSBH-1 (başka kelime içinde) ilgisiz", temel_kirisi_ayristir("XSBH-1 (20/165)")["ilgisiz"])
+# ── Rev-169: ad serbest ──
+for m, ad, g, y in [("TK1 (30/100)", "TK1", 30, 100), ("TK1 30/100", "TK1", 30, 100),
+                    ("TB-2 (40x120)", "TB-2", 40, 120), ("BK12 40×120", "BK12", 40, 120),
+                    ("TEMEL KİRİŞİ 1 (50/120)", "TEMEL KİRİŞİ 1", 50, 120),
+                    ("T.K.3 (35/90) L=650", "T.K.3", 35, 90), ("tk5 (30,5/100)", "TK5", 30.5, 100),
+                    ("XSBH-1 (20/165)", "XSBH-1", 20, 165), (r"{\C1;TK7 (25/80)}", "TK7", 25, 80),
+                    ("TK8 (30/100)\nTK9", "TK8", 30, 100)]:
+    r = temel_kirisi_ayristir(m)
+    kontrol(f"serbest ad '{m}' -> {ad} {g}/{y}",
+            r["basarili"] and r["ad"] == ad and r["genislik_cm"] == g and r["yukseklik_cm"] == y)
+r = temel_kirisi_ayristir("TK1 (0/100)")
+kontrol("TK1 0 boyut -> hata, ilgisiz degil", not r["basarili"] and not r["ilgisiz"])
+
+# ── Rev-169: kiriş seçimine giren kolon yazısı ayıklanır ──
+from app.core.autocad_connector import temel_kirisi_kolon_yazilarini_ayikla as ayikla  # noqa: E402
+
+
+def okuma_yap(*metinler):
+    o = {"yazilar": [], "gecersiz_yazilar": [], "diger_sayisi": 0}
+    for m in metinler:
+        a = temel_kirisi_ayristir(m)
+        o["yazilar" if a["basarili"] else "gecersiz_yazilar"].append(a)
+    return ayikla(o)
+
+
+o = okuma_yap("TK1 (30/100)", "SZ07 (50/50)")
+kontrol("TK1 + SZ07 -> TK1 kalır, SZ07 diğer", [y["ad"] for y in o["yazilar"]] == ["TK1"] and o["diger_sayisi"] == 1)
+o = okuma_yap("SBH-1 (20/165)", "P12 (25/120)")
+kontrol("SBH-1 + P12 -> SBH-1 kalır", [y["ad"] for y in o["yazilar"]] == ["SBH-1"])
+o = okuma_yap("SZ07 (50/50)")
+kontrol("tek SZ07 -> dokunulmaz", len(o["yazilar"]) == 1 and o["diger_sayisi"] == 0)
+o = okuma_yap("SBH-2 (0/150)", "SZ07 (50/50)")
+kontrol("geçersiz SBH + SZ07 -> SZ07 diğer, geçersiz kalır",
+        o["yazilar"] == [] and len(o["gecersiz_yazilar"]) == 1 and o["diger_sayisi"] == 1)
+o = okuma_yap("TK1 (30/100)", "TK2 (30/100)")
+kontrol("iki temel kirişi -> ikisi de kalır", len(o["yazilar"]) == 2)
 kontrol("küçük harf sbh-5 kabul", temel_kirisi_ayristir("sbh-5 (30/120)")["ad"] == "SBH-5")
 kontrol("SBH1 (tiresiz) kabul", temel_kirisi_ayristir("SBH1 (20/165)")["basarili"])
 kontrol("boşluklu SBH-1(20 / 165)", temel_kirisi_ayristir("SBH-1(20 / 165)")["yukseklik_cm"] == 165)
@@ -97,7 +132,7 @@ kontrol("okunamayan çizgi -> elle + uyarı", d["elle_gerekli"] and d["uyarilar"
 d = deg({"yazilar": [yz()], "cizgiler": [cz(500, "C1"), cz(500, "C2"), cz(500, "C3")]}, "cm")
 kontrol("Rev-158: koordinatsız 3 çizgi -> kenarlara ayrılamadı hatası", not d["gecerli"] and "ayrılamadı" in d["hata"])
 d = deg({"yazilar": [], "cizgiler": [cz(500, "C1")]}, "cm")
-kontrol("yazı yok -> hata", not d["gecerli"] and "SBH yazısı seçilmedi" in d["hata"])
+kontrol("yazı yok -> hata", not d["gecerli"] and "yazısı seçilmedi" in d["hata"])
 d = deg({"yazilar": [yz(), yz("SBH-2", h="Y2")], "cizgiler": []}, "cm")
 kontrol("2 yazı -> hata", not d["gecerli"] and "Birden fazla" in d["hata"])
 d = deg({"yazilar": [], "gecersiz_yazilar": [{"hata": "Geçersiz boyut: 0/150"}], "cizgiler": []}, "cm")

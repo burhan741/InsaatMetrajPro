@@ -826,32 +826,46 @@ def _kolon_yazi_ozet_metni(
 # Format: "SBH-1 (20/165)" = ad + (genişlik_cm / yükseklik_cm). Uzunluk
 # çizimde YOK, kullanıcı elle girer. Kalıp SADECE 2 yan yüz (alt yüz
 # grobetona oturur, üst açık) — normal kirişten farkı bu.
-# İsim ayrımı: "SBH" tam ön eki SADECE bu araca girer; kolon aracı
-# (S/P) SBH'yi temel_kirisi olarak işaretleyip hesaba KATMAZ (bkz.
-# kolon_yazisini_ayristir).
+# İsim ayrımı: kolon aracı (S/P) "SBH" ön ekini temel_kirisi olarak
+# işaretleyip hesaba KATMAZ (bkz. kolon_yazisini_ayristir) — bu desen SADECE
+# o dışlama için. Temel kirişi aracının kendisi Rev-169'dan beri ADI SERBEST
+# okur (projeden projeye SBH / TK / TB / BK / "TEMEL KİRİŞİ 1" değişiyor) —
+# kullanıcı her kiriş için yazıyı TEK TEK seçtiği için gevşek desen güvenli.
 _TEMEL_KIRISI_PATTERN = re.compile(
     r'(?<![A-Za-z0-9ÇĞİÖŞÜçğıöşü])(SBH[-\w]*)\s*\(\s*(\d+(?:[.,]\d+)?)\s*/\s*'
     r'(\d+(?:[.,]\d+)?)\s*\)',
     re.IGNORECASE
 )
+# Rev-169: serbest adlı kesit — "ad b/h", "ad (b/h)", "ad bxh", "ad (b×h)".
+# Ad = kesitten önceki metin, en az bir harf içermeli (yalın "30/80" ölçü/not
+# olabilir). Ayraç: / x X × *.
+_TEMEL_KIRISI_KESIT_PATTERN = re.compile(
+    r'\(?\s*(\d+(?:[.,]\d+)?)\s*[/xX×*]\s*(\d+(?:[.,]\d+)?)\s*\)?'
+)
+# Donatı yazıları ("28Ø14 L=442", "Ø14/20 L=500", "%%c16/15") kesit sanılmasın.
+_DONATI_ISARETI_PATTERN = re.compile(r'[ØøΦφ]|%%c', re.IGNORECASE)
+_HARF_PATTERN = re.compile(r'[A-Za-zÇĞİÖŞÜçğıöşü]')
 # Elle girilen uzunluk bu değeri aşarsa büyük olasılıkla cm girilmiştir
 # (Rev-134 1000-kat dersi) — engellenmez, sadece uyarılır.
 TEMEL_KIRISI_UZUNLUK_UYARI_M = 50.0
 
 
 def temel_kirisi_ayristir(metin: str) -> Dict[str, Any]:
-    """Temel kirişi yazısını ("SBH-1 (20/165)") ayrıştırır.
+    """Temel kirişi yazısını ("SBH-1 (20/165)", "TK1 30/100", "TB-2 (40x120)") ayrıştırır.
 
     Neyi çözüyoruz?
     Temel kirişinin gerçek kesit boyutu çizimdeki etiket yazısında,
-    ölçekten bağımsız olarak durur. Bu fonksiyon SADECE "SBH" ile başlayan
-    etiketleri alır — kolon (SZ/SB/P) ve normal kiriş (K...) yazıları
-    regex'e hiç uymaz, "ilgisiz" döner (çağıran sessizce atlar).
+    ölçekten bağımsız olarak durur. Adlandırma projeye göre değişir (SBH,
+    TK, TB, BK, "TEMEL KİRİŞİ 1"...) — ad SERBEST: kesitten önceki, en az
+    bir harf içeren metin. Donatı yazıları (Ø/%%c) ve adsız sayılar
+    "ilgisiz" döner (çağıran sessizce atlar).
 
     Nasıl test ederiz?
     "SBH-1 (20/165)" -> basarili, ad="SBH-1", genislik_cm=20, yukseklik_cm=165
-    "SZ07 (50/50)"   -> basarili=False, ilgisiz=True (kolon)
-    "KB110 (25/60)"  -> basarili=False, ilgisiz=True (normal kiriş)
+    "TK1 30/100"     -> basarili, ad="TK1"
+    "TB-2 (40x120)"  -> basarili, ad="TB-2"
+    "Ø14/20 L=500"   -> basarili=False, ilgisiz=True (donatı)
+    "30/80"          -> basarili=False, ilgisiz=True (ad yok)
     "SBH-3 (0/150)"  -> basarili=False, ilgisiz=False (geçersiz boyut)
     "SBH-4 (180/20)" -> basarili=True ama uyari dolu (genişlik>yükseklik,
                         sıra ters girilmiş olabilir — kalıp 2×y×L yanlış çıkar)
@@ -877,17 +891,22 @@ def temel_kirisi_ayristir(metin: str) -> Dict[str, Any]:
         sonuc["hata"] = "Boş metin"
         return sonuc
 
-    eslesmeler = list(_TEMEL_KIRISI_PATTERN.finditer(temiz))
-    if not eslesmeler:
-        sonuc["hata"] = "SBH... (genişlik/yükseklik) deseni bulunamadı — ilgisiz metin"
+    if _DONATI_ISARETI_PATTERN.search(temiz):
+        sonuc["hata"] = "Donatı yazısı (Ø) — ilgisiz metin"
+        return sonuc
+    tek_satir = " ".join(temiz.split())
+    eslesmeler = list(_TEMEL_KIRISI_KESIT_PATTERN.finditer(tek_satir))
+    ad = tek_satir[:eslesmeler[0].start()].strip(" -:(") if eslesmeler else ""
+    if not eslesmeler or not _HARF_PATTERN.search(ad):
+        sonuc["hata"] = "Ad + (genişlik/yükseklik) deseni bulunamadı — ilgisiz metin"
         return sonuc
 
     sonuc["ilgisiz"] = False
     ilk = eslesmeler[0]
     sonuc["coklu_eslesme"] = len(eslesmeler) > 1
     try:
-        genislik_cm = float(ilk.group(2).replace(",", "."))
-        yukseklik_cm = float(ilk.group(3).replace(",", "."))
+        genislik_cm = float(ilk.group(1).replace(",", "."))
+        yukseklik_cm = float(ilk.group(2).replace(",", "."))
     except (TypeError, ValueError):
         sonuc["hata"] = "genişlik/yükseklik sayıya çevrilemedi"
         return sonuc
@@ -904,11 +923,39 @@ def temel_kirisi_ayristir(metin: str) -> Dict[str, Any]:
 
     sonuc.update({
         "basarili": True,
-        "ad": ilk.group(1).upper(),
+        "ad": ad.upper(),
         "genislik_cm": genislik_cm,
         "yukseklik_cm": yukseklik_cm,
     })
     return sonuc
+
+
+def temel_kirisi_kolon_yazilarini_ayikla(okuma: Dict[str, Any]) -> Dict[str, Any]:
+    """Seçimdeki kolon yazılarını (S/P + "(b/h)") temel kirişi adayı olmaktan çıkarır.
+
+    Neyi çözüyoruz? Ad serbest olunca (Rev-169) kiriş ucundaki kolon etiketi
+    ("SZ07 (50/50)") de geçerli kesit gibi okunur. Seçimde kolon-benzeri
+    OLMAYAN başka bir aday yazı (geçerli/geçersiz) varsa kolon-benzerleri
+    "diğer" sayılır. Tek aday kolon-benzeriyse dokunulmaz (temel kirişi
+    adı S/P ile başlayan proje olabilir — komut satırında adı görünür).
+
+    Nasıl test ederiz? scratchpad/test_temel_kirisi.py — SBH + SZ07 -> SBH
+    kalır; tek SZ07 -> kalır; SBH(0/150) geçersiz + SZ07 -> SZ07 diğer.
+    """
+    def kolon_mu(y):
+        return kolon_yazisini_ayristir(y.get("temiz_metin") or y.get("ham_metin") or "").get("tip") == "kolon"
+
+    yazilar = okuma.get("yazilar", [])
+    gecersiz = okuma.get("gecersiz_yazilar", [])
+    adaylar = yazilar + gecersiz
+    if not any(not kolon_mu(y) for y in adaylar):
+        return okuma
+    atilan = [y for y in adaylar if kolon_mu(y)]
+    if atilan:
+        okuma["yazilar"] = [y for y in yazilar if not kolon_mu(y)]
+        okuma["gecersiz_yazilar"] = [y for y in gecersiz if not kolon_mu(y)]
+        okuma["diger_sayisi"] = okuma.get("diger_sayisi", 0) + len(atilan)
+    return okuma
 
 
 def temel_kirisi_hesapla(genislik_cm: float, yukseklik_cm: float,
@@ -2609,7 +2656,7 @@ def temel_kirisi_secimi_ayir(okuma: Dict[str, Any]) -> Dict[str, Any]:
     n = len(yazilar)
     if len(cizgiler) != 2 * n:
         return {"gruplar": [], "hata": (
-            f"{n} SBH yazısı ve {len(cizgiler)} çizgi seçildi — birden fazla kirişi tek "
+            f"{n} temel kirişi yazısı ve {len(cizgiler)} çizgi seçildi — birden fazla kirişi tek "
             f"seferde seçerken her yazı için tam 2 kenar çizgisi olmalı ({2 * n} çizgi)")}
     if any(y.get("konum") is None for y in yazilar) or any(
             not c.get("bas") or not c.get("son") for c in cizgiler):
@@ -2677,12 +2724,12 @@ def temel_kirisi_secim_degerlendir(okuma: Dict[str, Any], birim: str) -> Dict[st
     yazilar = okuma.get("yazilar", [])
     if len(yazilar) == 0:
         gecersiz = okuma.get("gecersiz_yazilar", [])
-        s["hata"] = (f"SBH yazısı geçersiz: {gecersiz[0].get('hata')}" if gecersiz
-                     else "SBH yazısı seçilmedi (önce yazıyı, sonra 2 kenar çizgisini seçin)")
+        s["hata"] = (f"Temel kirişi yazısı geçersiz: {gecersiz[0].get('hata')}" if gecersiz
+                     else "Temel kirişi yazısı seçilmedi (önce yazıyı, sonra 2 kenar çizgisini seçin)")
         return s
     if len(yazilar) > 1:
         adlar = ", ".join(str(y.get("ad")) for y in yazilar)
-        s["hata"] = f"Birden fazla SBH yazısı seçildi ({adlar}) — her kiriş için TEK yazı"
+        s["hata"] = f"Birden fazla temel kirişi yazısı seçildi ({adlar}) — her kiriş için TEK yazı"
         return s
 
     y = yazilar[0]
@@ -6267,7 +6314,7 @@ class AutoCADConnector:
                 continue
 
             sonuc["diger_sayisi"] += 1
-        return sonuc
+        return temel_kirisi_kolon_yazilarini_ayikla(sonuc)
 
     def _tk_cizgi_uclari(self, entity, obj_name: str):
         """Çizginin (bas, son) XY uç noktaları; okunamazsa (None, None).

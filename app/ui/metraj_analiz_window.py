@@ -1288,7 +1288,7 @@ class TemelKirisiDonguPaneli(QDialog):
         lay.setSpacing(8)
 
         bilgi = QLabel(
-            f"AutoCAD'de her kiriş için: SBH yazısı → 2 kenar çizgisi (üst+alt) → ENTER. "
+            f"AutoCAD'de her kiriş için: kiriş yazısı (ad serbest: SBH-1, TK1, TB-2... + genişlik/yükseklik) → 2 kenar çizgisi (üst+alt) → ENTER. "
             f"Sonraki kirişe aynı şekilde devam edin; bitirmek için hiçbir şey seçmeden "
             f"ENTER. Uyarılar AutoCAD komut satırında görünür. Çizim birimi: {birim}."
         )
@@ -1403,7 +1403,7 @@ class TemelKirisiDonguPaneli(QDialog):
         mesaj = self.connector.temel_kirisi_mesaj
         try:
             self.connector.temel_kirisi_toplu_baslat()
-            mesaj(f"TEMEL KİRİŞİ TOPLU SEÇİM (birim: {self.birim}) — her kiriş: SBH yazısı + "
+            mesaj(f"TEMEL KİRİŞİ TOPLU SEÇİM (birim: {self.birim}) — her kiriş: kiriş yazısı (ad serbest) + "
                   "iki kenarın TÜM çizgileri (kesişen kirişle bölünen kenarın bütün parçaları) "
                   "+ ENTER. Bitirmek için boş ENTER.")
             while True:
@@ -11601,7 +11601,7 @@ class MetrajAnalizWindow(QMainWindow):
 
         bilgi = QLabel(
             "Temel kirişi (SBH) metrajı — TOPLU SEÇİM: butona basın, birimi seçin, "
-            "AutoCAD'de her kiriş için 'SBH-1 (20/165)' yazısı + iki kenarın TÜM çizgileri (kesişen "
+            "AutoCAD'de her kiriş için etiket yazısı (ad serbest: 'SBH-1 (20/165)', 'TK1 30/100', 'TB-2 (40x120)') + iki kenarın TÜM çizgileri (kesişen "
             "kirişle bölünen kenarın bütün parçaları) + ENTER. Uzunluk = iki kenarın baştan sona "
             "kapsamının ortalaması (boşluklar dahil); yan kalıp her yüzün dolu (parça toplamı) "
             "uzunluğuyla. Kenarlar 2×genişlikten fazla farklıysa 'eksik parça' sorulur. Bitirmek için "
