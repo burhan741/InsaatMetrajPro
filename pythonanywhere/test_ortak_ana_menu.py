@@ -148,7 +148,8 @@ def _scriptler(html):
 @pytest.mark.skipif(shutil.which('node') is None, reason='node yok')
 def test_gomulu_js_node_check(istemci):
     sayfalar = {'ana_menu': istemci.get('/').get_data(as_text=True),
-                'puantaj': istemci.get('/puantaj?v=1').get_data(as_text=True)}
+                'puantaj': istemci.get('/puantaj?v=1').get_data(as_text=True),
+                'vinc': istemci.get('/vinc').get_data(as_text=True)}
     for ad, html in sayfalar.items():
         js_listesi = _scriptler(html)
         assert js_listesi, ad

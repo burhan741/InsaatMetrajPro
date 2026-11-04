@@ -7,7 +7,7 @@ uygulamasini kurar, modulleri (Blueprint) kaydeder, tablolari hazirlar ve
 ana menuyu (/) gosterir. Is mantigi modullerdedir:
     ortak.py   - veritabani yolu, gunluk yedek, bicimleme, PDF yardimcilari
     puantaj.py - mevcut puantaj (aynen; adres /puantaj)
-    vinc.py    - mobil vinc defteri
+    vinc.py    - mobil vinc defteri (/vinc)
 
 PythonAnywhere WSGI dosyasi degismez: `from app import app`.
 
@@ -52,8 +52,8 @@ def ana_menu_kartlari():
          'aktif': True, 'ozet_etiket': 'İşçi yoklama, ödeme, bordro', 'ozet': '',
          'renk': '', 'not': ''},
         {'baslik': 'Mobil Vinç', 'ikon': '&#x1F3D7;', 'adres': '/vinc',
-         'aktif': False, 'ozet_etiket': 'Net', 'ozet': ortak.para_tl(vinc_net),
-         'renk': 'yesil' if vinc_net >= 0 else 'kirmizi', 'not': 'Hazırlanıyor'},
+         'aktif': True, 'ozet_etiket': 'Net', 'ozet': ortak.para_tl(vinc_net),
+         'renk': 'yesil' if vinc_net >= 0 else 'kirmizi', 'not': ''},
     ]
 
 
@@ -151,12 +151,9 @@ function yardimKapat(e) {
 
 @app.route('/')
 def ana_menu():
-    resp = make_response(render_template_string(ANA_MENU_HTML, kartlar=ana_menu_kartlari()))
     # Ozet tutarlari her acilista guncel olsun (iOS ana ekran onbellegi).
-    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
-    resp.headers['Pragma'] = 'no-cache'
-    resp.headers['Expires'] = '0'
-    return resp
+    return ortak.onbelleksiz(make_response(
+        render_template_string(ANA_MENU_HTML, kartlar=ana_menu_kartlari())))
 
 
 if __name__ == '__main__':
