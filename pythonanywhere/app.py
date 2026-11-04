@@ -44,14 +44,16 @@ def ana_menu_kartlari():
     conn = ortak.baglan()
     vinc_net = vinc.vinc_ozet(conn)['net']
     alacak = cari.tur_toplam_kalan(conn, 'muteahhit')
+    borc = cari.tur_toplam_kalan(conn, 'demirci')
     conn.close()
     return [
         {'baslik': 'Müteahhitler', 'ikon': '&#x1F3E2;', 'adres': '/muteahhit',
          'aktif': True, 'ozet_etiket': 'Toplam alacak', 'ozet': ortak.para_tl(alacak),
          'renk': 'yesil' if alacak >= 0 else 'kirmizi', 'not': ''},
         {'baslik': 'Demirciler', 'ikon': '&#x1F529;', 'adres': '/demirci',
-         'aktif': False, 'ozet_etiket': 'Toplam borç', 'ozet': '',
-         'renk': 'kirmizi', 'not': 'Hazırlanıyor'},
+         'aktif': True, 'ozet_etiket': 'Toplam borç', 'ozet': ortak.para_tl(borc),
+         # Borc odenecek para -> kirmizi; eksi (fazla odeme, demirci bana borclu) -> yesil
+         'renk': 'kirmizi' if borc > 0 else ('yesil' if borc < 0 else ''), 'not': ''},
         {'baslik': 'Puantaj', 'ikon': '&#x1F477;', 'adres': '/puantaj',
          'aktif': True, 'ozet_etiket': 'İşçi yoklama, ödeme, bordro', 'ozet': '',
          'renk': '', 'not': ''},

@@ -42,6 +42,8 @@ TURLER = {
         'kalan_etiket': 'Kalan alacak', 'toplam_etiket': 'Toplam alacak',
         'kalem_ornek': 'Gro beton', 'kalem_ipucu': 'Örn: Gro beton, Temel betonu, Normal katlar',
         'yon_aciklama': 'Kalan = müteahhitten alacağınız.',
+        'gider_ornek': 'Pompa, nakliye, katkı…',
+        'gider_yardim': 'Pompa, nakliye gibi beton dışı masrafları yazın. Giderler hakedişe eklenir (alacağınızı artırır).',
     },
     'demirci': {
         'tur': 'demirci', 'baslik': 'Demirciler', 'tekil': 'Demirci',
@@ -51,10 +53,11 @@ TURLER = {
         'kalan_etiket': 'Kalan borcum', 'toplam_etiket': 'Toplam borç',
         'kalem_ornek': 'Temel demiri', 'kalem_ipucu': 'Örn: Temel demiri, Normal kat demiri',
         'yon_aciklama': 'Kalan = demirciye borcunuz.',
+        'gider_ornek': 'Nakliye, bağ teli, vinç…',
+        'gider_yardim': 'Nakliye, bağ teli gibi işe ait ek masrafları yazın. Giderler hakedişe eklenir (borcunuzu artırır).',
     },
 }
-# 3. adim: yalniz muteahhit acik. 4. adimda 'demirci' eklenir.
-AKTIF_TURLER = ('muteahhit',)
+AKTIF_TURLER = ('muteahhit', 'demirci')
 
 ONCEKI_GOSTERIM = 8  # defterde acik gosterilen son satir sayisi
 
@@ -863,7 +866,7 @@ FIRMA_HTML = r'''<!DOCTYPE html>
     </div>
   </div>
   <div id="g-gider">
-    <div class="alan"><label for="g-gacik">Açıklama</label><input type="text" id="g-gacik" placeholder="Pompa, nakliye, katkı…" autocomplete="off"></div>
+    <div class="alan"><label for="g-gacik">Açıklama</label><input type="text" id="g-gacik" placeholder="{{ ayar.gider_ornek }}" autocomplete="off"></div>
   </div>
   <div id="g-tutar-alan" class="alan"><label for="g-tutar">Tutar (₺)</label><input type="text" id="g-tutar" inputmode="decimal" placeholder="0" autocomplete="off"></div>
   <div id="g-odeme">
@@ -919,7 +922,7 @@ FIRMA_HTML = r'''<!DOCTYPE html>
     <div class="modal-ust"><h2>Firma sayfası — Nasıl kullanılır?</h2><button class="kapat" onclick="modalKapat('yardim')" aria-label="Kapat">&times;</button></div>
     <ol>
       <li><b>{{ ayar.is_sekme }}:</b> Tarihi ve kalemi seçin, miktarı ({{ ayar.birim }}) yazın. Hakediş kendiliğinden hesaplanır (miktar × birim fiyat). <b>Satırı Ekle</b>'ye basın.</li>
-      <li><b>Gider:</b> Pompa, nakliye gibi beton dışı masrafları yazın. Giderler hakedişe eklenir.</li>
+      <li><b>Gider:</b> {{ ayar.gider_yardim }}</li>
       <li><b>{{ ayar.odeme_sekme }}:</b> Tutarı ve notu (nakit/çek/havale) yazın. Kalandan düşülür.</li>
       <li><b>Düzeltmek için</b> defterdeki satıra dokunun. <b>Silmek için</b> satırı sola kaydırın; onay sorulur.</li>
       <li><b>Düzenle</b> (üstte): firma adı ve birim fiyatlar. Fiyat değişikliği geçmiş satırları değiştirmez.</li>
