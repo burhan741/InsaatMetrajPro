@@ -1,0 +1,9 @@
+# Musteri verisi (puantaj, vinc, muteahhit/demirci bakiyeleri) - ASLA commit'lenmez.
+# yeni_proje deposu HERKESE ACIK.
+*.db
+*.db-journal
+backups/
+__pycache__/
+.venv_test/
+.pytest_cache/
+eski/app - Kopya.py
