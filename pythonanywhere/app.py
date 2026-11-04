@@ -8,6 +8,7 @@ ana menuyu (/) gosterir. Is mantigi modullerdedir:
     ortak.py   - veritabani yolu, gunluk yedek, bicimleme, PDF yardimcilari
     puantaj.py - mevcut puantaj (aynen; adres /puantaj)
     vinc.py    - mobil vinc defteri (/vinc)
+    cari.py    - muteahhit / demirci cari hesap (/muteahhit, /demirci)
 
 PythonAnywhere WSGI dosyasi degismez: `from app import app`.
 
@@ -18,6 +19,7 @@ puantaj endpoint'lerinin eski app.py ile birebir ayni cevap verdigi.
 
 from flask import Flask, make_response, render_template_string
 
+import cari
 import ortak
 import puantaj
 import vinc
@@ -25,10 +27,11 @@ import vinc
 app = Flask(__name__)
 app.register_blueprint(puantaj.bp)
 app.register_blueprint(vinc.bp)
+app.register_blueprint(cari.bp)
 
 # Tablolari olustur (CREATE TABLE IF NOT EXISTS - mevcut veriye dokunmaz),
 # sonra gunde bir otomatik yedek al (eski davranisin aynisi).
-INIT_FONKSIYONLARI = [puantaj.init_db, vinc.init_db]
+INIT_FONKSIYONLARI = [puantaj.init_db, vinc.init_db, cari.init_db]
 ortak.veritabani_hazirla(INIT_FONKSIYONLARI)
 
 
@@ -40,11 +43,12 @@ ortak.veritabani_hazirla(INIT_FONKSIYONLARI)
 def ana_menu_kartlari():
     conn = ortak.baglan()
     vinc_net = vinc.vinc_ozet(conn)['net']
+    alacak = cari.tur_toplam_kalan(conn, 'muteahhit')
     conn.close()
     return [
         {'baslik': 'Müteahhitler', 'ikon': '&#x1F3E2;', 'adres': '/muteahhit',
-         'aktif': False, 'ozet_etiket': 'Toplam alacak', 'ozet': '',
-         'renk': 'yesil', 'not': 'Hazırlanıyor'},
+         'aktif': True, 'ozet_etiket': 'Toplam alacak', 'ozet': ortak.para_tl(alacak),
+         'renk': 'yesil' if alacak >= 0 else 'kirmizi', 'not': ''},
         {'baslik': 'Demirciler', 'ikon': '&#x1F529;', 'adres': '/demirci',
          'aktif': False, 'ozet_etiket': 'Toplam borç', 'ozet': '',
          'renk': 'kirmizi', 'not': 'Hazırlanıyor'},

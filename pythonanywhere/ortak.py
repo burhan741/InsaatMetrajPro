@@ -110,6 +110,14 @@ def miktar_tr(deger, hane=2):
     return metin.replace(',', '#').replace('.', ',').replace('#', '.')
 
 
+def tr_kucuk(metin):
+    """Turkce kurallı kucuk harf + bosluk sadelestirme (ayni ad denetimi icin).
+    'YILMAZ' ve 'Yılmaz' -> 'yılmaz'; 'İNŞAAT' -> 'inşaat'. (lower/casefold
+    I'yi i yapar, Turkcede yanlis.)"""
+    metin = ' '.join(str(metin or '').split())
+    return metin.replace('I', 'ı').replace('İ', 'i').lower()
+
+
 def tarih_tr(iso):
     """'2026-11-04' -> '04.11.2026'. Bos/bozuk deger oldugu gibi doner."""
     if not iso:
@@ -118,6 +126,17 @@ def tarih_tr(iso):
     if len(parca) != 3:
         return str(iso)
     return parca[2] + '.' + parca[1] + '.' + parca[0]
+
+
+def simdi_tr():
+    """Turkiye saati (UTC+3). PythonAnywhere sunucusu UTC calisir; PDF'e
+    yazilan olusturma zamani ve varsayilan 'bugun' 3 saat geri kalmasin."""
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=3)))
+
+
+def bugun_tr():
+    return simdi_tr().date().isoformat()
 
 
 def iso_tarih_mi(metin):
@@ -376,10 +395,18 @@ def _pdf_font_hazirla(pdfmetrics, TTFont):
         return _PDF_FONT_CACHE['font']
     normal_yol = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
     kalin_yol = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+    win_normal = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts', 'arial.ttf')
+    win_kalin = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts', 'arialbd.ttf')
     if os.path.exists(normal_yol) and os.path.exists(kalin_yol):
         pdfmetrics.registerFont(TTFont('DejaVu', normal_yol))
         pdfmetrics.registerFont(TTFont('DejaVu-Bold', kalin_yol))
         sonuc = ('DejaVu', 'DejaVu-Bold')
+    elif os.path.exists(win_normal) and os.path.exists(win_kalin):
+        # Yerel Windows gelistirme/test: Turkce karakterli gercek ciktiyi gormek icin.
+        # (Sunucuda DejaVu var; bu dal orada hic calismaz.)
+        pdfmetrics.registerFont(TTFont('ArialTR', win_normal))
+        pdfmetrics.registerFont(TTFont('ArialTR-Bold', win_kalin))
+        sonuc = ('ArialTR', 'ArialTR-Bold')
     else:
         # Font dosyasi yoksa (ornegin yerel Windows gelistirme ortami)
         # Helvetica'ya duser - Turkce Ş/Ğ/İ/ı bu fallback'te duzgun

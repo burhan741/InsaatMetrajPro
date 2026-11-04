@@ -149,7 +149,10 @@ def _scriptler(html):
 def test_gomulu_js_node_check(istemci):
     sayfalar = {'ana_menu': istemci.get('/').get_data(as_text=True),
                 'puantaj': istemci.get('/puantaj?v=1').get_data(as_text=True),
-                'vinc': istemci.get('/vinc').get_data(as_text=True)}
+                'vinc': istemci.get('/vinc').get_data(as_text=True),
+                'muteahhit_liste': istemci.get('/muteahhit').get_data(as_text=True)}
+    fid = istemci.post('/api/cari/muteahhit/firmalar', json={'ad': 'JS', 'kalemler': []}).get_json()['id']
+    sayfalar['muteahhit_firma'] = istemci.get('/muteahhit/%d' % fid).get_data(as_text=True)
     for ad, html in sayfalar.items():
         js_listesi = _scriptler(html)
         assert js_listesi, ad
