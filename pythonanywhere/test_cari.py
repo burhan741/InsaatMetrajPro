@@ -251,16 +251,9 @@ def test_ana_menu_toplam_alacak(istemci):
     assert '₺325.000' in kart
 
 
-def test_demirci_bu_adimda_kapali(istemci, yeni_db):
-    assert istemci.get('/demirci').status_code == 404
-    assert istemci.get('/api/cari/demirci/firmalar').status_code == 404
-    assert istemci.post('/api/cari/demirci/firmalar', json={'ad': 'X'}).status_code == 404
-    # Veritabaninda demirci kaydi olsa bile API onu gostermez
-    conn = sqlite3.connect(yeni_db)
-    fid = conn.execute("INSERT INTO cari_firma (tur, ad) VALUES ('demirci', 'D')").lastrowid
-    conn.commit()
-    conn.close()
-    assert istemci.get('/api/cari/firma/%d' % fid).status_code == 404
+def test_tanimsiz_tur_404(istemci):
+    assert istemci.get('/api/cari/taseron/firmalar').status_code == 404
+    assert istemci.post('/api/cari/taseron/firmalar', json={'ad': 'X'}).status_code == 404
 
 
 # ---------------- dokum / PDF ----------------

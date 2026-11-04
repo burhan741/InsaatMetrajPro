@@ -153,6 +153,11 @@ def test_gomulu_js_node_check(istemci):
                 'muteahhit_liste': istemci.get('/muteahhit').get_data(as_text=True)}
     fid = istemci.post('/api/cari/muteahhit/firmalar', json={'ad': 'JS', 'kalemler': []}).get_json()['id']
     sayfalar['muteahhit_firma'] = istemci.get('/muteahhit/%d' % fid).get_data(as_text=True)
+    sayfalar['demirci_liste'] = istemci.get('/demirci').get_data(as_text=True)
+    did = istemci.post('/api/cari/demirci/firmalar', json={'ad': 'JS', 'kalemler': []}).get_json()['id']
+    sayfalar['demirci_firma'] = istemci.get('/demirci/%d' % did).get_data(as_text=True)
+    sayfalar['muteahhit_gun_sonu'] = istemci.get('/muteahhit/gun-sonu').get_data(as_text=True)
+    sayfalar['demirci_gun_sonu'] = istemci.get('/demirci/gun-sonu').get_data(as_text=True)
     for ad, html in sayfalar.items():
         js_listesi = _scriptler(html)
         assert js_listesi, ad

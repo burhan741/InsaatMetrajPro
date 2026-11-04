@@ -44,6 +44,7 @@ TURLER = {
         'yon_aciklama': 'Kalan = müteahhitten alacağınız.',
         'gider_ornek': 'Pompa, nakliye, katkı…',
         'gider_yardim': 'Pompa, nakliye gibi beton dışı masrafları yazın. Giderler hakedişe eklenir (alacağınızı artırır).',
+        'gun_odeme_etiket': 'Günün tahsilatı',
     },
     'demirci': {
         'tur': 'demirci', 'baslik': 'Demirciler', 'tekil': 'Demirci',
@@ -55,6 +56,7 @@ TURLER = {
         'yon_aciklama': 'Kalan = demirciye borcunuz.',
         'gider_ornek': 'Nakliye, bağ teli, vinç…',
         'gider_yardim': 'Nakliye, bağ teli gibi işe ait ek masrafları yazın. Giderler hakedişe eklenir (borcunuzu artırır).',
+        'gun_odeme_etiket': 'Günün ödemesi',
     },
 }
 AKTIF_TURLER = ('muteahhit', 'demirci')
@@ -103,7 +105,12 @@ def init_db():
         aciklama TEXT,
         olusturma TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS cari_ayar (
+        anahtar TEXT PRIMARY KEY,
+        deger TEXT
+    );
     CREATE INDEX IF NOT EXISTS ix_cari_hareket_firma ON cari_hareket(firma_id, tarih);
+    CREATE INDEX IF NOT EXISTS ix_cari_hareket_tarih ON cari_hareket(tarih);
     CREATE INDEX IF NOT EXISTS ix_cari_kalem_firma ON cari_fiyat_kalemi(firma_id);
     ''')
     conn.commit()
@@ -357,6 +364,78 @@ def dokum_verisi(conn, firma_id, bas=None, bit=None):
     }
 
 
+def gun_sonu_verisi(conn, tur, tarih, firma_id=None):
+    """Gun sonu raporu (ekran + A4 PDF ayni veriyi kullanir).
+
+    Neyi cozuyoruz: Santiyede gun bitince "bugun kime ne kadar beton dokuldu,
+    kimden ne kadar para alindi, herkesin son durumu ne" sorusu tek sayfada.
+    Kalan = o GUNUN SONUNDAKI bakiye (gecmis gunun raporu tekrar alininca
+    ayni rakam cikar; bugunun raporunda guncel kalanla aynidir).
+    Nasil test ederiz: test_gun_sonu.py.
+    """
+    if firma_id is not None:
+        f = firma_getir(conn, firma_id, tur)
+        firmalar = [(f['id'], f['ad'])]
+    else:
+        firmalar = [(r['id'], r['ad']) for r in conn.execute('SELECT id, ad FROM cari_firma WHERE tur = ?', (tur,))]
+    firmalar.sort(key=lambda x: ortak.tr_kucuk(x[1]))
+    ad_map = dict(firmalar)
+
+    hareketler = []
+    if firmalar:
+        yer = ','.join('?' * len(firmalar))
+        for r in conn.execute(
+                'SELECT * FROM cari_hareket WHERE tarih = ? AND firma_id IN (%s) ORDER BY id' % yer,
+                [tarih] + [f[0] for f in firmalar]):
+            h = dict(r)
+            h['firma_adi'] = ad_map[h['firma_id']]
+            hareketler.append(h)
+    hareketler.sort(key=lambda h: (ortak.tr_kucuk(h['firma_adi']), h['id']))
+
+    hareketli = {h['firma_id'] for h in hareketler}
+    satirlar = []
+    toplam_kalan = 0.0
+    for fid, ad in firmalar:
+        kalan = firma_bakiye(conn, fid, bit=tarih)['kalan']
+        toplam_kalan += kalan
+        if fid in hareketli:
+            gun = firma_bakiye(conn, fid, bas=tarih, bit=tarih)
+            satirlar.append({'id': fid, 'ad': ad, 'miktar': gun['is_miktar'], 'hakedis': gun['hakedis'],
+                             'odenen': gun['odenen'], 'kalan': kalan})
+    return {
+        'tarih': tarih,
+        'tur': tur,
+        'ayar': TURLER[tur],
+        'kapsam': ad_map[firma_id] if firma_id is not None else 'Tümü',
+        'firma_id': firma_id,
+        'firmalar': satirlar,
+        'hareketler': hareketler,
+        'ozet': {
+            'miktar': round(sum(s['miktar'] for s in satirlar), 3),
+            'hakedis': _para(sum(s['hakedis'] for s in satirlar)),
+            'odenen': _para(sum(s['odenen'] for s in satirlar)),
+            'toplam_kalan': _para(toplam_kalan),
+            'firma_sayisi': len(satirlar),
+        },
+    }
+
+
+AYAR_VARSAYILAN = {'rapor_basligi': '[FİRMA ADI]'}
+
+
+def ayar_oku(conn, anahtar):
+    r = conn.execute('SELECT deger FROM cari_ayar WHERE anahtar = ?', (anahtar,)).fetchone()
+    return r['deger'] if r and r['deger'] else AYAR_VARSAYILAN.get(anahtar, '')
+
+
+def ayar_yaz(conn, anahtar, deger):
+    if anahtar not in AYAR_VARSAYILAN:
+        raise CariHata('Bilinmeyen ayar')
+    deger = ' '.join(str(deger or '').split())[:120]
+    with conn:
+        conn.execute('INSERT OR REPLACE INTO cari_ayar (anahtar, deger) VALUES (?, ?)', (anahtar, deger))
+
+
 # ====================================================================
 # API
 # ====================================================================
@@ -434,6 +513,42 @@ def api_hareket(hareket_id):
             return jsonify({'success': True})
         hareket_kaydet(conn, h['firma_id'], request.json or {}, hareket_id=hareket_id)
         return jsonify({'success': True, 'id': hareket_id})
+    finally:
+        conn.close()
+
+
+def _gun_sonu_param(tur):
+    tarih = _tarih_param('tarih') or ortak.bugun_tr()
+    fid = (request.args.get('firma_id') or '').strip()
+    try:
+        fid = int(fid) if fid else None
+    except ValueError:
+        raise CariHata('Geçersiz firma')
+    return tarih, fid
+
+
+@bp.route('/api/cari/<tur>/gun-sonu')
+def api_gun_sonu(tur):
+    _tur_kontrol(tur)
+    tarih, fid = _gun_sonu_param(tur)
+    conn = ortak.baglan()
+    try:
+        v = gun_sonu_verisi(conn, tur, tarih, fid)
+        v['rapor_basligi'] = ayar_oku(conn, 'rapor_basligi')
+        return jsonify(v)
+    finally:
+        conn.close()
+
+
+@bp.route('/api/cari/ayar', methods=['GET', 'POST'])
+def api_ayar():
+    conn = ortak.baglan()
+    try:
+        if request.method == 'POST':
+            for k, v in (request.json or {}).items():
+                ayar_yaz(conn, k, v)
+            return jsonify({'success': True})
+        return jsonify({k: ayar_oku(conn, k) for k in AYAR_VARSAYILAN})
     finally:
         conn.close()
 
@@ -571,7 +686,7 @@ def api_firma_pdf(firma_id):
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm,
-                            leftMargin=1.5 * cm, rightMargin=1.5 * cm,
+                            leftMargin=1.5 * cm - 6, rightMargin=1.5 * cm - 6,
                             title='%s - Hesap Dokumu' % firma['ad'])
     doc.build(el)
     buf.seek(0)
@@ -581,11 +696,168 @@ def api_firma_pdf(firma_id):
 
 
 # ====================================================================
+# PDF - GUN SONU RAPORU (A4)
+# ====================================================================
+@bp.route('/api/cari/<tur>/gun-sonu/pdf')
+def api_gun_sonu_pdf(tur):
+    try:
+        from xml.sax.saxutils import escape
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except ImportError:
+        return jsonify({'error': 'PDF icin reportlab kurulu degil'}), 503
+
+    ayar = _tur_kontrol(tur)
+    tarih, fid = _gun_sonu_param(tur)
+    conn = ortak.baglan()
+    try:
+        v = gun_sonu_verisi(conn, tur, tarih, fid)
+        baslik = ayar_oku(conn, 'rapor_basligi')
+    finally:
+        conn.close()
+
+    font_n, font_b = ortak._pdf_font_hazirla(pdfmetrics, TTFont)
+    if not font_n.startswith('Helvetica'):
+        pdfmetrics.registerFontFamily(font_n, normal=font_n, bold=font_b, italic=font_n, boldItalic=font_b)
+
+    def tl(x):
+        return pdf_para(x, font_n)
+
+    koyu = colors.HexColor('#14161a')
+    soluk = colors.HexColor('#666666')
+    cizgi = colors.HexColor('#dddddd')
+    stiller = getSampleStyleSheet()
+    s_firma = ParagraphStyle('GsFirma', parent=stiller['Normal'], fontName=font_b, fontSize=18, leading=22)
+    s_rapor = ParagraphStyle('GsRapor', parent=stiller['Normal'], fontName=font_b, fontSize=11, leading=14,
+                             alignment=2)
+    s_rapor_alt = ParagraphStyle('GsRaporAlt', parent=s_rapor, fontName=font_n, fontSize=10, textColor=soluk)
+    s_alt = ParagraphStyle('GsAlt', parent=stiller['Normal'], fontName=font_n, fontSize=9, textColor=soluk)
+    s_bolum = ParagraphStyle('GsBolum', parent=stiller['Normal'], fontName=font_b, fontSize=11.5, leading=14,
+                             spaceBefore=4, spaceAfter=5)
+    s_hucre = ParagraphStyle('GsHucre', parent=stiller['Normal'], fontName=font_n, fontSize=8.5, leading=10.5)
+    s_hucre_alt = ParagraphStyle('GsHucreAlt', parent=s_hucre, fontSize=7.5, leading=9, textColor=soluk)
+    s_kutu_e = ParagraphStyle('GsKutuE', parent=stiller['Normal'], fontName=font_n, fontSize=8, textColor=soluk,
+                              leading=10)
+    s_kutu_d = ParagraphStyle('GsKutuD', parent=stiller['Normal'], fontName=font_b, fontSize=13, leading=16)
+
+    tam = 18 * cm
+    el = []
+    # --- Baslik: solda rapor basligi (firma adiniz), sagda rapor adi + tarih
+    ust = Table([[Paragraph(escape(baslik), s_firma),
+                  [Paragraph('GÜN SONU RAPORU', s_rapor),
+                   Paragraph(ortak.tarih_tr(tarih), s_rapor_alt)]]],
+                colWidths=[11 * cm, 7 * cm])
+    ust.setStyle(TableStyle([('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+                             ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                             ('LINEBELOW', (0, 0), (-1, 0), 1.5, koyu), ('BOTTOMPADDING', (0, 0), (-1, -1), 8)]))
+    el += [ust, Spacer(1, 6),
+           Paragraph('%s · Kapsam: %s' % (escape(ayar['baslik']), escape(v['kapsam'])), s_alt), Spacer(1, 10)]
+
+    # --- Ozet kutulari
+    o = v['ozet']
+    kutular = [
+        ('Toplam miktar', '%s %s' % (ortak.miktar_tr(o['miktar'], 3), ayar['birim'])),
+        ('Günün hakedişi', tl(o['hakedis'])),
+        (ayar['gun_odeme_etiket'], tl(o['odenen'])),
+        (('Gün sonu ' + ayar['toplam_etiket'].lower()) if o['toplam_kalan'] >= 0 else 'Gün sonu fazla ödeme',
+         tl(abs(o['toplam_kalan']))),
+    ]
+    kt = Table([[[Paragraph(escape(e), s_kutu_e), Paragraph(escape(d), s_kutu_d)] for e, d in kutular]],
+               colWidths=[tam / 4] * 4)
+    kt.setStyle(TableStyle([('BOX', (0, 0), (-1, -1), 0.8, cizgi), ('INNERGRID', (0, 0), (-1, -1), 0.8, cizgi),
+                            ('BACKGROUND', (3, 0), (3, 0), colors.HexColor('#f2f3f5')),
+                            ('TOPPADDING', (0, 0), (-1, -1), 7), ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                            ('LEFTPADDING', (0, 0), (-1, -1), 8), ('VALIGN', (0, 0), (-1, -1), 'TOP')]))
+    el += [kt, Spacer(1, 14)]
+
+    tablo_stili = [
+        ('BACKGROUND', (0, 0), (-1, 0), koyu), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), font_b), ('FONTNAME', (0, 1), (-1, -1), font_n),
+        ('FONTSIZE', (0, 0), (-1, -1), 8.5), ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('LINEBELOW', (0, 0), (-1, -1), 0.4, cizgi),
+        ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]
+
+    if not v['firmalar']:
+        el.append(Paragraph('Bu tarihte kayıt yok.', s_hucre))
+    else:
+        # --- Firma ozet tablosu + toplam
+        el.append(Paragraph('Firma özeti', s_bolum))
+        ft = [['Firma', 'Miktar', 'Hakediş', ayar['odeme_kolon'], 'Gün sonu kalan']]
+        for s in v['firmalar']:
+            ft.append([Paragraph(escape(s['ad']), s_hucre),
+                       ('%s %s' % (ortak.miktar_tr(s['miktar'], 3), ayar['birim'])) if s['miktar'] else '',
+                       tl(s['hakedis']) if s['hakedis'] else '', tl(s['odenen']) if s['odenen'] else '',
+                       tl(s['kalan'])])
+        ft.append(['Toplam', '%s %s' % (ortak.miktar_tr(o['miktar'], 3), ayar['birim']), tl(o['hakedis']),
+                   tl(o['odenen']), ''])
+        t = Table(ft, repeatRows=1, colWidths=[6.6 * cm, 2.4 * cm, 3 * cm, 3 * cm, 3 * cm])
+        t.setStyle(TableStyle(tablo_stili + [
+            ('FONTNAME', (0, -1), (-1, -1), font_b), ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#f2f3f5')),
+            ('LINEABOVE', (0, -1), (-1, -1), 1, koyu)]))
+        el += [t, Spacer(1, 4)]
+        if any(s['kalan'] < 0 for s in v['firmalar']):
+            el.append(Paragraph('Eksi kalan = fazla ödeme.', s_alt))
+        el.append(Spacer(1, 12))
+
+        # --- Gunun hareketleri
+        el.append(Paragraph('Günün hareketleri', s_bolum))
+        ht = [['Firma', 'Açıklama', 'Hakediş', ayar['odeme_kolon']]]
+        for h in v['hareketler']:
+            ust_m, alt_m = hareket_aciklama(h, ayar)
+            odeme = h['tip'] == 'odeme'
+            ht.append([Paragraph(escape(h['firma_adi']), s_hucre),
+                       [Paragraph(escape(ust_m), s_hucre), Paragraph(escape(alt_m), s_hucre_alt)],
+                       '' if odeme else tl(h['tutar']), tl(h['tutar']) if odeme else ''])
+        t2 = Table(ht, repeatRows=1, colWidths=[5 * cm, 7 * cm, 3 * cm, 3 * cm])
+        t2.setStyle(TableStyle(tablo_stili + [('ALIGN', (1, 0), (1, -1), 'LEFT')]))
+        el.append(t2)
+
+    # --- Olusturma zamani + imza alani
+    el += [Spacer(1, 26)]
+    imza = Table([['Hazırlayan', '', 'Kontrol eden / Teslim alan'],
+                  ['Ad Soyad / İmza', '', 'Ad Soyad / İmza']],
+                 colWidths=[7.5 * cm, 3 * cm, 7.5 * cm], rowHeights=[16, 40])
+    imza.setStyle(TableStyle([('FONTNAME', (0, 0), (-1, 0), font_b), ('FONTNAME', (0, 1), (-1, 1), font_n),
+                              ('FONTSIZE', (0, 0), (-1, -1), 8.5), ('TEXTCOLOR', (0, 1), (-1, 1), soluk),
+                              ('VALIGN', (0, 1), (-1, 1), 'BOTTOM'),
+                              ('LINEBELOW', (0, 1), (0, 1), 0.8, koyu), ('LINEBELOW', (2, 1), (2, 1), 0.8, koyu),
+                              ('LEFTPADDING', (0, 0), (-1, -1), 0)]))
+    el += [imza, Spacer(1, 14), Paragraph('Oluşturma: ' + ortak.simdi_tr().strftime('%d.%m.%Y %H:%M'), s_alt)]
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm,
+                            leftMargin=1.5 * cm - 6, rightMargin=1.5 * cm - 6,
+                            title='Gun Sonu Raporu %s' % ortak.tarih_tr(tarih))
+    doc.build(el)
+    buf.seek(0)
+    ek = ('_' + _dosya_adi(v['kapsam'])) if fid is not None else ''
+    ad = 'gun_sonu_%s%s_%s.pdf' % (tur, ek, tarih)
+    return send_file(buf, mimetype='application/pdf', as_attachment=False, download_name=ad)
+
+
+# ====================================================================
 # SAYFALAR
 # ====================================================================
 CARI_CSS = r'''
 body.alt-butonlu{padding-bottom:calc(96px + env(safe-area-inset-bottom))}
 .alt-baslik{font-size:14px;color:var(--soluk);margin-top:2px}
+.ust-btnlar{display:flex;gap:8px;align-items:center;flex-shrink:0}
+.hap-btn{height:36px;padding:0 14px;border-radius:18px;border:1px solid var(--cizgi);background:var(--kart);color:var(--tx);display:flex;align-items:center;font-size:14px;font-weight:600;text-decoration:none;white-space:nowrap}
+.alan select{background:#fff}
+.gs-satir{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--cizgi);text-decoration:none;color:var(--tx)}
+.gs-satir:last-child{border-bottom:none}
+.gs-satir .sol{min-width:0}
+.gs-satir .ad{font-size:15px;font-weight:600;overflow-wrap:anywhere}
+.gs-satir .alt{font-size:12px;color:var(--soluk);margin-top:2px}
+.gs-satir .sag{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.gs-satir .sag .t{font-size:14px;font-weight:700}
+.gs-satir .sag .n{font-size:11px;color:var(--soluk)}
 .alt-baslik b{font-variant-numeric:tabular-nums}
 .arama{width:100%;padding:11px 12px;border:1px solid var(--cizgi);border-radius:10px;background:#fff;color:var(--tx);font-size:16px;margin-bottom:12px;-webkit-appearance:none;appearance:none}
 .alt-sabit{position:fixed;left:0;right:0;bottom:0;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:linear-gradient(to top,var(--bg) 70%,#f4f5f700);z-index:5}
@@ -723,7 +995,10 @@ LISTE_HTML = r'''<!DOCTYPE html>
     <h1>{{ ayar.baslik }}</h1>
     <div class="alt-baslik" id="toplam">&nbsp;</div>
   </div>
-  <button class="yardim-btn" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
+  <div class="ust-btnlar">
+    <a class="hap-btn" href="/{{ ayar.tur }}/gun-sonu" title="Günün özeti ve A4 PDF raporu">Gün Sonu</a>
+    <button class="yardim-btn" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
+  </div>
 </div>
 <input type="search" class="arama" id="arama" placeholder="Firma ara…" oninput="ciz()" autocomplete="off">
 <div id="liste"><div class="bos">Yükleniyor…</div></div>
@@ -740,6 +1015,7 @@ LISTE_HTML = r'''<!DOCTYPE html>
       <li>Firmaya dokunun; açılan sayfada <b>{{ ayar.is_sekme }}</b>, <b>Gider</b> ve <b>{{ ayar.odeme_sekme }}</b> satırlarını girin.</li>
       <li>Firmanın adını veya fiyatlarını değiştirmek için satırı <b>sola kaydırıp Düzenle</b>'ye basın.</li>
       <li><b>Sil</b> firmayı ve tüm kayıtlarını kalıcı olarak siler; onay sorulur.</li>
+      <li><b>Gün Sonu</b> (sağ üstte): seçtiğiniz günün özeti ve imzalı A4 PDF raporu.</li>
     </ol>
     <p>Listede her firmanın güncel kalanı görünür. {{ ayar.yon_aciklama }} Eksi çıkarsa <b>Fazla ödeme</b> yazar.</p>
     <button class="btn" style="margin-top:14px" onclick="modalKapat('yardim')">Anladım</button>
@@ -1180,6 +1456,138 @@ yukle();
 </html>'''
 
 
+GUN_SONU_HTML = r'''<!DOCTYPE html>
+<html lang="tr">
+<head>
+{{ ortak_head|safe }}
+<title>Gün Sonu — {{ ayar.baslik }}</title>
+<style>{{ ortak_css|safe }}{{ cari_css|safe }}</style>
+</head>
+<body class="alt-butonlu">
+<a href="/{{ ayar.tur }}" class="geri">&#8249; {{ ayar.baslik }}</a>
+<div class="ust">
+  <div>
+    <h1>Gün Sonu Raporu</h1>
+    <div class="alt-baslik">{{ ayar.baslik }}</div>
+  </div>
+  <button class="yardim-btn" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
+</div>
+
+<div class="iki-alan">
+  <div class="alan"><label for="r-tarih">Tarih</label><input type="date" id="r-tarih" onchange="yukle()"></div>
+  <div class="alan"><label for="r-kapsam">Kapsam</label>
+    <select id="r-kapsam" onchange="yukle()" title="Tüm firmalar ya da tek firma">
+      <option value="">Tümü</option>
+      {% for f in firmalar %}<option value="{{ f.id }}">{{ f.ad }}</option>{% endfor %}
+    </select></div>
+</div>
+
+<div class="ozet">
+  <div class="ozet-kutu" title="O gün girilen iş miktarı"><div class="deger" id="o-miktar">-</div><div class="etiket">Toplam miktar</div></div>
+  <div class="ozet-kutu" title="O günün iş + gider tutarı"><div class="deger" id="o-hakedis">-</div><div class="etiket">Günün hakedişi</div></div>
+  <div class="ozet-kutu"><div class="deger yesil" id="o-odenen">-</div><div class="etiket">{{ ayar.gun_odeme_etiket }}</div></div>
+  <div class="ozet-kutu" title="O gün kaydı olan firma sayısı"><div class="deger" id="o-firma">-</div><div class="etiket">Hareketli firma</div></div>
+  <div class="ozet-kutu genis" title="Kapsamdaki tüm firmaların o günün sonundaki toplam kalanı">
+    <div class="etiket" id="o-kalan-etiket">Gün sonu {{ ayar.toplam_etiket|lower }}</div><div class="deger" id="o-kalan">-</div></div>
+</div>
+
+<div class="grup-baslik"><span>Firmalar</span><span>Gün sonu kalan</span></div>
+<div class="liste" id="r-firmalar"><div class="bos">Yükleniyor…</div></div>
+<div class="grup-baslik"><span>Günün hareketleri</span></div>
+<div class="liste" id="r-hareketler"><div class="bos">Yükleniyor…</div></div>
+<div class="bilgi" style="margin-top:12px">PDF başlığı: <b id="r-baslik"></b> — değiştirmek için Ana Menü → Ayarlar.</div>
+
+<div class="alt-sabit"><button class="btn" onclick="pdfOlustur()">PDF Oluştur</button></div>
+
+<div class="modal-arka gizli" id="yardim" onclick="arkaTik(event, 'yardim')">
+  <div class="modal yardim">
+    <div class="modal-ust"><h2>Gün Sonu Raporu — Nasıl kullanılır?</h2><button class="kapat" onclick="modalKapat('yardim')" aria-label="Kapat">&times;</button></div>
+    <ol>
+      <li><b>Tarih</b> seçin (açılışta bugün gelir).</li>
+      <li><b>Kapsam:</b> tüm firmalar ya da tek bir firma.</li>
+      <li>Üstte günün toplamları, altta o gün kaydı olan firmalar ve tek tek hareketler görünür. Firmaya dokununca firma sayfası açılır.</li>
+      <li><b>PDF Oluştur</b>: A4 rapor açılır (başlıkta firmanızın adı, özet, firma tablosu, hareketler, imza alanı). Paylaş menüsünden WhatsApp veya Mail ile gönderin.</li>
+    </ol>
+    <p><b>Gün sonu kalan</b>, seçilen günün sonundaki bakiyedir; geçmiş bir günün raporu her alındığında aynı çıkar. Eksi tutar fazla ödemedir.</p>
+    <p>PDF başlığındaki firma adınızı <b>Ana Menü → Ayarlar</b>'dan değiştirebilirsiniz.</p>
+    <button class="btn" style="margin-top:14px" onclick="modalKapat('yardim')">Anladım</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>{{ ortak_js|safe }}</script>
+<script>
+var AYAR = {{ ayar|tojson }};
+function el(id) { return document.getElementById(id); }
+function miktarTR(n) { return Number(n || 0).toLocaleString('tr-TR', {maximumFractionDigits: 3}); }
+
+function yukle() {
+  var t = el('r-tarih').value;
+  if (!t) return;
+  var url = '/api/cari/' + AYAR.tur + '/gun-sonu?tarih=' + encodeURIComponent(t) +
+            '&firma_id=' + encodeURIComponent(el('r-kapsam').value);
+  apiFetch(url).then(ciz).catch(function(e) {
+    el('r-firmalar').innerHTML = '<div class="bos kirmizi">Yüklenemedi: ' + escHtml(e.message) + '</div>';
+    el('r-hareketler').innerHTML = '';
+  });
+}
+
+function ciz(v) {
+  var o = v.ozet;
+  el('o-miktar').textContent = miktarTR(o.miktar) + ' ' + AYAR.birim;
+  el('o-hakedis').textContent = fmtTL(o.hakedis);
+  el('o-odenen').textContent = fmtTL(o.odenen);
+  el('o-firma').textContent = o.firma_sayisi;
+  el('o-kalan-etiket').textContent = o.toplam_kalan < 0 ? 'Gün sonu fazla ödeme' : 'Gün sonu ' + AYAR.toplam_etiket.toLocaleLowerCase('tr');
+  el('o-kalan').textContent = fmtTL(Math.abs(o.toplam_kalan));
+  el('o-kalan').className = 'deger' + (o.toplam_kalan < 0 ? ' kirmizi' : '');
+  el('r-baslik').textContent = v.rapor_basligi;
+
+  var fh = '';
+  for (var i = 0; i < v.firmalar.length; i++) {
+    var f = v.firmalar[i];
+    var parca = [];
+    if (f.miktar) parca.push(miktarTR(f.miktar) + ' ' + AYAR.birim);
+    if (f.hakedis) parca.push('Hakediş ' + fmtTL(f.hakedis));
+    if (f.odenen) parca.push(AYAR.odeme_fiil + ' ' + fmtTL(f.odenen));
+    fh += '<a class="gs-satir" href="/' + AYAR.tur + '/' + f.id + '"><div class="sol"><div class="ad">' + escHtml(f.ad) + '</div>' +
+      '<div class="alt">' + escHtml(parca.join(' · ')) + '</div></div>' +
+      '<div class="sag"><div class="t' + (f.kalan < 0 ? ' kirmizi' : '') + '">' + fmtTL(Math.abs(f.kalan)) + '</div>' +
+      '<div class="n">' + (f.kalan < 0 ? 'Fazla ödeme' : escHtml(AYAR.kalan_etiket)) + '</div></div></a>';
+  }
+  el('r-firmalar').innerHTML = fh || '<div class="bos">Bu tarihte kayıt yok.</div>';
+
+  var hh = '';
+  for (var j = 0; j < v.hareketler.length; j++) {
+    var h = v.hareketler[j], ust, alt;
+    if (h.tip === 'is') {
+      ust = h.kalem_adi || AYAR.is_adi;
+      alt = miktarTR(h.miktar) + ' ' + AYAR.birim + ' × ' + fmtTL(h.birim_fiyat);
+    } else if (h.tip === 'gider') { ust = h.aciklama || 'Gider'; alt = 'Gider'; }
+    else { ust = h.aciklama || AYAR.odeme_fiil; alt = AYAR.odeme_fiil + ' para'; }
+    var odeme = h.tip === 'odeme';
+    hh += '<a class="gs-satir" href="/' + AYAR.tur + '/' + h.firma_id + '"><div class="sol"><div class="ad">' + escHtml(h.firma_adi) + '</div>' +
+      '<div class="alt">' + escHtml(ust) + ' · ' + escHtml(alt) + '</div></div>' +
+      '<div class="sag"><div class="t' + (odeme ? ' yesil' : '') + '">' + fmtTL(h.tutar) + '</div>' +
+      '<div class="n">' + (odeme ? escHtml(AYAR.odeme_kolon) : 'Hakediş') + '</div></div></a>';
+  }
+  el('r-hareketler').innerHTML = hh || '<div class="bos">Hareket yok.</div>';
+}
+
+function pdfOlustur() {
+  var t = el('r-tarih').value;
+  if (!t) { toast('Tarih seçin'); return; }
+  window.open('/api/cari/' + AYAR.tur + '/gun-sonu/pdf?tarih=' + encodeURIComponent(t) +
+              '&firma_id=' + encodeURIComponent(el('r-kapsam').value), '_blank');
+}
+
+el('r-tarih').value = bugunISO();
+yukle();
+</script>
+</body>
+</html>'''
+
+
 def _sayfa(sablon, **kw):
     html = render_template_string(
         sablon, ortak_head=ortak.ORTAK_HEAD, ortak_css=ortak.ORTAK_CSS, ortak_js=ortak.ORTAK_JS,
@@ -1204,9 +1612,21 @@ def _firma_sayfasi(tur, firma_id):
     return _sayfa(FIRMA_HTML, ayar=ayar, firma=firma, onceki_gosterim=ONCEKI_GOSTERIM)
 
 
+def _gun_sonu_sayfasi(tur):
+    ayar = _tur_kontrol(tur)
+    conn = ortak.baglan()
+    try:
+        firmalar = [dict(r) for r in conn.execute('SELECT id, ad FROM cari_firma WHERE tur = ?', (tur,))]
+    finally:
+        conn.close()
+    firmalar.sort(key=lambda f: ortak.tr_kucuk(f['ad']))
+    return _sayfa(GUN_SONU_HTML, ayar=ayar, firmalar=firmalar)
+
+
 # Sayfa adresleri ture gore acik acik kaydedilir (/<tur> gibi genel bir
 # kural /puantaj, /vinc ile karisabilirdi).
 for _tur in TURLER:
     bp.add_url_rule('/' + _tur, 'liste_' + _tur, (lambda t: lambda: _liste_sayfasi(t))(_tur))
+    bp.add_url_rule('/' + _tur + '/gun-sonu', 'gun_sonu_' + _tur, (lambda t: lambda: _gun_sonu_sayfasi(t))(_tur))
     bp.add_url_rule('/' + _tur + '/<int:firma_id>', 'firma_' + _tur,
                     (lambda t: lambda firma_id: _firma_sayfasi(t, firma_id))(_tur))

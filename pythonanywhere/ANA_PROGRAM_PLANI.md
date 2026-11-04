@@ -1,5 +1,7 @@
 # Ana Program Planı — Şantiye Cari + Puantaj + Mobil Vinç
 
+> **Durum (2026-11-04):** 6 adımın hepsi kodlandı (Rev-171..176), 100 pytest PASS. Kullanıcının sunucuda uçtan uca denemesi bekleniyor. Uygulamada plana eklenen kararlar: rapor başlığı ayrı `cari_ayar` tablosunda (puantaj `ayarlar`'ına dokunulmadı); gün sonu "kalan" = o günün sonundaki bakiye; firma dökümünde tarih aralığı seçilirse "Devreden bakiye"; PWA ikonu `ortak.py`'ye gömülü (ek dosya yok).
+
 > Bu dosya `yeni_proje/pythonanywhere/` klasöründe durur. CLAUDE.md'deki genel protokol ve "Puantaj Flask" kuralları aynen geçerlidir; bu dosya o kuralların üzerine bu projeye özel kararları ekler. Kararların hepsi kullanıcı onaylıdır — tekrar sorma.
 
 ## 1. Amaç

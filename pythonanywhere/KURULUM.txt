@@ -1,44 +1,61 @@
 =====================================================
-   PYTHONANYWHERE KURULUM TALİMATLARI
-   Ücretsiz - Bilgisayar kapalı olsa da çalışır
+   ŞANTİYE DEFTERİ — PYTHONANYWHERE KURULUM
+   Müteahhitler · Demirciler · Puantaj · Mobil Vinç
 =====================================================
 
-1. HESAP AÇ
-   - https://www.pythonanywhere.com adresine git
-   - "Start for free" tıkla
-   - Hesap oluştur (ücretsiz)
+YÜKLENECEK DOSYALAR (hepsi AYNI klasöre: /home/KULLANICIADIN/)
+   app.py      ana menü, ikon, ayarlar
+   ortak.py    ortak altyapı (yedek, ₺ biçimi, görünüm)
+   puantaj.py  puantaj (eskisiyle aynı)
+   vinc.py     mobil vinç
+   cari.py     müteahhit + demirci + gün sonu raporu
+   puantaj.db  VERİ (eski siteden indirilen; yoksa boş oluşur)
 
-2. DOSYAYI YÜKLE
-   - Dashboard'da "Files" sekmesine git
-   - "mysite" klasörüne gir (yoksa oluştur)
-   - "Upload a file" ile app.py dosyasını yükle
+   DİKKAT: app.py diğer 4 .py dosyasına bağlıdır. Biri eksikse
+   site HİÇ açılmaz ("Unhandled Exception"). Error log'da
+   "No module named ..." yazar -> eksik dosyayı yükleyin.
 
-3. WEB APP OLUŞTUR
-   - "Web" sekmesine git
-   - "Add a new web app" tıkla
-   - "Flask" seç
-   - Python 3.10 seç
-   - Path olarak: /home/KULLANICIADIN/mysite/app.py yaz
+   Yüklenmeyecekler: eski/ klasörü, test_*.py, conftest.py, .md dosyaları.
 
-4. ŞİFRE DEĞİŞTİR (ÖNEMLİ!)
-   - Files > mysite > app.py dosyasını aç
-   - Satır 15-16'daki şifreyi değiştir:
-     API_USERNAME = "santiye"
-     API_PASSWORD = "2024"  # KENDİ ŞİFRENİ YAZ!
+1. WEB UYGULAMASI
+   - Web > Add a new web app > Flask > en yeni Python
+   - WSGI dosyası (Web sekmesinde bağlantı) şöyle olmalı:
+       project_home = '/home/KULLANICIADIN'
+       from app import app as application
 
-5. ÇALIŞTIR
-   - Web sekmesinde yeşil "Reload" butonuna tıkla
-   - Adresin: https://KULLANICIADIN.pythonanywhere.com
+2. PDF KÜTÜPHANESİ (bir kez)
+   - Consoles > Bash:  pip3 install --user reportlab
 
-6. TELEFONA EKLE
-   - iPhone'da Safari'yi aç
-   - Adresi gir: https://KULLANICIADIN.pythonanywhere.com
-   - Kullanıcı adı ve şifreni gir
-   - Paylaş butonu > "Ana Ekrana Ekle"
+3. ÇALIŞTIR
+   - Web sekmesinde yeşil "Reload"
+   - Adres: https://KULLANICIADIN.pythonanywhere.com
 
-=====================================================
-   ARTIK HER YERDEN ERİŞEBİLİRSİN!
-   - Bilgisayar kapalı olsa da çalışır
-   - WiFi gerekmez, mobil veri ile de çalışır
-   - Şantiyeden, evden, her yerden giriş yapabilirsin
+4. TELEFONA EKLE
+   - iPhone Safari'de adresi açın > Paylaş > "Ana Ekrana Ekle"
+   - Ana ekranda sarı baretli "Şantiye" ikonu çıkar.
+
+5. İLK AYAR
+   - Ana menü > Ayarlar > "Rapor başlığı": firmanızın adı
+     (Gün sonu PDF'inin en üstünde yazar.)
+
+ESKİ SİTEDEN YENİSİNE GEÇİŞ (veri kaybetmeden)
+   a) Eski sitede son girişleri yapın, sonra girişleri bırakın.
+   b) Eski hesap Files > puantaj.db > indir
+      (ya da eski puantaj > Ayarlar > Veritabanını İndir).
+   c) Yeni hesaba puantaj.db'yi yükleyin (deneme verisinin üzerine yazar!).
+   d) Reload. Puantaj ve vinç kayıtlarını kontrol edin.
+   e) Bundan sonra sadece yeni siteyi kullanın.
+
+GERİ DÖNÜŞ (yeni sürümde sorun çıkarsa)
+   - eski/app_tek_dosya.py dosyasını "app.py" adıyla yükleyin + Reload.
+     Puantaj ve vinç eski haliyle döner (aynı puantaj.db'yi okur).
+     Müteahhit/demirci tabloları veritabanında durur, kaybolmaz.
+
+YEDEK
+   - Sunucu her gün kendiliğinden yedek alır: backups/ (son 14 gün).
+   - Ana menü > Ayarlar > "Tüm Verileri İndir" ile bilgisayarınıza alın.
+
+ÜCRETSİZ HESAP
+   - 3 ayda bir Web sekmesinde "Run until 3 months from today"
+     butonuna basın; basılmazsa site durur (veri silinmez).
 =====================================================
