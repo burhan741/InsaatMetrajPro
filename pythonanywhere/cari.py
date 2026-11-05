@@ -45,6 +45,8 @@ TURLER = {
         'gider_ornek': 'Pompa, nakliye, katkı…',
         'gider_yardim': 'Pompa, nakliye gibi beton dışı masrafları yazın. Giderler hakedişe eklenir (alacağınızı artırır).',
         'gun_odeme_etiket': 'Günün tahsilatı',
+        'yon': 'alacak',      # kalan = para bana gelecek -> yesil (TASARIM_KURALLARI 2)
+        'ikon': 'bina',
     },
     'demirci': {
         'tur': 'demirci', 'baslik': 'Demirciler', 'tekil': 'Demirci',
@@ -57,6 +59,8 @@ TURLER = {
         'gider_ornek': 'Nakliye, bağ teli, vinç…',
         'gider_yardim': 'Nakliye, bağ teli gibi işe ait ek masrafları yazın. Giderler hakedişe eklenir (borcunuzu artırır).',
         'gun_odeme_etiket': 'Günün ödemesi',
+        'yon': 'borc',        # kalan = benim borcum -> kirmizi
+        'ikon': 'izgara',
     },
 }
 AKTIF_TURLER = ('muteahhit', 'demirci')
@@ -182,6 +186,10 @@ def firma_listesi(conn, tur):
     firmalar.sort(key=lambda x: ortak.tr_kucuk(x['ad']))
     firmalar.sort(key=lambda x: x['son_hareket']['tarih'] if x['son_hareket'] else '', reverse=True)
     return firmalar
+
+
+def firma_sayisi(conn, tur):
+    return conn.execute('SELECT COUNT(*) FROM cari_firma WHERE tur = ?', (tur,)).fetchone()[0]
 
 
 def tur_toplam_kalan(conn, tur):
@@ -561,6 +569,30 @@ def _dosya_adi(metin):
     return re.sub(r'[^A-Za-z0-9]+', '_', metin.translate(tablo)).strip('_') or 'firma'
 
 
+def _pdf_renk(colors):
+    """TEMA renkleri reportlab rengi olarak (PDF de ekranla ayni paletten)."""
+    return {ad: colors.HexColor(kod) for ad, kod in ortak.TEMA.items()}
+
+
+def _pdf_ust_bant(renk):
+    """Her sayfanin ustune ince lacivert bant (TASARIM_KURALLARI 7)."""
+    def ciz(canvas, doc):
+        canvas.saveState()
+        canvas.setFillColor(renk['lacivert'])
+        genislik, yukseklik = doc.pagesize
+        canvas.rect(0, yukseklik - 10, genislik, 10, stroke=0, fill=1)
+        canvas.restoreState()
+    return ciz
+
+
+def _pdf_kalan_rengi(renk, kalan, yon):
+    if kalan < 0:
+        return renk['uyari']
+    if kalan == 0:
+        return renk['metin-soluk']
+    return renk['alacak'] if yon == 'alacak' else renk['borc']
+
+
 def pdf_para(deger, font_adi):
     """DejaVu/Arial fontunda ₺ isareti var; Helvetica yedeginde yok -> 'TL' yazilir."""
     metin = ortak.para_tl(deger)
@@ -599,14 +631,16 @@ def api_firma_pdf(firma_id):
     def tl(x):
         return pdf_para(x, font_n)
 
+    renk = _pdf_renk(colors)
     stiller = getSampleStyleSheet()
     s_baslik = ParagraphStyle('CdBaslik', parent=stiller['Title'], fontName=font_b, fontSize=17,
-                              alignment=0, spaceAfter=2)
+                              alignment=0, spaceAfter=2, textColor=renk['lacivert'])
     s_alt = ParagraphStyle('CdAlt', parent=stiller['Normal'], fontName=font_n, fontSize=9.5,
-                           textColor=colors.HexColor('#555555'))
-    s_hucre = ParagraphStyle('CdHucre', parent=stiller['Normal'], fontName=font_n, fontSize=8.5, leading=10.5)
+                           textColor=renk['metin-soluk'])
+    s_hucre = ParagraphStyle('CdHucre', parent=stiller['Normal'], fontName=font_n, fontSize=8.5, leading=10.5,
+                             textColor=renk['metin'])
     s_hucre_alt = ParagraphStyle('CdHucreAlt', parent=s_hucre, fontSize=7.5, leading=9,
-                                 textColor=colors.HexColor('#666666'))
+                                 textColor=renk['metin-soluk'])
 
     aralik = 'Tüm kayıtlar'
     if bas or bit:
@@ -645,17 +679,19 @@ def api_firma_pdf(firma_id):
 
     t = Table(tablo, repeatRows=1, colWidths=[2.0 * cm, 6.2 * cm, 2.1 * cm, 2.5 * cm, 2.6 * cm, 2.6 * cm])
     stil = [
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#14161a')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('BACKGROUND', (0, 0), (-1, 0), renk['lacivert-acik']),
+        ('TEXTCOLOR', (0, 0), (-1, 0), renk['lacivert']),
+        ('TEXTCOLOR', (0, 1), (-1, -1), renk['metin']),
+        ('TEXTCOLOR', (5, 1), (5, -1), renk['odeme']),
         ('FONTNAME', (0, 0), (-1, 0), font_b),
         ('FONTNAME', (0, 1), (-1, -1), font_n),
         ('FONTNAME', (0, -1), (-1, -1), font_b),
         ('FONTSIZE', (0, 0), (-1, -1), 8.5),
         ('ALIGN', (2, 0), (-1, -1), 'RIGHT'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LINEBELOW', (0, 0), (-1, -2), 0.4, colors.HexColor('#dddddd')),
-        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor('#14161a')),
-        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#f2f3f5')),
+        ('LINEBELOW', (0, 0), (-1, -2), 0.5, renk['cizgi']),
+        ('LINEABOVE', (0, -1), (-1, -1), 0.8, renk['cizgi']),
+        ('BACKGROUND', (0, -1), (-1, -1), renk['zemin-2']),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]
@@ -664,7 +700,7 @@ def api_firma_pdf(firma_id):
     el.append(Spacer(1, 12))
 
     kalan = v['kalan']
-    etiket = 'FAZLA ÖDEME' if kalan < 0 else ayar['kalan_etiket'].upper()
+    etiket = 'KALAN — ' + ('fazla ödeme' if kalan < 0 else ('alacak' if ayar['yon'] == 'alacak' else 'borç'))
     if bit:
         etiket += ' (%s itibarıyla)' % ortak.tarih_tr(bit)
     ozet = [[etiket, tl(abs(kalan))]]
@@ -673,7 +709,7 @@ def api_firma_pdf(firma_id):
         ('FONTNAME', (0, 0), (-1, -1), font_b),
         ('FONTSIZE', (0, 0), (-1, -1), 13),
         ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
-        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#14161a')),
+        ('BACKGROUND', (0, 0), (-1, -1), renk['lacivert']),
         ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
         ('TOPPADDING', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
@@ -688,7 +724,7 @@ def api_firma_pdf(firma_id):
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm,
                             leftMargin=1.5 * cm - 6, rightMargin=1.5 * cm - 6,
                             title='%s - Hesap Dokumu' % firma['ad'])
-    doc.build(el)
+    doc.build(el, onFirstPage=_pdf_ust_bant(renk), onLaterPages=_pdf_ust_bant(renk))
     buf.seek(0)
     ad = 'dokum_%s_%s.pdf' % (_dosya_adi(firma['ad']), ortak.bugun_tr())
     # Satir ici: Safari PDF'i acar, kullanici Paylas menusunden WhatsApp/Mail'e gonderir.
@@ -728,13 +764,15 @@ def api_gun_sonu_pdf(tur):
     def tl(x):
         return pdf_para(x, font_n)
 
-    koyu = colors.HexColor('#14161a')
-    soluk = colors.HexColor('#666666')
-    cizgi = colors.HexColor('#dddddd')
+    renk = _pdf_renk(colors)
+    koyu = renk['lacivert']
+    soluk = renk['metin-soluk']
+    cizgi = renk['cizgi']
     stiller = getSampleStyleSheet()
-    s_firma = ParagraphStyle('GsFirma', parent=stiller['Normal'], fontName=font_b, fontSize=18, leading=22)
+    s_firma = ParagraphStyle('GsFirma', parent=stiller['Normal'], fontName=font_b, fontSize=18, leading=22,
+                             textColor=koyu)
     s_rapor = ParagraphStyle('GsRapor', parent=stiller['Normal'], fontName=font_b, fontSize=11, leading=14,
-                             alignment=2)
+                             alignment=2, textColor=koyu)
     s_rapor_alt = ParagraphStyle('GsRaporAlt', parent=s_rapor, fontName=font_n, fontSize=10, textColor=soluk)
     s_alt = ParagraphStyle('GsAlt', parent=stiller['Normal'], fontName=font_n, fontSize=9, textColor=soluk)
     s_bolum = ParagraphStyle('GsBolum', parent=stiller['Normal'], fontName=font_b, fontSize=11.5, leading=14,
@@ -743,7 +781,11 @@ def api_gun_sonu_pdf(tur):
     s_hucre_alt = ParagraphStyle('GsHucreAlt', parent=s_hucre, fontSize=7.5, leading=9, textColor=soluk)
     s_kutu_e = ParagraphStyle('GsKutuE', parent=stiller['Normal'], fontName=font_n, fontSize=8, textColor=soluk,
                               leading=10)
-    s_kutu_d = ParagraphStyle('GsKutuD', parent=stiller['Normal'], fontName=font_b, fontSize=13, leading=16)
+    s_kutu_d = ParagraphStyle('GsKutuD', parent=stiller['Normal'], fontName=font_b, fontSize=13, leading=16,
+                              textColor=renk['metin'])
+    s_kutu_odeme = ParagraphStyle('GsKutuO', parent=s_kutu_d, textColor=renk['odeme'])
+    s_kutu_kalan = ParagraphStyle('GsKutuK', parent=s_kutu_d,
+                                  textColor=_pdf_kalan_rengi(renk, v['ozet']['toplam_kalan'], ayar['yon']))
 
     tam = 18 * cm
     el = []
@@ -761,22 +803,23 @@ def api_gun_sonu_pdf(tur):
     # --- Ozet kutulari
     o = v['ozet']
     kutular = [
-        ('Toplam miktar', '%s %s' % (ortak.miktar_tr(o['miktar'], 3), ayar['birim'])),
-        ('Günün hakedişi', tl(o['hakedis'])),
-        (ayar['gun_odeme_etiket'], tl(o['odenen'])),
+        ('Toplam miktar', '%s %s' % (ortak.miktar_tr(o['miktar'], 3), ayar['birim']), s_kutu_d),
+        ('Günün hakedişi', tl(o['hakedis']), s_kutu_d),
+        (ayar['gun_odeme_etiket'], tl(o['odenen']), s_kutu_odeme),
         (('Gün sonu ' + ayar['toplam_etiket'].lower()) if o['toplam_kalan'] >= 0 else 'Gün sonu fazla ödeme',
-         tl(abs(o['toplam_kalan']))),
+         tl(abs(o['toplam_kalan'])), s_kutu_kalan),
     ]
-    kt = Table([[[Paragraph(escape(e), s_kutu_e), Paragraph(escape(d), s_kutu_d)] for e, d in kutular]],
+    kt = Table([[[Paragraph(escape(e), s_kutu_e), Paragraph(escape(d), st)] for e, d, st in kutular]],
                colWidths=[tam / 4] * 4)
     kt.setStyle(TableStyle([('BOX', (0, 0), (-1, -1), 0.8, cizgi), ('INNERGRID', (0, 0), (-1, -1), 0.8, cizgi),
-                            ('BACKGROUND', (3, 0), (3, 0), colors.HexColor('#f2f3f5')),
+                            ('BACKGROUND', (3, 0), (3, 0), renk['lacivert-acik']),
                             ('TOPPADDING', (0, 0), (-1, -1), 7), ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
                             ('LEFTPADDING', (0, 0), (-1, -1), 8), ('VALIGN', (0, 0), (-1, -1), 'TOP')]))
     el += [kt, Spacer(1, 14)]
 
     tablo_stili = [
-        ('BACKGROUND', (0, 0), (-1, 0), koyu), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('BACKGROUND', (0, 0), (-1, 0), renk['lacivert-acik']), ('TEXTCOLOR', (0, 0), (-1, 0), koyu),
+        ('TEXTCOLOR', (0, 1), (-1, -1), renk['metin']),
         ('FONTNAME', (0, 0), (-1, 0), font_b), ('FONTNAME', (0, 1), (-1, -1), font_n),
         ('FONTSIZE', (0, 0), (-1, -1), 8.5), ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('LINEBELOW', (0, 0), (-1, -1), 0.4, cizgi),
@@ -797,9 +840,12 @@ def api_gun_sonu_pdf(tur):
         ft.append(['Toplam', '%s %s' % (ortak.miktar_tr(o['miktar'], 3), ayar['birim']), tl(o['hakedis']),
                    tl(o['odenen']), ''])
         t = Table(ft, repeatRows=1, colWidths=[6.6 * cm, 2.4 * cm, 3 * cm, 3 * cm, 3 * cm])
-        t.setStyle(TableStyle(tablo_stili + [
-            ('FONTNAME', (0, -1), (-1, -1), font_b), ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#f2f3f5')),
-            ('LINEABOVE', (0, -1), (-1, -1), 1, koyu)]))
+        kalan_renkleri = [('TEXTCOLOR', (4, i), (4, i), _pdf_kalan_rengi(renk, s['kalan'], ayar['yon']))
+                          for i, s in enumerate(v['firmalar'], start=1)]
+        t.setStyle(TableStyle(tablo_stili + kalan_renkleri + [
+            ('TEXTCOLOR', (3, 1), (3, -1), renk['odeme']),
+            ('FONTNAME', (0, -1), (-1, -1), font_b), ('BACKGROUND', (0, -1), (-1, -1), renk['zemin-2']),
+            ('LINEABOVE', (0, -1), (-1, -1), 0.8, cizgi)]))
         el += [t, Spacer(1, 4)]
         if any(s['kalan'] < 0 for s in v['firmalar']):
             el.append(Paragraph('Eksi kalan = fazla ödeme.', s_alt))
@@ -815,7 +861,8 @@ def api_gun_sonu_pdf(tur):
                        [Paragraph(escape(ust_m), s_hucre), Paragraph(escape(alt_m), s_hucre_alt)],
                        '' if odeme else tl(h['tutar']), tl(h['tutar']) if odeme else ''])
         t2 = Table(ht, repeatRows=1, colWidths=[5 * cm, 7 * cm, 3 * cm, 3 * cm])
-        t2.setStyle(TableStyle(tablo_stili + [('ALIGN', (1, 0), (1, -1), 'LEFT')]))
+        t2.setStyle(TableStyle(tablo_stili + [('ALIGN', (1, 0), (1, -1), 'LEFT'),
+                                              ('TEXTCOLOR', (3, 1), (3, -1), renk['odeme'])]))
         el.append(t2)
 
     # --- Olusturma zamani + imza alani
@@ -834,7 +881,7 @@ def api_gun_sonu_pdf(tur):
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm,
                             leftMargin=1.5 * cm - 6, rightMargin=1.5 * cm - 6,
                             title='Gun Sonu Raporu %s' % ortak.tarih_tr(tarih))
-    doc.build(el)
+    doc.build(el, onFirstPage=_pdf_ust_bant(renk), onLaterPages=_pdf_ust_bant(renk))
     buf.seek(0)
     ek = ('_' + _dosya_adi(v['kapsam'])) if fid is not None else ''
     ad = 'gun_sonu_%s%s_%s.pdf' % (tur, ek, tarih)
@@ -845,87 +892,30 @@ def api_gun_sonu_pdf(tur):
 # SAYFALAR
 # ====================================================================
 CARI_CSS = r'''
-body.alt-butonlu{padding-bottom:calc(96px + env(safe-area-inset-bottom))}
-.alt-baslik{font-size:14px;color:var(--soluk);margin-top:2px}
-.ust-btnlar{display:flex;gap:8px;align-items:center;flex-shrink:0}
-.hap-btn{height:36px;padding:0 14px;border-radius:18px;border:1px solid var(--cizgi);background:var(--kart);color:var(--tx);display:flex;align-items:center;font-size:14px;font-weight:600;text-decoration:none;white-space:nowrap}
-.alan select{background:#fff}
-.gs-satir{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--cizgi);text-decoration:none;color:var(--tx)}
-.gs-satir:last-child{border-bottom:none}
-.gs-satir .sol{min-width:0}
-.gs-satir .ad{font-size:15px;font-weight:600;overflow-wrap:anywhere}
-.gs-satir .alt{font-size:12px;color:var(--soluk);margin-top:2px}
-.gs-satir .sag{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
-.gs-satir .sag .t{font-size:14px;font-weight:700}
-.gs-satir .sag .n{font-size:11px;color:var(--soluk)}
-.alt-baslik b{font-variant-numeric:tabular-nums}
-.arama{width:100%;padding:11px 12px;border:1px solid var(--cizgi);border-radius:10px;background:#fff;color:var(--tx);font-size:16px;margin-bottom:12px;-webkit-appearance:none;appearance:none}
-.alt-sabit{position:fixed;left:0;right:0;bottom:0;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:linear-gradient(to top,var(--bg) 70%,#f4f5f700);z-index:5}
-.firma-kalan{text-align:right;white-space:nowrap}
-.firma-kalan .tutar{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
-.firma-kalan .not{font-size:11px;color:var(--soluk)}
-.kalem-satir{display:grid;grid-template-columns:minmax(0,1fr) 110px 36px;gap:6px;margin-bottom:6px}
-.kalem-satir input{width:100%;padding:11px 10px;border:1px solid var(--cizgi);border-radius:10px;background:#fff;color:var(--tx);font-size:16px;-webkit-appearance:none;appearance:none}
-.kalem-satir .k-sil{border:none;background:var(--bg);border-radius:10px;font-size:20px;color:var(--soluk);cursor:pointer}
-.bilgi{font-size:12px;color:var(--soluk);margin:4px 0 12px;line-height:1.4}
-.btn-link{background:none;border:none;color:var(--tx);font-size:15px;font-weight:600;padding:8px 0;cursor:pointer;text-decoration:underline}
-.siyah-ust{background:#14161a;color:#fff;margin:calc(-12px - env(safe-area-inset-top)) calc(-16px - env(safe-area-inset-right)) 14px calc(-16px - env(safe-area-inset-left));
-  padding:calc(12px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 18px calc(16px + env(safe-area-inset-left))}
-.su-ust{display:flex;justify-content:space-between;align-items:center}
-.su-geri{color:#c9ccd1;text-decoration:none;font-size:15px;padding:4px 0}
-.su-btnlar{display:flex;gap:8px}
-.su-btn{height:34px;padding:0 12px;border-radius:17px;border:1px solid #ffffff33;background:#ffffff14;color:#fff;font-size:13px;font-weight:600;cursor:pointer}
-.su-btn.yuvarlak{width:34px;padding:0}
-.su-ad{font-size:22px;font-weight:700;margin-top:10px;overflow-wrap:anywhere}
-.su-etiket{font-size:13px;color:#c9ccd1;margin-top:12px}
-.su-kalan{font-size:32px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
-.su-kalan.fazla{color:#ffb4a9}
-.su-ozet{font-size:12px;color:#c9ccd1;margin-top:4px}
-.kart-kutu{background:var(--kart);border:1px solid var(--cizgi);border-radius:14px;padding:12px;margin-bottom:14px}
-.kart-kutu .secim{margin-bottom:10px}
-.iki-alan{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.onizleme{font-size:13px;color:var(--soluk);margin:-4px 0 10px;min-height:18px}
-.onizleme b{color:var(--tx)}
-.cipler{display:flex;gap:6px;margin:-4px 0 12px}
-.cip{border:1px solid var(--cizgi);background:#fff;border-radius:16px;padding:6px 12px;font-size:13px;color:var(--tx);cursor:pointer}
-.defter-baslik{display:flex;justify-content:space-between;align-items:baseline;margin:4px 4px 6px}
-.defter-baslik h2{font-size:16px}
-.d-grid{display:grid;grid-template-columns:66px minmax(0,1fr) 76px 76px;gap:6px;align-items:center;width:100%}
-.d-bas{padding:8px 12px;font-size:11px;font-weight:700;color:var(--soluk);text-transform:uppercase;letter-spacing:.3px;border-bottom:1px solid var(--cizgi);background:#fafafa}
-.defter .satir-ic{padding:10px 12px}
-.defter .satir-sol{flex:1}
-.d-tarih{font-size:12px;color:var(--soluk);font-variant-numeric:tabular-nums}
-.d-acik .u{font-size:14px;font-weight:600;overflow-wrap:anywhere}
-.d-acik .a{font-size:12px;color:var(--soluk);margin-top:1px;overflow-wrap:anywhere}
-.d-tutar{font-size:13px;font-weight:600;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.d-sag{text-align:right}
-.onceki{padding:11px 12px;border-bottom:1px solid var(--cizgi);background:#fafafa;cursor:pointer;-webkit-tap-highlight-color:transparent}
-.onceki .d-acik .u{font-weight:600;color:var(--soluk)}
-.d-toplam{padding:10px 12px;border-top:2px solid var(--tx);font-weight:700}
-.d-toplam .d-tutar{font-weight:700}
-.d-kalan{display:flex;justify-content:space-between;align-items:center;padding:14px 12px;background:#14161a;color:#fff}
-.d-kalan .e{font-size:14px;font-weight:700;letter-spacing:.3px;text-transform:uppercase}
-.d-kalan .t{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
-.d-kalan.fazla .t{color:#ffb4a9}
+.kalem-baslik{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.defter-ozet{font-size:13px;font-weight:600;color:var(--metin-soluk);text-transform:none;letter-spacing:0}
 '''
 
 # Firma ekle/duzenle formu: liste sayfasinda ve firma sayfasinda AYNI.
+# (Sablona degisken olarak eklenir -> icinde Jinja ifadesi KULLANILMAZ.)
 FIRMA_FORM_HTML = r'''
-<div class="modal-arka gizli" id="firma-form" onclick="arkaTik(event, 'firma-form')">
-  <div class="modal">
-    <div class="modal-ust"><h2 id="ff-baslik">Firma</h2><button class="kapat" onclick="modalKapat('firma-form')" aria-label="Kapat">&times;</button></div>
+<div class="panel" id="firma-form" role="dialog" aria-modal="true" aria-labelledby="ff-baslik">
+  <header class="bant kisa">
+    <div class="bant-ust"><button class="bant-geri" onclick="modalKapat('firma-form')">Vazgeç</button></div>
+    <h1 id="ff-baslik">Firma</h1>
+  </header>
+  <div class="icerik">
     <div class="alan"><label for="ff-ad">Firma adı</label><input type="text" id="ff-ad" autocomplete="off"></div>
-    <label style="display:block;font-size:12px;color:var(--soluk);margin-bottom:4px" id="ff-kalem-etiket">Birim fiyat kalemleri</label>
+    <div class="kalem-baslik"><span class="etiket" id="ff-kalem-etiket">Birim fiyat kalemleri</span></div>
     <div id="ff-kalemler"></div>
-    <button type="button" class="btn-link" onclick="kalemSatiriEkle()">+ Yeni kalem ekle</button>
-    <div class="bilgi" id="ff-bilgi"></div>
+    <button type="button" class="btn-metin" onclick="kalemSatiriEkle()">+ Yeni kalem ekle</button>
+    <div class="bilgi" id="ff-bilgi" style="margin-top:6px"></div>
     <button class="btn" id="ff-kaydet" onclick="firmaKaydet()">Kaydet</button>
   </div>
 </div>
 '''
 
 FIRMA_FORM_JS = r'''
-function el(id) { return document.getElementById(id); }
 var FF_ID = null;
 function firmaFormAc(firma, kalemler) {
   FF_ID = firma ? firma.id : null;
@@ -945,10 +935,10 @@ function kalemSatiriEkle(k) {
   var div = document.createElement('div');
   div.className = 'kalem-satir';
   if (k.id) div.setAttribute('data-id', k.id);
-  div.innerHTML = '<input type="text" class="k-ad" autocomplete="off" placeholder="' + escHtml(AYAR.kalem_ornek) + '" value="' + escHtml(k.ad || '') + '">' +
-    '<input type="text" class="k-fiyat" inputmode="decimal" autocomplete="off" placeholder="₺/' + escHtml(AYAR.birim) + '" value="' + (k.birim_fiyat ? tlInputYaz(k.birim_fiyat) : '') + '">' +
-    '<button type="button" class="k-sil" aria-label="Kalemi sil" title="Kalemi sil">&times;</button>';
-  div.querySelector('.k-sil').onclick = function() { div.parentNode.removeChild(div); };
+  div.innerHTML = '<input type="text" class="girdi k-ad" autocomplete="off" aria-label="Kalem adı" placeholder="' + escHtml(AYAR.kalem_ornek) + '" value="' + escHtml(k.ad || '') + '">' +
+    '<input type="text" class="girdi k-fiyat" inputmode="decimal" autocomplete="off" aria-label="Birim fiyat" placeholder="₺/' + escHtml(AYAR.birim) + '" value="' + (k.birim_fiyat ? tlInputYaz(k.birim_fiyat) : '') + '">' +
+    '<button type="button" class="kalem-sil" aria-label="Kalemi sil" title="Kalemi sil">' + IKON.kapat + '</button>';
+  div.querySelector('.kalem-sil').onclick = function() { div.parentNode.removeChild(div); };
   el('ff-kalemler').appendChild(div);
 }
 function firmaKaydet() {
@@ -979,6 +969,7 @@ function firmaKaydet() {
   }).catch(function(e) { toast(e.message); })
     .then(function() { btn.disabled = false; });
 }
+function miktarTR(n) { return Number(n || 0).toLocaleString('tr-TR', {maximumFractionDigits: 3}); }
 '''
 
 LISTE_HTML = r'''<!DOCTYPE html>
@@ -989,27 +980,36 @@ LISTE_HTML = r'''<!DOCTYPE html>
 <style>{{ ortak_css|safe }}{{ cari_css|safe }}</style>
 </head>
 <body class="alt-butonlu">
-<a href="/" class="geri">&#8249; Ana Menü</a>
-<div class="ust">
-  <div>
-    <h1>{{ ayar.baslik }}</h1>
-    <div class="alt-baslik" id="toplam">&nbsp;</div>
+<header class="bant">
+  <div class="bant-ust">
+    <a href="/" class="bant-geri">{{ ikon.geri|safe }}Ana Menü</a>
+    <div class="bant-btnlar">
+      <a class="bant-btn" href="/{{ ayar.tur }}/gun-sonu" title="Günün özeti ve A4 PDF raporu">{{ ikon.takvim|safe }}Gün Sonu</a>
+      <button class="bant-btn yuvarlak" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
+    </div>
   </div>
-  <div class="ust-btnlar">
-    <a class="hap-btn" href="/{{ ayar.tur }}/gun-sonu" title="Günün özeti ve A4 PDF raporu">Gün Sonu</a>
-    <button class="yardim-btn" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
+  <h1>{{ ayar.baslik }}</h1>
+  <div class="bant-alt" id="toplam">&nbsp;</div>
+</header>
+
+<main class="icerik">
+  <div class="yuzen yuzen-arama">
+    {{ ikon.arama|safe }}
+    <input type="search" id="arama" placeholder="Firma ara…" oninput="ciz()" autocomplete="off" aria-label="Firma ara">
   </div>
-</div>
-<input type="search" class="arama" id="arama" placeholder="Firma ara…" oninput="ciz()" autocomplete="off">
-<div id="liste"><div class="bos">Yükleniyor…</div></div>
-<div class="ipucu" id="ipucu" style="display:none">Açmak için dokunun · Düzenle / Sil için sola kaydırın</div>
+  <div class="bolum" id="liste"><div class="bos">Yükleniyor…</div></div>
+  <div class="ipucu" id="ipucu" style="display:none">Açmak için dokunun · Düzenle / Sil için sola kaydırın</div>
+</main>
 <div class="alt-sabit"><button class="btn" onclick="firmaFormAc(null, null)">{{ ayar.ekle_btn }}</button></div>
 
 {{ firma_form_html|safe }}
 
-<div class="modal-arka gizli" id="yardim" onclick="arkaTik(event, 'yardim')">
-  <div class="modal yardim">
-    <div class="modal-ust"><h2>{{ ayar.baslik }} — Nasıl kullanılır?</h2><button class="kapat" onclick="modalKapat('yardim')" aria-label="Kapat">&times;</button></div>
+<div class="panel" id="yardim" role="dialog" aria-modal="true" aria-labelledby="yardim-b">
+  <header class="bant kisa">
+    <div class="bant-ust"><button class="bant-geri" onclick="modalKapat('yardim')">{{ ikon.geri|safe }}Kapat</button></div>
+    <h1 id="yardim-b">{{ ayar.baslik }} — Nasıl kullanılır?</h1>
+  </header>
+  <div class="icerik yardim">
     <ol>
       <li><b>{{ ayar.ekle_btn }}</b> ile firmayı ekleyin: firma adı ve birim fiyat kalemleri (ör. {{ ayar.kalem_ornek }} — ₺/{{ ayar.birim }}).</li>
       <li>Firmaya dokunun; açılan sayfada <b>{{ ayar.is_sekme }}</b>, <b>Gider</b> ve <b>{{ ayar.odeme_sekme }}</b> satırlarını girin.</li>
@@ -1017,8 +1017,8 @@ LISTE_HTML = r'''<!DOCTYPE html>
       <li><b>Sil</b> firmayı ve tüm kayıtlarını kalıcı olarak siler; onay sorulur.</li>
       <li><b>Gün Sonu</b> (sağ üstte): seçtiğiniz günün özeti ve imzalı A4 PDF raporu.</li>
     </ol>
-    <p>Listede her firmanın güncel kalanı görünür. {{ ayar.yon_aciklama }} Eksi çıkarsa <b>Fazla ödeme</b> yazar.</p>
-    <button class="btn" style="margin-top:14px" onclick="modalKapat('yardim')">Anladım</button>
+    <p>Listede her firmanın güncel kalanı görünür. {{ ayar.yon_aciklama }} Eksi çıkarsa turuncu <b>fazla ödeme</b> yazar.</p>
+    <button class="btn" onclick="modalKapat('yardim')">Anladım</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -1037,18 +1037,18 @@ function sonHareketMetni(h) {
   if (h.tip === 'gider') return t + 'Gider ' + fmtTL(h.tutar);
   return t + AYAR.odeme_fiil + ' ' + fmtTL(h.tutar);
 }
-function miktarTR(n) { return Number(n || 0).toLocaleString('tr-TR', {maximumFractionDigits: 3}); }
 
 function yukle() {
   apiFetch('/api/cari/' + AYAR.tur + '/firmalar').then(function(r) {
     FIRMALAR = r.firmalar;
     FIRMA_MAP = {};
     for (var i = 0; i < FIRMALAR.length; i++) FIRMA_MAP[FIRMALAR[i].id] = FIRMALAR[i];
-    var t = r.toplam_kalan;
-    el('toplam').innerHTML = FIRMALAR.length ? (AYAR.toplam_etiket + ': <b class="' + (t < 0 ? 'kirmizi' : '') + '">' + fmtTL(t) + '</b>') : '&nbsp;';
+    var ks = kalanSunum(r.toplam_kalan, AYAR.yon);
+    el('toplam').innerHTML = FIRMALAR.length ? (escHtml(AYAR.toplam_etiket) + ': <b>' + ks.tutar + '</b>' +
+      (r.toplam_kalan < 0 ? ' (fazla ödeme)' : '')) : '&nbsp;';
     ciz();
   }).catch(function(e) {
-    el('liste').innerHTML = '<div class="bos kirmizi">Yüklenemedi: ' + escHtml(e.message) + '</div>';
+    el('liste').innerHTML = '<div class="bos renk-borc">Yüklenemedi: ' + escHtml(e.message) + '</div>';
   });
 }
 
@@ -1060,18 +1060,13 @@ function ciz() {
     var f = FIRMALAR[i];
     if (q && f.ad.toLocaleLowerCase('tr').indexOf(q) < 0) continue;
     adet++;
-    var k = f.bakiye.kalan;
-    var sol = '<div class="baslik">' + escHtml(f.ad) + '</div><div class="alt">' + escHtml(sonHareketMetni(f.son_hareket)) + '</div>';
-    var sag = '<div class="firma-kalan"><div class="tutar' + (k < 0 ? ' kirmizi' : '') + '">' + fmtTL(Math.abs(k)) + '</div>' +
-              '<div class="not">' + (k < 0 ? 'Fazla ödeme' : AYAR.kalan_etiket) + '</div></div>';
-    html += satirHtml(f.id, sol, sag);
+    var ks = kalanSunum(f.bakiye.kalan, AYAR.yon);
+    html += satirHtml(f.id, satirIcerik(AYAR.ikon, f.ad, sonHareketMetni(f.son_hareket), tutarHtml(ks.tutar, ks.sinif, ks.etiket)));
   }
   if (!FIRMALAR.length) {
-    html = '<div class="liste"><div class="bos">Henüz ' + escHtml(AYAR.tekil.toLocaleLowerCase('tr')) + ' yok.<br>Alttaki butonla ilk firmayı ekleyin.</div></div>';
+    html = '<div class="bos">Henüz ' + escHtml(AYAR.tekil.toLocaleLowerCase('tr')) + ' yok.<br>Alttaki butonla ilk firmayı ekleyin.</div>';
   } else if (!adet) {
-    html = '<div class="liste"><div class="bos">Aramayla eşleşen firma yok.</div></div>';
-  } else {
-    html = '<div class="liste">' + html + '</div>';
+    html = '<div class="bos">Aramayla eşleşen firma yok.</div>';
   }
   el('liste').innerHTML = html;
   el('ipucu').style.display = adet ? 'block' : 'none';
@@ -1086,12 +1081,14 @@ function firmaDuzenle(id) {
 function firmaSil(id) {
   var f = FIRMA_MAP[id];
   if (!f) return;
-  if (!onayla(f.ad + ' ve tüm kayıtları silinecek. Bu işlem geri alınamaz. Emin misiniz?')) { satirKapat(); return; }
-  apiFetch('/api/cari/firma/' + id, {method: 'DELETE'}).then(function() {
-    ACIK_SATIR = null;
-    toast('Silindi');
-    yukle();
-  }).catch(function(e) { toast(e.message); });
+  onayIste('Silinsin mi?', f.ad + ' ve tüm kayıtları silinecek. Bu işlem geri alınamaz.', 'Sil').then(function(evet) {
+    if (!evet) { satirKapat(); return; }
+    apiFetch('/api/cari/firma/' + id, {method: 'DELETE'}).then(function() {
+      ACIK_SATIR = null;
+      toast('Silindi');
+      yukle();
+    }).catch(function(e) { toast(e.message); });
+  });
 }
 function firmaKaydedildi() { yukle(); }
 
@@ -1109,57 +1106,72 @@ FIRMA_HTML = r'''<!DOCTYPE html>
 <style>{{ ortak_css|safe }}{{ cari_css|safe }}</style>
 </head>
 <body>
-<div class="siyah-ust">
-  <div class="su-ust">
-    <a href="/{{ ayar.tur }}" class="su-geri">&#8249; {{ ayar.baslik }}</a>
-    <div class="su-btnlar">
-      <button class="su-btn" onclick="firmaDuzenleAc()" title="Firma adı ve birim fiyatlar">Düzenle</button>
-      <button class="su-btn" onclick="pdfAc()" title="Hesap dökümü PDF">PDF</button>
-      <button class="su-btn yuvarlak" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
+<header class="bant">
+  <div class="bant-ust">
+    <a href="/{{ ayar.tur }}" class="bant-geri">{{ ikon.geri|safe }}{{ ayar.baslik }}</a>
+    <div class="bant-btnlar">
+      <button class="bant-btn yuvarlak" onclick="firmaDuzenleAc()" aria-label="Firma adı ve birim fiyatlar" title="Firma adı ve birim fiyatlar">{{ ikon.duzenle|safe }}</button>
+      <button class="bant-btn" onclick="pdfAc()" title="Hesap dökümü PDF">{{ ikon.belge|safe }}PDF</button>
+      <button class="bant-btn yuvarlak" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
     </div>
   </div>
-  <div class="su-ad" id="su-ad">{{ firma.ad }}</div>
-  <div class="su-etiket" id="su-etiket">{{ ayar.kalan_etiket }}</div>
-  <div class="su-kalan" id="su-kalan">…</div>
-  <div class="su-ozet" id="su-ozet"></div>
-</div>
+  <h1 id="su-ad">{{ firma.ad }}</h1>
+</header>
 
-<!-- Giris formu -->
-<div class="kart-kutu" id="giris">
-  <div class="secim">
-    <button id="s-is" onclick="sekmeSec('is')">{{ ayar.is_sekme }}</button>
-    <button id="s-gider" onclick="sekmeSec('gider')">Gider</button>
-    <button id="s-odeme" onclick="sekmeSec('odeme')">{{ ayar.odeme_sekme }}</button>
-  </div>
-  <div class="alan"><label for="g-tarih">Tarih</label><input type="date" id="g-tarih"></div>
-  <div id="g-is">
-    <div id="g-kalem-yok" class="bilgi" style="display:none">Bu firmaya henüz birim fiyat kalemi eklenmemiş.
-      <button class="btn-link" onclick="firmaDuzenleAc()">Fiyat kalemi ekle</button></div>
-    <div id="g-kalem-var">
-      <div class="alan"><label for="g-kalem">Kalem</label><select id="g-kalem" onchange="onizle()"></select></div>
-      <div class="alan"><label for="g-miktar">Miktar ({{ ayar.birim }})</label><input type="text" id="g-miktar" inputmode="decimal" placeholder="0" autocomplete="off" oninput="onizle()"></div>
-      <div class="onizleme" id="g-onizleme"></div>
+<main class="icerik">
+  <div class="yuzen">
+    <div class="ozet2">
+      <div title="İş + gider toplamı"><div class="ozet-e">Hakediş</div><div class="ozet-d renk-metin" id="o-hakedis">-</div></div>
+      <div><div class="ozet-e">{{ ayar.odeme_kolon }}</div><div class="ozet-d renk-odeme" id="o-odenen">-</div></div>
+    </div>
+    <div class="ozet-tam">
+      <div class="ozet-e">{{ ayar.kalan_etiket }}</div>
+      <div><div class="ozet-d" id="o-kalan">-</div><div class="ozet-not" id="o-kalan-not"></div></div>
     </div>
   </div>
-  <div id="g-gider">
-    <div class="alan"><label for="g-gacik">Açıklama</label><input type="text" id="g-gacik" placeholder="{{ ayar.gider_ornek }}" autocomplete="off"></div>
-  </div>
-  <div id="g-tutar-alan" class="alan"><label for="g-tutar">Tutar (₺)</label><input type="text" id="g-tutar" inputmode="decimal" placeholder="0" autocomplete="off"></div>
-  <div id="g-odeme">
-    <div class="alan" style="margin-bottom:6px"><label for="g-not">Not</label><input type="text" id="g-not" placeholder="Nakit, çek, havale…" autocomplete="off"></div>
-    <div class="cipler"><button class="cip" onclick="notSec('Nakit')">Nakit</button><button class="cip" onclick="notSec('Çek')">Çek</button><button class="cip" onclick="notSec('Havale')">Havale</button></div>
-  </div>
-  <button class="btn" id="g-ekle" onclick="satirEkle()">Satırı Ekle</button>
-</div>
 
-<div class="defter-baslik"><h2>Defter</h2><span class="alt-baslik" id="d-adet"></span></div>
-<div class="liste defter" id="defter"><div class="bos">Yükleniyor…</div></div>
-<div class="ipucu" id="ipucu" style="display:none">Düzeltmek için satıra dokunun · Sil için sola kaydırın</div>
+  <!-- Giris formu -->
+  <section class="bolum kart" id="giris" aria-label="Yeni satır">
+    <div class="secim">
+      <button id="s-is" onclick="sekmeSec('is')">{{ ayar.is_sekme }}</button>
+      <button id="s-gider" onclick="sekmeSec('gider')">Gider</button>
+      <button id="s-odeme" onclick="sekmeSec('odeme')">{{ ayar.odeme_sekme }}</button>
+    </div>
+    <div class="alan"><label for="g-tarih">Tarih</label><input type="date" id="g-tarih"></div>
+    <div id="g-is">
+      <div id="g-kalem-yok" class="bilgi" style="display:none;margin-top:0">Bu firmaya henüz birim fiyat kalemi eklenmemiş.<br>
+        <button class="btn-metin" onclick="firmaDuzenleAc()">+ Fiyat kalemi ekle</button></div>
+      <div id="g-kalem-var">
+        <div class="alan"><label for="g-kalem">Kalem</label><select id="g-kalem" onchange="onizle()"></select></div>
+        <div class="alan"><label for="g-miktar">Miktar ({{ ayar.birim }})</label><input type="text" id="g-miktar" inputmode="decimal" placeholder="0" autocomplete="off" oninput="onizle()"></div>
+        <div class="hesap-kutu" title="Miktar × birim fiyat (otomatik)"><span id="g-onizleme">Hakediş</span><b id="g-hakedis">—</b></div>
+      </div>
+    </div>
+    <div id="g-gider">
+      <div class="alan"><label for="g-gacik">Açıklama</label><input type="text" id="g-gacik" placeholder="{{ ayar.gider_ornek }}" autocomplete="off"></div>
+    </div>
+    <div id="g-tutar-alan" class="alan"><label for="g-tutar">Tutar (₺)</label><input type="text" id="g-tutar" inputmode="decimal" placeholder="0" autocomplete="off"></div>
+    <div id="g-odeme">
+      <div class="alan"><label for="g-not">Not</label><input type="text" id="g-not" placeholder="Nakit, çek, havale…" autocomplete="off"></div>
+      <div class="cipler"><button class="cip" onclick="notSec('Nakit')">Nakit</button><button class="cip" onclick="notSec('Çek')">Çek</button><button class="cip" onclick="notSec('Havale')">Havale</button></div>
+    </div>
+    <button class="btn" id="g-ekle" onclick="satirEkle()">Satırı Ekle</button>
+  </section>
+
+  <section class="bolum">
+    <div class="bolum-baslik"><span>Defter</span><span class="defter-ozet" id="d-adet"></span></div>
+    <div class="defter" id="defter"><div class="bos">Yükleniyor…</div></div>
+    <div class="ipucu" id="ipucu" style="display:none">Düzeltmek için satıra dokunun · Sil için sola kaydırın</div>
+  </section>
+</main>
 
 <!-- Hareket duzenle -->
-<div class="modal-arka gizli" id="h-form" onclick="arkaTik(event, 'h-form')">
-  <div class="modal">
-    <div class="modal-ust"><h2 id="h-baslik">Satırı Düzenle</h2><button class="kapat" onclick="modalKapat('h-form')" aria-label="Kapat">&times;</button></div>
+<div class="panel" id="h-form" role="dialog" aria-modal="true" aria-labelledby="h-baslik">
+  <header class="bant kisa">
+    <div class="bant-ust"><button class="bant-geri" onclick="modalKapat('h-form')">Vazgeç</button></div>
+    <h1 id="h-baslik">Satırı Düzenle</h1>
+  </header>
+  <div class="icerik">
     <div class="alan"><label for="h-tarih">Tarih</label><input type="date" id="h-tarih"></div>
     <div id="h-is">
       <div class="alan"><label for="h-kalem">Kalem</label><select id="h-kalem" onchange="hKalemDegisti()"></select></div>
@@ -1167,45 +1179,51 @@ FIRMA_HTML = r'''<!DOCTYPE html>
         <div class="alan"><label for="h-miktar">Miktar ({{ ayar.birim }})</label><input type="text" id="h-miktar" inputmode="decimal" autocomplete="off" oninput="hOnizle()"></div>
         <div class="alan"><label for="h-fiyat">Birim fiyat (₺)</label><input type="text" id="h-fiyat" inputmode="decimal" autocomplete="off" oninput="hOnizle()"></div>
       </div>
-      <div class="onizleme" id="h-onizleme"></div>
+      <div class="hesap-kutu"><span>Hakediş</span><b id="h-onizleme">—</b></div>
       <div class="bilgi">Birim fiyat bu satıra kilitlidir. Burada değiştirirseniz sadece bu satır değişir.</div>
     </div>
     <div id="h-tutar-alan" class="alan"><label for="h-tutar">Tutar (₺)</label><input type="text" id="h-tutar" inputmode="decimal" autocomplete="off"></div>
     <div class="alan"><label for="h-acik" id="h-acik-etiket">Açıklama</label><input type="text" id="h-acik" autocomplete="off"></div>
     <button class="btn" id="h-kaydet" onclick="hKaydet()">Kaydet</button>
-    <button class="btn btn-acik kirmizi" onclick="hFormdanSil()">Bu satırı sil</button>
+    <button class="btn btn-ikincil" onclick="hFormdanSil()"><span class="sil-ikon">{{ ikon.sil|safe }}</span>Bu satırı sil</button>
   </div>
 </div>
 
 <!-- PDF -->
-<div class="modal-arka gizli" id="pdf-form" onclick="arkaTik(event, 'pdf-form')">
-  <div class="modal">
-    <div class="modal-ust"><h2>Hesap Dökümü (PDF)</h2><button class="kapat" onclick="modalKapat('pdf-form')" aria-label="Kapat">&times;</button></div>
+<div class="panel" id="pdf-form" role="dialog" aria-modal="true" aria-labelledby="p-baslik">
+  <header class="bant kisa">
+    <div class="bant-ust"><button class="bant-geri" onclick="modalKapat('pdf-form')">Vazgeç</button></div>
+    <h1 id="p-baslik">Hesap Dökümü (PDF)</h1>
+  </header>
+  <div class="icerik">
     <div class="iki-alan">
       <div class="alan"><label for="p-bas">Başlangıç</label><input type="date" id="p-bas"></div>
       <div class="alan"><label for="p-bit">Bitiş</label><input type="date" id="p-bit"></div>
     </div>
     <div class="bilgi">Tarihleri boş bırakırsanız tüm kayıtlar alınır. Başlangıç seçerseniz öncesi "Devreden bakiye" olarak yazılır.
       PDF açılınca Paylaş menüsünden WhatsApp veya Mail ile gönderebilirsiniz.</div>
-    <button class="btn" onclick="pdfOlustur()">PDF Oluştur</button>
+    <button class="btn" onclick="pdfOlustur()">{{ ikon.belge|safe }}PDF Oluştur</button>
   </div>
 </div>
 
 {{ firma_form_html|safe }}
 
-<div class="modal-arka gizli" id="yardim" onclick="arkaTik(event, 'yardim')">
-  <div class="modal yardim">
-    <div class="modal-ust"><h2>Firma sayfası — Nasıl kullanılır?</h2><button class="kapat" onclick="modalKapat('yardim')" aria-label="Kapat">&times;</button></div>
+<div class="panel" id="yardim" role="dialog" aria-modal="true" aria-labelledby="yardim-b">
+  <header class="bant kisa">
+    <div class="bant-ust"><button class="bant-geri" onclick="modalKapat('yardim')">{{ ikon.geri|safe }}Kapat</button></div>
+    <h1 id="yardim-b">Firma sayfası — Nasıl kullanılır?</h1>
+  </header>
+  <div class="icerik yardim">
     <ol>
       <li><b>{{ ayar.is_sekme }}:</b> Tarihi ve kalemi seçin, miktarı ({{ ayar.birim }}) yazın. Hakediş kendiliğinden hesaplanır (miktar × birim fiyat). <b>Satırı Ekle</b>'ye basın.</li>
       <li><b>Gider:</b> {{ ayar.gider_yardim }}</li>
       <li><b>{{ ayar.odeme_sekme }}:</b> Tutarı ve notu (nakit/çek/havale) yazın. Kalandan düşülür.</li>
       <li><b>Düzeltmek için</b> defterdeki satıra dokunun. <b>Silmek için</b> satırı sola kaydırın; onay sorulur.</li>
-      <li><b>Düzenle</b> (üstte): firma adı ve birim fiyatlar. Fiyat değişikliği geçmiş satırları değiştirmez.</li>
+      <li><b>Kalem düğmesi</b> (sağ üstte, kalem resmi): firma adı ve birim fiyatlar. Fiyat değişikliği geçmiş satırları değiştirmez.</li>
       <li><b>PDF</b>: hesap dökümü; isterseniz tarih aralığı seçin.</li>
     </ol>
     <p>Defter eskiden yeniye sıralıdır; çok kayıt varsa eskiler <b>Önceki kayıtlar</b> satırında toplanır, dokununca açılır. {{ ayar.yon_aciklama }}</p>
-    <button class="btn" style="margin-top:14px" onclick="modalKapat('yardim')">Anladım</button>
+    <button class="btn" onclick="modalKapat('yardim')">Anladım</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -1229,7 +1247,6 @@ function miktarOku(s) {
   if (s.indexOf(',') >= 0) s = s.replace(/\./g, '').replace(',', '.');
   return Number(s);
 }
-function miktarTR(n) { return Number(n || 0).toLocaleString('tr-TR', {maximumFractionDigits: 3}); }
 function yuvarla2(x) { return Math.round(x * 100 + (x >= 0 ? 1e-7 : -1e-7)) / 100; }
 
 function yukle() {
@@ -1237,18 +1254,20 @@ function yukle() {
     VERI = r;
     el('su-ad').textContent = r.firma.ad;
     document.title = r.firma.ad + ' — ' + AYAR.tekil;
-    var k = r.bakiye.kalan;
-    el('su-etiket').textContent = k < 0 ? 'Fazla ödeme' : AYAR.kalan_etiket;
-    el('su-kalan').textContent = fmtTL(Math.abs(k));
-    el('su-kalan').className = 'su-kalan' + (k < 0 ? ' fazla' : '');
-    el('su-ozet').textContent = 'Hakediş ' + fmtTL(r.bakiye.hakedis) + ' · ' + AYAR.odeme_fiil + ' ' + fmtTL(r.bakiye.odenen);
+    var b = r.bakiye, ks = kalanSunum(b.kalan, AYAR.yon);
+    el('o-hakedis').textContent = fmtTL(b.hakedis);
+    el('o-odenen').textContent = fmtTL(b.odenen);
+    el('o-kalan').textContent = ks.tutar;
+    el('o-kalan').className = 'ozet-d ' + ks.sinif;
+    el('o-kalan-not').textContent = ks.etiket;
+    el('o-kalan-not').className = 'ozet-not ' + ks.sinif;
     kalemSecimiDoldur(el('g-kalem'), r.kalemler, el('g-kalem').value);
     el('g-kalem-yok').style.display = r.kalemler.length ? 'none' : 'block';
     el('g-kalem-var').style.display = r.kalemler.length ? 'block' : 'none';
     onizle();
     defterCiz();
   }).catch(function(e) {
-    el('defter').innerHTML = '<div class="bos kirmizi">Yüklenemedi: ' + escHtml(e.message) + '</div>';
+    el('defter').innerHTML = '<div class="bos renk-borc">Yüklenemedi: ' + escHtml(e.message) + '</div>';
   });
 }
 
@@ -1279,13 +1298,17 @@ function sekmeSec(s) {
   el('g-gider').style.display = s === 'gider' ? 'block' : 'none';
   el('g-odeme').style.display = s === 'odeme' ? 'block' : 'none';
   el('g-tutar-alan').style.display = s === 'is' ? 'none' : 'block';
-  el('g-ekle').className = 'btn' + (s === 'odeme' ? ' btn-yesil' : '');
 }
 function onizle() {
   var k = kalemBul(el('g-kalem').value);
   var m = miktarOku(el('g-miktar').value);
-  if (!k || isNaN(m) || m <= 0) { el('g-onizleme').innerHTML = k ? 'Birim fiyat: ' + fmtTL(k.birim_fiyat) + '/' + escHtml(AYAR.birim) : ''; return; }
-  el('g-onizleme').innerHTML = miktarTR(m) + ' ' + escHtml(AYAR.birim) + ' × ' + fmtTL(k.birim_fiyat) + ' = Hakediş <b>' + fmtTL(yuvarla2(m * k.birim_fiyat)) + '</b>';
+  if (!k || isNaN(m) || m <= 0) {
+    el('g-onizleme').textContent = k ? 'Hakediş · birim ' + fmtTL(k.birim_fiyat) + '/' + AYAR.birim : 'Hakediş';
+    el('g-hakedis').textContent = '—';
+    return;
+  }
+  el('g-onizleme').textContent = miktarTR(m) + ' ' + AYAR.birim + ' × ' + fmtTL(k.birim_fiyat);
+  el('g-hakedis').textContent = fmtTL(yuvarla2(m * k.birim_fiyat));
 }
 function notSec(n) { el('g-not').value = n; }
 
@@ -1326,8 +1349,8 @@ function hucreler(h) {
   var odeme = h.tip === 'odeme';
   return '<div class="d-grid"><div class="d-tarih">' + tarihTR(h.tarih) + '</div>' +
     '<div class="d-acik"><div class="u">' + escHtml(ust) + '</div><div class="a">' + escHtml(alt) + '</div></div>' +
-    '<div class="d-tutar">' + (odeme ? '' : fmtTL(h.tutar)) + '</div>' +
-    '<div class="d-tutar yesil">' + (odeme ? fmtTL(h.tutar) : '') + '</div></div>';
+    '<div class="d-tutar renk-metin">' + (odeme ? '' : fmtTL(h.tutar)) + '</div>' +
+    '<div class="d-tutar renk-odeme">' + (odeme ? fmtTL(h.tutar) : '') + '</div></div>';
 }
 function defterCiz() {
   var y = window.scrollY;
@@ -1342,21 +1365,21 @@ function defterCiz() {
   if (gizli) {
     var ph = 0, po = 0;
     for (var i = 0; i < gizli; i++) { if (satirlar[i].tip === 'odeme') po += satirlar[i].tutar; else ph += satirlar[i].tutar; }
-    html += '<div class="onceki" onclick="oncekiAc()"><div class="d-grid"><div class="d-tarih">▸</div>' +
+    html += '<div class="onceki" onclick="oncekiAc()" role="button"><div class="d-grid"><div class="d-tarih">▸</div>' +
       '<div class="d-acik"><div class="u">Önceki kayıtlar (' + gizli + ')</div><div class="a">Görmek için dokunun</div></div>' +
-      '<div class="d-tutar">' + (ph ? fmtTL(ph) : '') + '</div><div class="d-tutar yesil">' + (po ? fmtTL(po) : '') + '</div></div></div>';
+      '<div class="d-tutar renk-metin">' + (ph ? fmtTL(ph) : '') + '</div><div class="d-tutar renk-odeme">' + (po ? fmtTL(po) : '') + '</div></div></div>';
   }
   for (var j = 0; j < satirlar.length; j++) {
     HAREKETLER[satirlar[j].id] = satirlar[j];
     if (j < gizli) continue;
-    html += satirHtml(satirlar[j].id, hucreler(satirlar[j]), '');
+    html += satirHtml(satirlar[j].id, hucreler(satirlar[j]));
   }
   if (satirlar.length) {
-    var b = VERI.bakiye;
-    html += '<div class="d-toplam"><div class="d-grid"><div></div><div>Toplam</div><div class="d-tutar">' + fmtTL(b.hakedis) +
-      '</div><div class="d-tutar yesil">' + fmtTL(b.odenen) + '</div></div></div>';
-    html += '<div class="d-kalan' + (b.kalan < 0 ? ' fazla' : '') + '"><span class="e">' + (b.kalan < 0 ? 'Fazla ödeme' : escHtml(AYAR.kalan_etiket)) +
-      '</span><span class="t">' + fmtTL(Math.abs(b.kalan)) + '</span></div>';
+    var b = VERI.bakiye, ks = kalanSunum(b.kalan, AYAR.yon);
+    html += '<div class="d-toplam"><div class="d-grid"><div></div><div>Toplam</div><div class="d-tutar renk-metin">' + fmtTL(b.hakedis) +
+      '</div><div class="d-tutar renk-odeme">' + fmtTL(b.odenen) + '</div></div></div>';
+    html += '<div class="d-kalan"><span class="e">KALAN</span><span><span class="t">' + ks.tutar + '</span>' +
+      '<span class="n" style="display:block">' + escHtml(ks.etiket) + '</span></span></div>';
   }
   el('defter').innerHTML = html;
   el('ipucu').style.display = satirlar.length ? 'block' : 'none';
@@ -1394,7 +1417,7 @@ function hKalemDegisti() {
 }
 function hOnizle() {
   var m = miktarOku(el('h-miktar').value), f = parseTLInput(el('h-fiyat').value);
-  el('h-onizleme').innerHTML = (isNaN(m) || isNaN(f) || m <= 0 || f <= 0) ? '' : 'Hakediş <b>' + fmtTL(yuvarla2(m * f)) + '</b>';
+  el('h-onizleme').textContent = (isNaN(m) || isNaN(f) || m <= 0 || f <= 0) ? '—' : fmtTL(yuvarla2(m * f));
 }
 function hKaydet() {
   var h = HAREKETLER[DUZENLENEN];
@@ -1425,13 +1448,15 @@ function hSil(id) {
   if (!h) return;
   var ad = h.tip === 'is' ? (h.kalem_adi || AYAR.is_adi) + ' ' + miktarTR(h.miktar) + ' ' + AYAR.birim
                           : (h.aciklama || (h.tip === 'gider' ? 'Gider' : AYAR.odeme_fiil));
-  if (!onayla(tarihTR(h.tarih) + ' · ' + ad + ' (' + fmtTL(h.tutar) + ') silinecek. Emin misiniz?')) { satirKapat(); return; }
-  apiFetch('/api/cari/hareket/' + id, {method: 'DELETE'}).then(function() {
-    ACIK_SATIR = null;
-    modalKapat('h-form');
-    toast('Silindi');
-    return yukle();
-  }).catch(function(e) { toast(e.message); });
+  onayIste('Silinsin mi?', tarihTR(h.tarih) + ' · ' + ad + ' (' + fmtTL(h.tutar) + ') silinecek.', 'Sil').then(function(evet) {
+    if (!evet) { satirKapat(); return; }
+    apiFetch('/api/cari/hareket/' + id, {method: 'DELETE'}).then(function() {
+      ACIK_SATIR = null;
+      modalKapat('h-form');
+      toast('Silindi');
+      return yukle();
+    }).catch(function(e) { toast(e.message); });
+  });
 }
 function hFormdanSil() { if (DUZENLENEN !== null) hSil(DUZENLENEN); }
 
@@ -1455,7 +1480,6 @@ yukle();
 </body>
 </html>'''
 
-
 GUN_SONU_HTML = r'''<!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -1464,53 +1488,68 @@ GUN_SONU_HTML = r'''<!DOCTYPE html>
 <style>{{ ortak_css|safe }}{{ cari_css|safe }}</style>
 </head>
 <body class="alt-butonlu">
-<a href="/{{ ayar.tur }}" class="geri">&#8249; {{ ayar.baslik }}</a>
-<div class="ust">
-  <div>
-    <h1>Gün Sonu Raporu</h1>
-    <div class="alt-baslik">{{ ayar.baslik }}</div>
+<header class="bant">
+  <div class="bant-ust">
+    <a href="/{{ ayar.tur }}" class="bant-geri">{{ ikon.geri|safe }}{{ ayar.baslik }}</a>
+    <div class="bant-btnlar">
+      <button class="bant-btn yuvarlak" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
+    </div>
   </div>
-  <button class="yardim-btn" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
-</div>
+  <h1>Gün Sonu Raporu</h1>
+  <div class="bant-filtre">
+    <div class="alan" style="margin:0"><label for="r-tarih">Tarih</label><input type="date" id="r-tarih" onchange="yukle()"></div>
+    <div class="alan" style="margin:0"><label for="r-kapsam">Kapsam</label>
+      <select id="r-kapsam" onchange="yukle()" title="Tüm firmalar ya da tek firma">
+        <option value="">Tümü</option>
+        {% for f in firmalar %}<option value="{{ f.id }}">{{ f.ad }}</option>{% endfor %}
+      </select></div>
+  </div>
+</header>
 
-<div class="iki-alan">
-  <div class="alan"><label for="r-tarih">Tarih</label><input type="date" id="r-tarih" onchange="yukle()"></div>
-  <div class="alan"><label for="r-kapsam">Kapsam</label>
-    <select id="r-kapsam" onchange="yukle()" title="Tüm firmalar ya da tek firma">
-      <option value="">Tümü</option>
-      {% for f in firmalar %}<option value="{{ f.id }}">{{ f.ad }}</option>{% endfor %}
-    </select></div>
-</div>
+<main class="icerik">
+  <div class="yuzen">
+    <div class="ozet2">
+      <div title="O gün girilen iş miktarı"><div class="ozet-e">Toplam miktar</div><div class="ozet-d" id="o-miktar">-</div></div>
+      <div title="O günün iş + gider tutarı"><div class="ozet-e">Günün hakedişi</div><div class="ozet-d renk-metin" id="o-hakedis">-</div></div>
+    </div>
+    <div class="ozet2">
+      <div><div class="ozet-e">{{ ayar.gun_odeme_etiket }}</div><div class="ozet-d renk-odeme" id="o-odenen">-</div></div>
+      <div title="O gün kaydı olan firma sayısı"><div class="ozet-e">Hareketli firma</div><div class="ozet-d" id="o-firma">-</div></div>
+    </div>
+    <div class="ozet-tam" title="Kapsamdaki tüm firmaların o günün sonundaki toplam kalanı">
+      <div class="ozet-e">Gün sonu {{ ayar.toplam_etiket|lower }}</div>
+      <div><div class="ozet-d" id="o-kalan">-</div><div class="ozet-not" id="o-kalan-not"></div></div>
+    </div>
+  </div>
 
-<div class="ozet">
-  <div class="ozet-kutu" title="O gün girilen iş miktarı"><div class="deger" id="o-miktar">-</div><div class="etiket">Toplam miktar</div></div>
-  <div class="ozet-kutu" title="O günün iş + gider tutarı"><div class="deger" id="o-hakedis">-</div><div class="etiket">Günün hakedişi</div></div>
-  <div class="ozet-kutu"><div class="deger yesil" id="o-odenen">-</div><div class="etiket">{{ ayar.gun_odeme_etiket }}</div></div>
-  <div class="ozet-kutu" title="O gün kaydı olan firma sayısı"><div class="deger" id="o-firma">-</div><div class="etiket">Hareketli firma</div></div>
-  <div class="ozet-kutu genis" title="Kapsamdaki tüm firmaların o günün sonundaki toplam kalanı">
-    <div class="etiket" id="o-kalan-etiket">Gün sonu {{ ayar.toplam_etiket|lower }}</div><div class="deger" id="o-kalan">-</div></div>
-</div>
+  <section class="bolum">
+    <div class="bolum-baslik"><span>Firmalar</span><span>Gün sonu kalan</span></div>
+    <div id="r-firmalar"><div class="bos">Yükleniyor…</div></div>
+  </section>
+  <section class="bolum">
+    <div class="bolum-baslik"><span>Günün hareketleri</span></div>
+    <div id="r-hareketler"><div class="bos">Yükleniyor…</div></div>
+  </section>
+  <div class="bilgi" style="margin-top:16px">PDF başlığı: <b id="r-baslik"></b> — değiştirmek için Ana Menü → Ayarlar.</div>
+</main>
 
-<div class="grup-baslik"><span>Firmalar</span><span>Gün sonu kalan</span></div>
-<div class="liste" id="r-firmalar"><div class="bos">Yükleniyor…</div></div>
-<div class="grup-baslik"><span>Günün hareketleri</span></div>
-<div class="liste" id="r-hareketler"><div class="bos">Yükleniyor…</div></div>
-<div class="bilgi" style="margin-top:12px">PDF başlığı: <b id="r-baslik"></b> — değiştirmek için Ana Menü → Ayarlar.</div>
+<div class="alt-sabit"><button class="btn" onclick="pdfOlustur()">{{ ikon.belge|safe }}PDF Oluştur</button></div>
 
-<div class="alt-sabit"><button class="btn" onclick="pdfOlustur()">PDF Oluştur</button></div>
-
-<div class="modal-arka gizli" id="yardim" onclick="arkaTik(event, 'yardim')">
-  <div class="modal yardim">
-    <div class="modal-ust"><h2>Gün Sonu Raporu — Nasıl kullanılır?</h2><button class="kapat" onclick="modalKapat('yardim')" aria-label="Kapat">&times;</button></div>
+<div class="panel" id="yardim" role="dialog" aria-modal="true" aria-labelledby="yardim-b">
+  <header class="bant kisa">
+    <div class="bant-ust"><button class="bant-geri" onclick="modalKapat('yardim')">{{ ikon.geri|safe }}Kapat</button></div>
+    <h1 id="yardim-b">Gün Sonu Raporu — Nasıl kullanılır?</h1>
+  </header>
+  <div class="icerik yardim">
     <ol>
       <li><b>Tarih</b> seçin (açılışta bugün gelir).</li>
       <li><b>Kapsam:</b> tüm firmalar ya da tek bir firma.</li>
-      <li>Üstte günün toplamları, altta o gün kaydı olan firmalar ve tek tek hareketler görünür. Firmaya dokununca firma sayfası açılır.</li>
+      <li>Kartta günün toplamları, altta o gün kaydı olan firmalar ve tek tek hareketler görünür. Firmaya dokununca firma sayfası açılır.</li>
       <li><b>PDF Oluştur</b>: A4 rapor açılır (başlıkta firmanızın adı, özet, firma tablosu, hareketler, imza alanı). Paylaş menüsünden WhatsApp veya Mail ile gönderin.</li>
     </ol>
-    <p><b>Gün sonu kalan</b>, seçilen günün sonundaki bakiyedir; geçmiş bir günün raporu her alındığında aynı çıkar. Eksi tutar fazla ödemedir.</p>
+    <p><b>Gün sonu kalan</b>, seçilen günün sonundaki bakiyedir; geçmiş bir günün raporu her alındığında aynı çıkar. Eksi tutar turuncu <b>fazla ödeme</b> olarak yazar.</p>
     <p>PDF başlığındaki firma adınızı <b>Ana Menü → Ayarlar</b>'dan değiştirebilirsiniz.</p>
-    <button class="btn" style="margin-top:14px" onclick="modalKapat('yardim')">Anladım</button>
+    <button class="btn" onclick="modalKapat('yardim')">Anladım</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -1518,7 +1557,6 @@ GUN_SONU_HTML = r'''<!DOCTYPE html>
 <script>{{ ortak_js|safe }}</script>
 <script>
 var AYAR = {{ ayar|tojson }};
-function el(id) { return document.getElementById(id); }
 function miktarTR(n) { return Number(n || 0).toLocaleString('tr-TR', {maximumFractionDigits: 3}); }
 
 function yukle() {
@@ -1527,10 +1565,12 @@ function yukle() {
   var url = '/api/cari/' + AYAR.tur + '/gun-sonu?tarih=' + encodeURIComponent(t) +
             '&firma_id=' + encodeURIComponent(el('r-kapsam').value);
   apiFetch(url).then(ciz).catch(function(e) {
-    el('r-firmalar').innerHTML = '<div class="bos kirmizi">Yüklenemedi: ' + escHtml(e.message) + '</div>';
+    el('r-firmalar').innerHTML = '<div class="bos renk-borc">Yüklenemedi: ' + escHtml(e.message) + '</div>';
     el('r-hareketler').innerHTML = '';
   });
 }
+
+function satirLink(href, icHtml) { return '<div class="satir"><a class="satir-ic" href="' + href + '">' + icHtml + '</a></div>'; }
 
 function ciz(v) {
   var o = v.ozet;
@@ -1538,38 +1578,32 @@ function ciz(v) {
   el('o-hakedis').textContent = fmtTL(o.hakedis);
   el('o-odenen').textContent = fmtTL(o.odenen);
   el('o-firma').textContent = o.firma_sayisi;
-  el('o-kalan-etiket').textContent = o.toplam_kalan < 0 ? 'Gün sonu fazla ödeme' : 'Gün sonu ' + AYAR.toplam_etiket.toLocaleLowerCase('tr');
-  el('o-kalan').textContent = fmtTL(Math.abs(o.toplam_kalan));
-  el('o-kalan').className = 'deger' + (o.toplam_kalan < 0 ? ' kirmizi' : '');
+  var ks = kalanSunum(o.toplam_kalan, AYAR.yon);
+  el('o-kalan').textContent = ks.tutar;
+  el('o-kalan').className = 'ozet-d ' + ks.sinif;
+  el('o-kalan-not').textContent = ks.etiket;
+  el('o-kalan-not').className = 'ozet-not ' + ks.sinif;
   el('r-baslik').textContent = v.rapor_basligi;
 
   var fh = '';
   for (var i = 0; i < v.firmalar.length; i++) {
-    var f = v.firmalar[i];
-    var parca = [];
+    var f = v.firmalar[i], parca = [], fs = kalanSunum(f.kalan, AYAR.yon);
     if (f.miktar) parca.push(miktarTR(f.miktar) + ' ' + AYAR.birim);
     if (f.hakedis) parca.push('Hakediş ' + fmtTL(f.hakedis));
     if (f.odenen) parca.push(AYAR.odeme_fiil + ' ' + fmtTL(f.odenen));
-    fh += '<a class="gs-satir" href="/' + AYAR.tur + '/' + f.id + '"><div class="sol"><div class="ad">' + escHtml(f.ad) + '</div>' +
-      '<div class="alt">' + escHtml(parca.join(' · ')) + '</div></div>' +
-      '<div class="sag"><div class="t' + (f.kalan < 0 ? ' kirmizi' : '') + '">' + fmtTL(Math.abs(f.kalan)) + '</div>' +
-      '<div class="n">' + (f.kalan < 0 ? 'Fazla ödeme' : escHtml(AYAR.kalan_etiket)) + '</div></div></a>';
+    fh += satirLink('/' + AYAR.tur + '/' + f.id, satirIcerik(AYAR.ikon, f.ad, parca.join(' · '), tutarHtml(fs.tutar, fs.sinif, fs.etiket)));
   }
   el('r-firmalar').innerHTML = fh || '<div class="bos">Bu tarihte kayıt yok.</div>';
 
   var hh = '';
   for (var j = 0; j < v.hareketler.length; j++) {
-    var h = v.hareketler[j], ust, alt;
-    if (h.tip === 'is') {
-      ust = h.kalem_adi || AYAR.is_adi;
-      alt = miktarTR(h.miktar) + ' ' + AYAR.birim + ' × ' + fmtTL(h.birim_fiyat);
-    } else if (h.tip === 'gider') { ust = h.aciklama || 'Gider'; alt = 'Gider'; }
-    else { ust = h.aciklama || AYAR.odeme_fiil; alt = AYAR.odeme_fiil + ' para'; }
+    var h = v.hareketler[j], ust, ikon;
+    if (h.tip === 'is') { ust = (h.kalem_adi || AYAR.is_adi) + ' · ' + miktarTR(h.miktar) + ' ' + AYAR.birim + ' × ' + fmtTL(h.birim_fiyat); ikon = AYAR.ikon; }
+    else if (h.tip === 'gider') { ust = (h.aciklama || 'Gider') + ' · Gider'; ikon = 'belge'; }
+    else { ust = (h.aciklama || AYAR.odeme_fiil) + ' · ' + AYAR.odeme_fiil + ' para'; ikon = 'para'; }
     var odeme = h.tip === 'odeme';
-    hh += '<a class="gs-satir" href="/' + AYAR.tur + '/' + h.firma_id + '"><div class="sol"><div class="ad">' + escHtml(h.firma_adi) + '</div>' +
-      '<div class="alt">' + escHtml(ust) + ' · ' + escHtml(alt) + '</div></div>' +
-      '<div class="sag"><div class="t' + (odeme ? ' yesil' : '') + '">' + fmtTL(h.tutar) + '</div>' +
-      '<div class="n">' + (odeme ? escHtml(AYAR.odeme_kolon) : 'Hakediş') + '</div></div></a>';
+    hh += satirLink('/' + AYAR.tur + '/' + h.firma_id, satirIcerik(ikon, h.firma_adi, ust,
+      tutarHtml(fmtTL(h.tutar), odeme ? 'renk-odeme' : 'renk-metin', odeme ? AYAR.odeme_kolon.toLocaleLowerCase('tr') : 'hakediş')));
   }
   el('r-hareketler').innerHTML = hh || '<div class="bos">Hareket yok.</div>';
 }
@@ -1591,7 +1625,8 @@ yukle();
 def _sayfa(sablon, **kw):
     html = render_template_string(
         sablon, ortak_head=ortak.ORTAK_HEAD, ortak_css=ortak.ORTAK_CSS, ortak_js=ortak.ORTAK_JS,
-        cari_css=CARI_CSS, firma_form_html=FIRMA_FORM_HTML, firma_form_js=FIRMA_FORM_JS, **kw)
+        cari_css=CARI_CSS, firma_form_html=FIRMA_FORM_HTML, firma_form_js=FIRMA_FORM_JS,
+        ikon={ad: ortak.svg(ad) for ad in ortak.IKONLAR}, **kw)
     return ortak.onbelleksiz(make_response(html))
 
 

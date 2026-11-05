@@ -32,7 +32,8 @@ YÜKLENECEK DOSYALAR (hepsi AYNI klasöre: /home/KULLANICIADIN/)
 
 4. TELEFONA EKLE
    - iPhone Safari'de adresi açın > Paylaş > "Ana Ekrana Ekle"
-   - Ana ekranda sarı baretli "Şantiye" ikonu çıkar.
+   - Ana ekranda lacivert zeminli beyaz bina ikonu ("Şantiye Defteri") çıkar.
+     Eski ikon görünüyorsa: ana ekrandaki kısayolu silip yeniden ekleyin.
 
 5. İLK AYAR
    - Ana menü > Ayarlar > "Rapor başlığı": firmanızın adı

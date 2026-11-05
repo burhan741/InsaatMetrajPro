@@ -112,7 +112,7 @@ def test_ayar_varsayilan_kaydet_ve_puantaja_dokunmaz(istemci):
     assert istemci.post('/api/cari/ayar', json={'baska': 'x'}).status_code == 400
     assert istemci.get('/api/ayarlar').get_json() == once     # puantaj ayarlari aynen
     html = istemci.get('/').get_data(as_text=True)
-    assert 'value="Yılmaz Beton"' in html and 'ayarAc()' in html
+    assert 'value="Yılmaz Beton"' in html and "modalAc('ayarlar')" in html
     # Bos kaydedilirse varsayilana doner
     istemci.post('/api/cari/ayar', json={'rapor_basligi': ''})
     assert istemci.get('/api/cari/ayar').get_json()['rapor_basligi'] == '[FİRMA ADI]'

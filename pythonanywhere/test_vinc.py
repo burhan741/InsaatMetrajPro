@@ -96,7 +96,7 @@ def test_vinc_sayfasi(istemci):
     assert r.status_code == 200
     assert r.headers['Cache-Control'].startswith('no-store')
     html = r.get_data(as_text=True)
-    for parca in ('Mobil Vinç', 'href="/"', '+ Gelir Ekle', '+ Gider Ekle', "modalAc('yardim')",
+    for parca in ('Mobil Vinç', 'href="/"', 'Gelir Ekle', 'Gider Ekle', "modalAc('yardim')",
                   'viewport-fit=cover', 'function kaydirmaKur', "'/api/vinc/' + DUZENLENEN",
                   'type="date"', 'inputmode="decimal"'):
         assert parca in html, parca
@@ -105,9 +105,7 @@ def test_vinc_sayfasi(istemci):
 
 def test_ana_menude_vinc_karti_acik(istemci):
     html = istemci.get('/').get_data(as_text=True)
-    i = html.index('href="/vinc"')
-    kart_basi = html.rfind('<a class="kart', 0, i)
-    assert 'pasif' not in html[kart_basi:i]
+    assert '<a class="satir-ic" href="/vinc">' in html
 
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='node yok')

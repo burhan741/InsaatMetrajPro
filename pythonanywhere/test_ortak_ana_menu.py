@@ -118,18 +118,19 @@ def test_ana_menu_dort_kart(istemci):
     assert r.status_code == 200
     assert r.headers['Cache-Control'].startswith('no-store')
     html = r.get_data(as_text=True)
-    for ad in ('Müteahhitler', 'Demirciler', 'Puantaj', 'Mobil Vinç'):
-        assert ad in html
-    assert 'href="/puantaj"' in html
-    assert '₺12.500' in html
+    for ad, adres in (('Müteahhitler', '/muteahhit'), ('Demirciler', '/demirci'),
+                      ('Puantaj', '/puantaj'), ('Mobil Vinç', '/vinc')):
+        assert ad in html and 'href="%s"' % adres in html
+    assert html.split('<script>')[0].count('class="ikon-daire"') == 4
+    assert 'Net kâr ₺12.500' in html
     assert 'viewport-fit=cover' in html
-    assert 'yardimAc()' in html
+    assert "modalAc('yardim')" in html
 
 
-def test_ana_menu_vinc_eksi_kirmizi(istemci):
+def test_ana_menu_vinc_zarar(istemci):
     istemci.post('/api/vinc/ekle', json={'tip': 'gider', 'miktar': 700})
     html = istemci.get('/').get_data(as_text=True)
-    assert 'tutar kirmizi">-₺700<' in html
+    assert 'Net zarar ₺700' in html
 
 
 def test_puantaj_api_adresleri_yerinde(istemci):

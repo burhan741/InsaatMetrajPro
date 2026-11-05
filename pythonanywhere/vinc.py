@@ -120,7 +120,7 @@ def api_vinc_sil():
 
 
 # ====================================================================
-# SAYFA (/vinc)
+# SAYFA (/vinc) — Kurumsal tema (TASARIM_KURALLARI.md)
 # ====================================================================
 VINC_HTML = r'''<!DOCTYPE html>
 <html lang="tr">
@@ -130,30 +130,44 @@ VINC_HTML = r'''<!DOCTYPE html>
 <style>{{ ortak_css|safe }}</style>
 </head>
 <body>
-<a href="/" class="geri">&#8249; Ana Menü</a>
-<div class="ust">
+<header class="bant">
+  <div class="bant-ust">
+    <a href="/" class="bant-geri">{{ ikon.geri|safe }}Ana Menü</a>
+    <div class="bant-btnlar">
+      <button class="bant-btn yuvarlak" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
+    </div>
+  </div>
   <h1>Mobil Vinç</h1>
-  <button class="yardim-btn" onclick="modalAc('yardim')" aria-label="Yardım" title="Yardım">?</button>
-</div>
+</header>
 
-<div class="ozet">
-  <div class="ozet-kutu" title="Tüm zamanların toplam geliri"><div class="deger yesil" id="o-gelir">-</div><div class="etiket">Gelir</div></div>
-  <div class="ozet-kutu" title="Tüm zamanların toplam gideri"><div class="deger kirmizi" id="o-gider">-</div><div class="etiket">Gider</div></div>
-  <div class="ozet-kutu genis" title="Gelir eksi gider"><div class="etiket">Net kâr / zarar</div><div class="deger" id="o-net">-</div></div>
-</div>
+<main class="icerik">
+  <div class="yuzen">
+    <div class="ozet2">
+      <div title="Tüm zamanların toplam geliri"><div class="ozet-e">Gelir</div><div class="ozet-d renk-alacak" id="o-gelir">-</div></div>
+      <div title="Tüm zamanların toplam gideri"><div class="ozet-e">Gider</div><div class="ozet-d renk-borc" id="o-gider">-</div></div>
+    </div>
+    <div class="ozet-tam" title="Gelir eksi gider">
+      <div class="ozet-e">Net</div>
+      <div><div class="ozet-d" id="o-net">-</div><div class="ozet-not" id="o-net-not"></div></div>
+    </div>
+  </div>
 
-<div class="btn-satir">
-  <button class="btn btn-yesil" onclick="yeniKayit('gelir')">+ Gelir Ekle</button>
-  <button class="btn btn-kirmizi" onclick="yeniKayit('gider')">+ Gider Ekle</button>
-</div>
+  <div class="bolum btn-satir">
+    <button class="btn" onclick="yeniKayit('gelir')">{{ ikon.arti|safe }}Gelir Ekle</button>
+    <button class="btn btn-ikincil" onclick="yeniKayit('gider')">{{ ikon.arti|safe }}Gider Ekle</button>
+  </div>
 
-<div id="liste"><div class="bos">Yükleniyor…</div></div>
-<div class="ipucu" id="ipucu" style="display:none">Düzenlemek için kayda dokunun ya da sola kaydırın.</div>
+  <div id="liste"><div class="bos">Yükleniyor…</div></div>
+  <div class="ipucu" id="ipucu" style="display:none">Düzeltmek için kayda dokunun · Düzenle / Sil için sola kaydırın</div>
+</main>
 
 <!-- Kayit formu -->
-<div class="modal-arka gizli" id="form" onclick="arkaTik(event, 'form')">
-  <div class="modal">
-    <div class="modal-ust"><h2 id="f-baslik">Kayıt</h2><button class="kapat" onclick="modalKapat('form')" aria-label="Kapat">&times;</button></div>
+<div class="panel" id="form" role="dialog" aria-modal="true" aria-labelledby="f-baslik">
+  <header class="bant kisa">
+    <div class="bant-ust"><button class="bant-geri" onclick="modalKapat('form')">Vazgeç</button></div>
+    <h1 id="f-baslik">Kayıt</h1>
+  </header>
+  <div class="icerik">
     <div class="secim">
       <button id="f-tip-gelir" onclick="tipSec('gelir')">Gelir</button>
       <button id="f-tip-gider" onclick="tipSec('gider')">Gider</button>
@@ -161,25 +175,29 @@ VINC_HTML = r'''<!DOCTYPE html>
     <div class="alan"><label for="f-tarih">Tarih</label><input type="date" id="f-tarih"></div>
     <div class="alan"><label for="f-acik">Açıklama</label><input type="text" id="f-acik" autocomplete="off"></div>
     <div class="alan"><label for="f-tutar">Tutar (₺)</label><input type="text" id="f-tutar" inputmode="decimal" placeholder="0" autocomplete="off"></div>
+    <div class="bilgi">Tutarı 1.500 ya da 1500,50 gibi yazabilirsiniz.</div>
     <button class="btn" id="f-kaydet" onclick="kaydet()">Kaydet</button>
-    <button class="btn btn-acik kirmizi" id="f-sil" onclick="formdanSil()">Bu kaydı sil</button>
+    <button class="btn btn-ikincil" id="f-sil" onclick="formdanSil()"><span class="sil-ikon">{{ ikon.sil|safe }}</span>Bu kaydı sil</button>
   </div>
 </div>
 
 <!-- Yardim -->
-<div class="modal-arka gizli" id="yardim" onclick="arkaTik(event, 'yardim')">
-  <div class="modal yardim">
-    <div class="modal-ust"><h2>Mobil Vinç — Nasıl kullanılır?</h2><button class="kapat" onclick="modalKapat('yardim')" aria-label="Kapat">&times;</button></div>
+<div class="panel" id="yardim" role="dialog" aria-modal="true" aria-labelledby="yardim-b">
+  <header class="bant kisa">
+    <div class="bant-ust"><button class="bant-geri" onclick="modalKapat('yardim')">{{ ikon.geri|safe }}Kapat</button></div>
+    <h1 id="yardim-b">Mobil Vinç — Nasıl kullanılır?</h1>
+  </header>
+  <div class="icerik yardim">
     <ol>
-      <li><b>+ Gelir Ekle:</b> Vinç kirası, hizmet bedeli gibi aldığınız paraları yazın.</li>
-      <li><b>+ Gider Ekle:</b> Yakıt, bakım, tamir, operatör gibi harcamaları yazın.</li>
+      <li><b>Gelir Ekle:</b> Vinç kirası, hizmet bedeli gibi aldığınız paraları yazın.</li>
+      <li><b>Gider Ekle:</b> Yakıt, bakım, tamir, operatör gibi harcamaları yazın.</li>
       <li>Tarih, açıklama ve tutarı girip <b>Kaydet</b>'e dokunun. Tutarı <b>1.500</b> ya da <b>1500,50</b> gibi yazabilirsiniz.</li>
       <li><b>Düzeltmek için:</b> kayda dokunun ya da kaydı sola kaydırıp <b>Düzenle</b>'ye basın.</li>
       <li><b>Silmek için:</b> kaydı sola kaydırıp <b>Sil</b>'e basın; onay sorulur.</li>
     </ol>
-    <p>Üstteki kutular tüm zamanların toplamıdır: <b>Net = Gelir − Gider</b>. Kayıtlar aylara göre gruplanır, en yenisi en üstte.</p>
+    <p>Üstteki kart tüm zamanların toplamıdır: <b>Net = Gelir − Gider</b>. Kayıtlar aylara göre gruplanır, en yenisi en üstte; ay başlığında o ayın neti yazar.</p>
     <p>Vinç defteri puantajdan bağımsızdır; işçi hesaplarını etkilemez.</p>
-    <button class="btn" style="margin-top:14px" onclick="modalKapat('yardim')">Anladım</button>
+    <button class="btn" onclick="modalKapat('yardim')">Anladım</button>
   </div>
 </div>
 
@@ -191,26 +209,33 @@ var KAYITLAR = {};
 var DUZENLENEN = null;   // null = yeni kayit
 var FORM_TIP = 'gelir';
 
+function netSunum(net) {
+  if (net > 0) return {sinif: 'renk-alacak', etiket: 'kâr'};
+  if (net < 0) return {sinif: 'renk-borc', etiket: 'zarar'};
+  return {sinif: 'renk-soluk', etiket: ''};
+}
+
 function yukle() {
   apiFetch('/api/vinc/liste').then(function(r) {
-    document.getElementById('o-gelir').textContent = fmtTL(r.toplam_gelir);
-    document.getElementById('o-gider').textContent = fmtTL(r.toplam_gider);
-    var net = document.getElementById('o-net');
-    net.textContent = fmtTL(r.net);
-    net.className = 'deger ' + (r.net >= 0 ? 'yesil' : 'kirmizi');
+    el('o-gelir').textContent = fmtTL(r.toplam_gelir);
+    el('o-gider').textContent = fmtTL(r.toplam_gider);
+    var n = netSunum(r.net);
+    el('o-net').textContent = fmtTL(Math.abs(r.net));
+    el('o-net').className = 'ozet-d ' + n.sinif;
+    el('o-net-not').textContent = n.etiket;
+    el('o-net-not').className = 'ozet-not ' + n.sinif;
     ciz(r.kayitlar);
   }).catch(function(e) {
-    document.getElementById('liste').innerHTML = '<div class="bos kirmizi">Yüklenemedi: ' + escHtml(e.message) + '</div>';
+    el('liste').innerHTML = '<div class="bos renk-borc">Yüklenemedi: ' + escHtml(e.message) + '</div>';
   });
 }
 
 function ciz(kayitlar) {
   var y = window.scrollY;
   KAYITLAR = {};
-  var kap = document.getElementById('liste');
   if (!kayitlar.length) {
-    kap.innerHTML = '<div class="liste"><div class="bos">Henüz kayıt yok. Yukarıdaki butonlarla ilk kaydı ekleyin.</div></div>';
-    document.getElementById('ipucu').style.display = 'none';
+    el('liste').innerHTML = '<div class="bos">Henüz kayıt yok. Yukarıdaki butonlarla ilk kaydı ekleyin.</div>';
+    el('ipucu').style.display = 'none';
     return;
   }
   // Aylara gore grupla (liste zaten yeniden eskiye sirali gelir)
@@ -226,39 +251,38 @@ function ciz(kayitlar) {
   }
   var html = '';
   for (var j = 0; j < gruplar.length; j++) {
-    var gr = gruplar[j];
-    html += '<div class="grup-baslik"><span>' + escHtml(ayBaslik(gr.ay)) + '</span><span class="' +
-      (gr.net >= 0 ? 'yesil' : 'kirmizi') + '">Net ' + fmtTL(gr.net) + '</span></div><div class="liste">';
+    var gr = gruplar[j], ns = netSunum(gr.net);
+    html += '<div class="bolum"><div class="bolum-baslik"><span>' + escHtml(ayBaslik(gr.ay)) + '</span>' +
+      '<span class="tutar ' + ns.sinif + '">Net ' + fmtTL(Math.abs(gr.net)) + (ns.etiket ? ' ' + ns.etiket : '') + '</span></div>';
     for (var m = 0; m < gr.kayitlar.length; m++) {
       var kk = gr.kayitlar[m];
       var gelir = kk.tip === 'gelir';
-      var sol = '<div class="baslik">' + escHtml(kk.aciklama || (gelir ? 'Gelir' : 'Gider')) + '</div>' +
-                '<div class="alt">' + tarihTR(kk.tarih) + ' · ' + (gelir ? 'Gelir' : 'Gider') + '</div>';
-      var sag = '<div class="satir-tutar ' + (gelir ? 'yesil' : 'kirmizi') + '">' + (gelir ? '+' : '−') + fmtTL(kk.miktar) + '</div>';
-      html += satirHtml(kk.id, sol, sag);
+      var ic = satirIcerik(gelir ? 'yukari' : 'asagi', kk.aciklama || (gelir ? 'Gelir' : 'Gider'),
+        tarihTR(kk.tarih) + ' · ' + (gelir ? 'Gelir' : 'Gider'),
+        tutarHtml((gelir ? '+' : '−') + fmtTL(kk.miktar), gelir ? 'renk-alacak' : 'renk-borc', gelir ? 'gelir' : 'gider'));
+      html += satirHtml(kk.id, ic);
     }
     html += '</div>';
   }
-  kap.innerHTML = html;
-  document.getElementById('ipucu').style.display = 'block';
+  el('liste').innerHTML = html;
+  el('ipucu').style.display = 'block';
   window.scrollTo(0, y);
 }
 
 function tipSec(tip) {
   FORM_TIP = tip;
-  document.getElementById('f-tip-gelir').className = tip === 'gelir' ? 'aktif' : '';
-  document.getElementById('f-tip-gider').className = tip === 'gider' ? 'aktif' : '';
-  document.getElementById('f-acik').placeholder = tip === 'gelir' ? 'Vinç kirası, hizmet bedeli…' : 'Yakıt, bakım, tamir…';
-  document.getElementById('f-kaydet').className = 'btn ' + (tip === 'gelir' ? 'btn-yesil' : 'btn-kirmizi');
+  el('f-tip-gelir').className = tip === 'gelir' ? 'aktif' : '';
+  el('f-tip-gider').className = tip === 'gider' ? 'aktif' : '';
+  el('f-acik').placeholder = tip === 'gelir' ? 'Vinç kirası, hizmet bedeli…' : 'Yakıt, bakım, tamir…';
 }
 
 function yeniKayit(tip) {
   DUZENLENEN = null;
-  document.getElementById('f-baslik').textContent = tip === 'gelir' ? 'Gelir Ekle' : 'Gider Ekle';
-  document.getElementById('f-tarih').value = bugunISO();
-  document.getElementById('f-acik').value = '';
-  document.getElementById('f-tutar').value = '';
-  document.getElementById('f-sil').style.display = 'none';
+  el('f-baslik').textContent = tip === 'gelir' ? 'Gelir Ekle' : 'Gider Ekle';
+  el('f-tarih').value = bugunISO();
+  el('f-acik').value = '';
+  el('f-tutar').value = '';
+  el('f-sil').style.display = 'none';
   tipSec(tip);
   modalAc('form');
 }
@@ -267,24 +291,24 @@ function duzenle(id) {
   var k = KAYITLAR[id];
   if (!k) return;
   DUZENLENEN = id;
-  document.getElementById('f-baslik').textContent = 'Kaydı Düzenle';
-  document.getElementById('f-tarih').value = String(k.tarih || '').substring(0, 10);
-  document.getElementById('f-acik').value = k.aciklama || '';
-  document.getElementById('f-tutar').value = tlInputYaz(k.miktar);
-  document.getElementById('f-sil').style.display = 'block';
+  el('f-baslik').textContent = 'Kaydı Düzenle';
+  el('f-tarih').value = String(k.tarih || '').substring(0, 10);
+  el('f-acik').value = k.aciklama || '';
+  el('f-tutar').value = tlInputYaz(k.miktar);
+  el('f-sil').style.display = 'flex';
   tipSec(k.tip === 'gider' ? 'gider' : 'gelir');
   modalAc('form');
 }
 
 function kaydet() {
-  var tutar = parseTLInput(document.getElementById('f-tutar').value);
+  var tutar = parseTLInput(el('f-tutar').value);
   if (isNaN(tutar) || tutar <= 0) { toast('Geçerli bir tutar girin'); return; }
-  var tarih = document.getElementById('f-tarih').value;
+  var tarih = el('f-tarih').value;
   if (!tarih) { toast('Tarih seçin'); return; }
-  var veri = {tip: FORM_TIP, tarih: tarih, aciklama: document.getElementById('f-acik').value.trim(), miktar: tutar};
+  var veri = {tip: FORM_TIP, tarih: tarih, aciklama: el('f-acik').value.trim(), miktar: tutar};
   var istek = DUZENLENEN === null ? jsonGonder('/api/vinc/ekle', 'POST', veri)
                                   : jsonGonder('/api/vinc/' + DUZENLENEN, 'PUT', veri);
-  var btn = document.getElementById('f-kaydet');
+  var btn = el('f-kaydet');
   btn.disabled = true;
   istek.then(function() {
     modalKapat('form');
@@ -297,19 +321,21 @@ function kaydet() {
 function sil(id) {
   var k = KAYITLAR[id];
   if (!k) return;
-  var metin = (k.aciklama || (k.tip === 'gelir' ? 'Gelir' : 'Gider')) + ' (' + tarihTR(k.tarih) + ', ' + fmtTL(k.miktar) + ')';
-  if (!onayla(metin + ' silinecek. Emin misiniz?')) { satirKapat(); return; }
-  jsonGonder('/api/vinc/sil', 'POST', {id: id}).then(function() {
-    ACIK_SATIR = null;
-    modalKapat('form');
-    toast('Silindi');
-    yukle();
-  }).catch(function(e) { toast('Hata: ' + e.message); });
+  var ad = (k.aciklama || (k.tip === 'gelir' ? 'Gelir' : 'Gider')) + ' (' + tarihTR(k.tarih) + ', ' + fmtTL(k.miktar) + ')';
+  onayIste('Silinsin mi?', ad + ' silinecek.', 'Sil').then(function(evet) {
+    if (!evet) { satirKapat(); return; }
+    jsonGonder('/api/vinc/sil', 'POST', {id: id}).then(function() {
+      ACIK_SATIR = null;
+      modalKapat('form');
+      toast('Silindi');
+      yukle();
+    }).catch(function(e) { toast('Hata: ' + e.message); });
+  });
 }
 
 function formdanSil() { if (DUZENLENEN !== null) sil(DUZENLENEN); }
 
-kaydirmaKur(document.getElementById('liste'), duzenle, duzenle, sil);
+kaydirmaKur(el('liste'), duzenle, duzenle, sil);
 yukle();
 </script>
 </body>
@@ -318,6 +344,6 @@ yukle();
 
 @bp.route('/vinc')
 def vinc_sayfa():
-    html = render_template_string(VINC_HTML, ortak_head=ortak.ORTAK_HEAD,
-                                  ortak_css=ortak.ORTAK_CSS, ortak_js=ortak.ORTAK_JS)
+    html = render_template_string(VINC_HTML, ortak_head=ortak.ORTAK_HEAD, ortak_css=ortak.ORTAK_CSS,
+                                  ortak_js=ortak.ORTAK_JS, ikon={ad: ortak.svg(ad) for ad in ortak.IKONLAR})
     return ortak.onbelleksiz(make_response(html))

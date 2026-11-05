@@ -245,10 +245,10 @@ def test_ana_menu_toplam_alacak(istemci):
     fid = firma_ekle(istemci)
     hareket(istemci, fid, tip='is', tarih='2026-11-01', kalem_id=kalem_id(istemci, fid, 'Normal katlar'), miktar=100)
     html = istemci.get('/').get_data(as_text=True)
-    i = html.index('href="/muteahhit"')
-    kart = html[html.rfind('<a class="kart', 0, i):html.index('</a>', i)]
-    assert 'pasif' not in kart
-    assert '₺325.000' in kart
+    # Yuzen kart: Toplam alacak yesil + yaninda "alacak" yazisi (renk tek basina anlam tasimaz)
+    assert 'ozet-d renk-alacak">₺325.000<' in html
+    assert 'ozet-not renk-alacak">alacak<' in html
+    assert 'href="/muteahhit"' in html and '1 firma' in html
 
 
 def test_tanimsiz_tur_404(istemci):

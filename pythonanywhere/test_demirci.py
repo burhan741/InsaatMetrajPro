@@ -84,13 +84,19 @@ def test_ana_menu_demirci_karti(istemci):
     fid = demirci_ekle(istemci)
     hareket(istemci, fid, tip='is', tarih='2026-11-01', kalem_id=kalem_id(istemci, fid, 'Temel demiri'), miktar=10)
     html = istemci.get('/').get_data(as_text=True)
-    i = html.index('href="/demirci"')
-    kart = html[html.rfind('<a class="kart', 0, i):html.index('</a>', i)]
-    assert 'pasif' not in kart and 'Hazırlanıyor' not in kart
-    assert 'Toplam borç' in kart
-    assert 'tutar kirmizi">₺45.000<' in kart
-    # Artik hicbir kart "Hazirlaniyor" degil
-    assert 'Hazırlanıyor' not in html and 'kart pasif' not in html
+    assert 'Toplam borç' in html
+    assert 'ozet-d renk-borc">₺45.000<' in html and 'ozet-not renk-borc">borç<' in html
+    assert 'href="/demirci"' in html
+    assert 'Hazırlanıyor' not in html
+
+
+def test_ana_menu_borc_sifir_ve_fazla_odeme_renkleri(istemci):
+    html = istemci.get('/').get_data(as_text=True)
+    assert 'ozet-d renk-soluk">₺0<' in html            # kalan sifir -> soluk
+    fid = demirci_ekle(istemci)
+    hareket(istemci, fid, tip='odeme', tarih='2026-11-01', tutar=900)
+    html = istemci.get('/').get_data(as_text=True)
+    assert 'ozet-d renk-uyari">₺900<' in html and 'ozet-not renk-uyari">fazla ödeme<' in html
 
 
 @pytest.mark.parametrize('adres', ['/demirci', '/demirci/{fid}'])
