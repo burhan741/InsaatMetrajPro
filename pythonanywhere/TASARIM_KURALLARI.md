@@ -2,6 +2,8 @@
 
 > `yeni_proje/pythonanywhere/` klasöründe durur. ANA_PROGRAM_PLANI.md ile birlikte geçerlidir. Kullanıcı bu temayı seçti, onaylıdır. Ekran yapısı ve iş mantığı değişmez; bu dosya sadece görünümü tanımlar.
 
+> **Uygulama notu (Rev-178):** Bölüm 9 da uygulandı (kullanıcı istedi): puantajda yalnız `<style>` + yazı tipi; JS/gövde parmak iziyle kilitli. Puantaj PDF renkleri kapsam dışı kaldı.
+>
 > **Uygulama notu (Rev-177):** Renkler `ortak.TEMA` sözlüğünde; CSS `:root` değişkenleri ve PDF renkleri bu sözlükten üretilir (tek nokta). İkonlar `ortak.IKONLAR`. Ana menü selamlaması saate göre (Günaydın / İyi günler / İyi akşamlar).
 
 ## 1. Tek noktadan stil

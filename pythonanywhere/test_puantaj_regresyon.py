@@ -11,6 +11,7 @@ Gercek veriyle denemek icin: sunucudan indirilen puantaj.db'nin yolunu
 GERCEK_DB ortam degiskenine verin (yoksa klasordeki yerel puantaj.db,
 o da yoksa o test atlanir). Gercek dosyanin KOPYASI kullanilir.
 """
+import hashlib
 import os
 import re
 import shutil
@@ -159,17 +160,25 @@ def test_puantaj_adresi_ve_cache_bust(istemci):
     assert r.headers['Cache-Control'].startswith('no-store')
 
 
+def _head_sil(html):
+    return re.sub(r'<head>.*?</head>', '<head></head>', html, flags=re.S)
+
+
 def test_html_sadece_izinli_degisiklikler(tmp_path, istemci):
-    """Yeni puantaj HTML'i = eski HTML - vinc + Ana Menu baglantisi."""
+    """Yeni puantaj HTML'i = eski HTML - vinc + Ana Menu baglantisi (+ <head>'de sadece tema/yazi tipi)."""
     eski = eski_app_yukle(str(tmp_path / 'eski'))
     eski_html = eski.app.test_client().get('/?v=1').get_data(as_text=True)
     yeni_html = istemci.get('/puantaj?v=1').get_data(as_text=True)
 
-    eski_satirlar = set(eski_html.splitlines())
-    eklenen = [s for s in yeni_html.splitlines() if s not in eski_satirlar]
-    assert len(eklenen) == 2, eklenen
-    assert any('href="/"' in s and 'Ana Men' in s for s in eklenen)
-    assert any(s.startswith('.anamenu-link{') for s in eklenen)
+    # <head> disinda (gorunur sayfa + JS) eklenen tek satir: Ana Menu baglantisi
+    eski_satirlar = set(_head_sil(eski_html).splitlines())
+    eklenen = [s for s in _head_sil(yeni_html).splitlines() if s not in eski_satirlar]
+    assert len(eklenen) == 1, eklenen
+    assert 'href="/"' in eklenen[0] and 'Ana Men' in eklenen[0]
+    # <head>'de meta etiketleri ve baslik aynen duruyor
+    eski_head = re.search(r'<head>(.*?)<style>', eski_html, re.S).group(1)
+    for satir in eski_head.strip().splitlines():
+        assert satir in yeni_html, satir
 
     for yasak in ('panel-vinc', 'loadVinc', '/api/vinc', 'nav-vinc', "sekme('vinc'"):
         assert yasak in eski_html
@@ -178,6 +187,34 @@ def test_html_sadece_izinli_degisiklikler(tmp_path, istemci):
     for kalan in ('panel-puantaj', 'panel-ozet', 'panel-aylik', 'panel-isciler',
                   'panel-ayarlar', '/api/pdf/haftalik', 'Vinccu'):
         assert kalan in yeni_html
+
+
+# Rev-178 (puantaj renk uyumu) oncesi alinan parmak izleri. Puantajda yalniz
+# <head> icindeki stil/yazi tipi degisebilir; JS ve gorunur govde KILITLI.
+# Bilerek puantaj JS/HTML'i degistirilirse bu degerler bilincli guncellenir.
+PUANTAJ_JS_SHA256 = '2b25515df2c4349060ccfeac63367595d6203ef8c3ce2b1944e41d03c9a1fd14'
+PUANTAJ_GOVDE_SHA256 = '49adc5f799633dc3504c318e04b2285dfaa83768339e3036e32d5452526d0b65'
+
+
+def test_puantaj_js_ve_govde_kilitli(istemci):
+    h = istemci.get('/puantaj?v=1').get_data(as_text=True)
+    js = ''.join(re.findall(r'<script>(.*?)</script>', h, re.S))
+    govde = re.sub(r'<script>.*?</script>', '', re.sub(r'<head>.*?</head>', '', h, flags=re.S), flags=re.S)
+    assert hashlib.sha256(js.encode()).hexdigest() == PUANTAJ_JS_SHA256
+    assert hashlib.sha256(govde.encode()).hexdigest() == PUANTAJ_GOVDE_SHA256
+
+
+def test_puantaj_tema_renkleri(istemci):
+    import ortak
+    h = istemci.get('/puantaj?v=1').get_data(as_text=True)
+    stil = re.search(r'<style>(.*?)</style>', h, re.S).group(1)
+    assert ortak.KOK_CSS in stil                       # renkler ortak.TEMA'dan
+    assert '--pr:var(--lacivert)' in stil and 'font-family:var(--yazi)' in stil
+    assert 'family=Manrope' in h
+    # Eski koyu tema renkleri stilde kalmadi
+    for eski in ('#e94560', '#1a1a2e', '#16213e', '#0f3460', '#2a2a4a', '#1e1e3a', '#a0a0a0;', '#333'):
+        govde_kurallari = re.sub(r'\[style\*="[^"]*"\]', '', stil)   # JS satir ici eslemeleri haric
+        assert eski not in govde_kurallari, eski
 
 
 def _gercek_db_yolu():
